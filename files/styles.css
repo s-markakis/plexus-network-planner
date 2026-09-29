@@ -917,15 +917,15 @@ body.theme-dark #heat-canvas{mix-blend-mode:screen;opacity:.55}
 
 /* Cameras — rendered as a triangular field-of-view cone with a lens marker
    at the position and a label below. Selected cameras get a thicker stroke. */
-.cam-cone{fill:rgba(0,0,0,.07);stroke:var(--ink);stroke-width:1.2;opacity:.85;pointer-events:none}
-.cam-cone-sel{stroke-width:2;opacity:1;filter:drop-shadow(0 0 4px rgba(0,0,0,.18))}
+.cam-cone{fill:rgba(0,0,0,.08);stroke:var(--ink);stroke-width:1;opacity:.70;pointer-events:none}
+.cam-cone-sel{stroke-width:1.6;opacity:1;filter:drop-shadow(0 0 4px rgba(0,0,0,.18))}
 .cam-lens{stroke:var(--bg);stroke-width:1.5}
 .cam-lens-sel{stroke:var(--bg);stroke-width:2;filter:drop-shadow(0 0 3px rgba(0,0,0,.3))}
 .cam-heading{stroke-width:1.5;opacity:.9;pointer-events:none}
 .cam-lbl{
   font-family:'Rajdhani',sans-serif;font-size:10px;font-weight:700;
   letter-spacing:.08em;text-anchor:middle;
-  paint-order:stroke;stroke:var(--bg);stroke-width:3;
+  paint-order:stroke;stroke:#fff;stroke-width:1.5px;
   pointer-events:none;
 }
 

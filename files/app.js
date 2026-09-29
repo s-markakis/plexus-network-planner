@@ -2815,7 +2815,7 @@ function renderCAMs(){
     const fov=Math.max(10,Math.min(360,c.fov||80));
     const heading=c.heading||0;
     const color=c.color||(SETTINGS.colorByVlan&&vlanColor(c.vlan))||tInk();
-    const fillRgba=c.color?hexToRgba(c.color,.12):tInk(.08);
+    const fillRgba=c.color?hexToRgba(c.color,.08):tInk(.08);
     const g=mk('g');g.setAttribute('class','cam-grp');g.dataset.id=c.id;g.style.pointerEvents='all';
     if(c.locked)g.style.opacity='.7';
     if(statusDimmed(c))g.style.opacity='.15';
@@ -2870,12 +2870,12 @@ function renderCAMs(){
 
     // Lens marker at position.
     const lens=mk('circle');
-    lens.setAttribute('cx',cx);lens.setAttribute('cy',cy);lens.setAttribute('r',6);
+    lens.setAttribute('cx',cx);lens.setAttribute('cy',cy);lens.setAttribute('r',5);
     lens.setAttribute('class','cam-lens'+(isSel?' cam-lens-sel':''));
-    lens.style.fill=color;
+    lens.style.fill='#000';
     camLayer.appendChild(lens);
     const inner=mk('circle');
-    inner.setAttribute('cx',cx);inner.setAttribute('cy',cy);inner.setAttribute('r',2.5);
+    inner.setAttribute('cx',cx);inner.setAttribute('cy',cy);inner.setAttribute('r',2);
     inner.style.fill=tBg();
     inner.style.pointerEvents='none';
     camLayer.appendChild(inner);
@@ -2903,11 +2903,14 @@ function renderCAMs(){
     camLayer.appendChild(lbl);
 
 
-    // The group itself isn't appended (we already appended children directly
-    // into camLayer). Attach pointer handlers to the lens — it's the obvious
-    // hit target. Cone is non-interactive on its own.
-    lens.style.cursor='pointer';
-    lens.addEventListener('pointerdown',e=>{
+    // Invisible hit area reuses the existing selection and drag handler.
+    const hit=mk('circle');
+    hit.setAttribute('cx',cx);hit.setAttribute('cy',cy);hit.setAttribute('r',14);
+    hit.setAttribute('class','cam-grp');hit.dataset.id=c.id;
+    hit.style.fill='transparent';hit.style.pointerEvents='all';
+    camLayer.appendChild(hit);
+    hit.style.cursor='pointer';
+    hit.addEventListener('pointerdown',e=>{
       e.stopPropagation();
       if(e.shiftKey&&mode==='sel'){toggleSelection(c.id,'cam');return;}
       sel(c.id,'cam');
