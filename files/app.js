@@ -2902,7 +2902,6 @@ function renderCAMs(){
     lbl.textContent=(c.name||'').toUpperCase();
     camLayer.appendChild(lbl);
 
-    g.appendChild(cone);g.appendChild(lens);g.appendChild(inner);g.appendChild(lbl);
 
     // The group itself isn't appended (we already appended children directly
     // into camLayer). Attach pointer handlers to the lens — it's the obvious
