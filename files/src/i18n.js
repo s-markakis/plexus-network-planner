@@ -3,8 +3,9 @@
 // can be added by dropping another bundle into `bundles` below.
 
 import {en} from './i18n/en.js';
+import {fr} from './i18n/fr.js';
 
-const bundles=/** @type {Record<string,Record<string,string>>} */({en});
+const bundles=/** @type {Record<string,Record<string,string>>} */({en,fr});
 
 let _lang='en';
 
