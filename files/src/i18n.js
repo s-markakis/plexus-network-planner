@@ -45,7 +45,7 @@ export function t(key,vars){
   if(typeof s!=='string')s=key;
   if(vars){
     for(const k of Object.keys(vars)){
-      s=s.replaceAll('{'+k+'}',String(vars[k]));
+      s=s.replaceAll('{'+k+'}',()=>String(vars[k]));
     }
   }
   return s;

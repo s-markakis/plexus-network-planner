@@ -177,9 +177,9 @@ function buildGroupedOptions(groups,selected){
   return groups.map(g=>{
     const opts=g.models.map(m=>{
       const isSel=(m===selected)||(!known&&m==='Custom/Other');
-      return `<option${isSel?' selected':''}>${esc(m)}</option>`;
+      return `<option value="${esc(m)}"${isSel?' selected':''}${m==='Custom/Other'?' data-i18n="panel.custom_other"':''}>${esc(m)}</option>`;
     }).join('');
-    return `<optgroup label="${esc(g.label)}">${opts}</optgroup>`;
+    return `<optgroup label="${esc(g.label)}"${g.label==='Other'&&g.models.length===1&&g.models[0]==='Custom/Other'?' data-i18n-label="panel.other"':''}>${opts}</optgroup>`;
   }).join('');
 }
 
@@ -691,9 +691,9 @@ function apAirtimePct(ap,floor){
 }
 function _airtimeLabel(ap){
   const pct=apAirtimePct(ap);
-  if(pct===Infinity)return '∞ (no throughput)';
+  if(pct===Infinity)return panelText('panel.no_throughput');
   const flag=pct>90?' ⚠':'';
-  return pct+'%'+flag+` @ ${parseFloat(SETTINGS.perClientMbps)||5} Mbps/client`;
+  return panelText('panel.airtime_value',{pct,flag,rate:parseFloat(SETTINGS.perClientMbps)||5});
 }
 
 function totalClientCapacity(){
@@ -757,11 +757,11 @@ function analyzeSwitch(sw,floor){
 function portOptions(ports,cur){
   cur=(cur==null?'':String(cur)).trim();
   const curNum=/^\d+$/.test(cur)?parseInt(cur,10):null;
-  let html=`<option value=""${cur===''?' selected':''}>— unassigned —</option>`;
+  let html=`<option value=""${cur===''?' selected':''} data-i18n="panel.unassigned">— unassigned —</option>`;
   if(cur!=='' && (curNum===null || (ports!=null && (curNum<1||curNum>ports))))
-    html+=`<option value="${esc(cur)}" selected>${esc(cur)} (custom)</option>`;
+    html+=`<option value="${esc(cur)}" selected data-i18n="panel.custom_port" data-i18n-vars="${esc(JSON.stringify({port:cur}))}">${esc(cur)} (custom)</option>`;
   if(ports!=null)for(let i=1;i<=ports;i++)
-    html+=`<option value="${i}"${curNum===i?' selected':''}>Port ${i}</option>`;
+    html+=`<option value="${i}"${curNum===i?' selected':''} data-i18n="panel.port_number" data-i18n-vars="${esc(JSON.stringify({n:i}))}">Port ${i}</option>`;
   return html;
 }
 // A port picker: numbered <select> when the switch's port count is known, else
@@ -770,21 +770,21 @@ function portControl(ports,cur,attrs){
   cur=cur==null?'':String(cur);
   return ports!=null
     ? `<select class="ep-sel" ${attrs}>${portOptions(ports,cur)}</select>`
-    : `<input class="ep-in" type="number" min="1" value="${esc(cur)}" placeholder="Port #" ${attrs}/>`;
+    : `<input class="ep-in" type="number" min="1" value="${esc(cur)}" placeholder="Port #" data-i18n-placeholder="panel.port_hint" ${attrs}/>`;
 }
 // <option>s for the install-status picker.
 function statusOptions(cur){
   cur=DEVICE_STATUSES.includes(cur)?cur:'planned';
-  return DEVICE_STATUSES.map(s=>`<option value="${s}"${s===cur?' selected':''}>${DEVICE_STATUS_META[s].label}</option>`).join('');
+  return DEVICE_STATUSES.map(s=>`<option value="${s}"${s===cur?' selected':''} data-i18n="status.${s}">${DEVICE_STATUS_META[s].label}</option>`).join('');
 }
 // Shared "Status & Inventory" panel section. `p` is the element-id prefix
 // (ep / cam / sw) and `act` the panel's data-input-action.
 function inventoryBlock(dev,p,act){
-  return `<div class="ep-section">Status &amp; Inventory</div>
-    <div class="ep-row"><label class="ep-lbl">Status</label><select class="ep-sel" id="${p}-status" data-input-action="${act}">${statusOptions(dev.status)}</select></div>
-    <div class="ep-row"><label class="ep-lbl">Serial #</label><input class="ep-in ep-mono" id="${p}-serial" value="${esc(dev.serial||'')}" data-input-action="${act}" placeholder="from the unit label"/></div>
-    <div class="ep-row"><label class="ep-lbl">Asset Tag</label><input class="ep-in ep-mono" id="${p}-asset" value="${esc(dev.assetTag||'')}" data-input-action="${act}" placeholder="ASSET-0001"/></div>
-    <div class="ep-row"><label class="ep-lbl">Firmware</label><input class="ep-in ep-mono" id="${p}-firmware" value="${esc(dev.firmware||'')}" data-input-action="${act}" placeholder="e.g. 6.5.28"/></div>`;
+  return `<div class="ep-section" data-i18n="panel.inventory">Status &amp; Inventory</div>
+    <div class="ep-row"><label class="ep-lbl" data-i18n="inventory.status">Status</label><select class="ep-sel" id="${p}-status" data-input-action="${act}">${statusOptions(dev.status)}</select></div>
+    <div class="ep-row"><label class="ep-lbl" data-i18n="panel.serial">Serial #</label><input class="ep-in ep-mono" id="${p}-serial" value="${esc(dev.serial||'')}" data-input-action="${act}" placeholder="from the unit label" data-i18n-placeholder="panel.serial_hint"/></div>
+    <div class="ep-row"><label class="ep-lbl" data-i18n="panel.asset">Asset Tag</label><input class="ep-in ep-mono" id="${p}-asset" value="${esc(dev.assetTag||'')}" data-input-action="${act}" placeholder="ASSET-0001"/></div>
+    <div class="ep-row"><label class="ep-lbl" data-i18n="panel.firmware">Firmware</label><input class="ep-in ep-mono" id="${p}-firmware" value="${esc(dev.firmware||'')}" data-input-action="${act}" placeholder="e.g. 6.5.28" data-i18n-placeholder="panel.firmware_hint"/></div>`;
 }
 // Read the shared section back into the device. Safe when the section isn't
 // in the current panel (elements missing → no-op).
@@ -4400,19 +4400,23 @@ function _selectedDevice(){
 // project file only — stripped from Share links (see shareLink) and never
 // printed in reports. Shared markup so every device panel looks the same.
 const CRED_PROTOS=['https','http','ssh','telnet'];
+// Escaped display-only spans retain their parameters for live language switching.
+function panelText(key,vars){
+  return `<span data-i18n="${key}" data-i18n-vars="${esc(JSON.stringify(vars||{}))}">${esc(t(key,vars))}</span>`;
+}
 function credsBlock(dev){
   const c=dev.creds||{};
   const proto=c.proto||'https';
   const protoOpts=CRED_PROTOS.map(p=>`<option value="${p}"${proto===p?' selected':''}>${p.toUpperCase()}</option>`).join('');
   return `
-    <div class="ep-section">Credentials</div>
-    <div class="ep-row"><label class="ep-lbl">Protocol</label><select class="ep-sel" id="cred-proto" data-input-action="upd-creds">${protoOpts}</select></div>
-    <div class="ep-row"><label class="ep-lbl">Host / URL</label><input class="ep-in ep-mono" id="cred-host" value="${esc(c.host||'')}" data-input-action="upd-creds" placeholder="defaults to IP (${esc(dev.ip||'—')})"/></div>
-    <div class="ep-row"><label class="ep-lbl">Port</label><input class="ep-in ep-mono" id="cred-port" value="${esc(c.port||'')}" data-input-action="upd-creds" placeholder="443"/></div>
-    <div class="ep-row"><label class="ep-lbl">Username</label><input class="ep-in" id="cred-user" value="${esc(c.user||'')}" data-input-action="upd-creds" autocomplete="off"/></div>
-    <div class="ep-row"><label class="ep-lbl">Password</label><input class="ep-in ep-mono" id="cred-pass" type="password" value="${esc(c.pass||'')}" data-input-action="upd-creds" autocomplete="new-password"/><button class="btn" style="flex:0 0 auto;padding:4px 8px" data-action="toggle-pass" title="Show / hide password">👁</button></div>
-    <div class="ep-row"><a href="#" data-action="open-mgmt" style="font-size:11px">↗ Open management UI</a></div>
-    <div class="ep-row" style="font-size:10px;opacity:.55">Saved in the project file only — excluded from Share links and PDF/HTML reports.</div>`;
+    <div class="ep-section" data-i18n="panel.credentials">Credentials</div>
+    <div class="ep-row"><label class="ep-lbl" data-i18n="panel.protocol">Protocol</label><select class="ep-sel" id="cred-proto" data-input-action="upd-creds">${protoOpts}</select></div>
+    <div class="ep-row"><label class="ep-lbl" data-i18n="panel.host">Host / URL</label><input class="ep-in ep-mono" id="cred-host" value="${esc(c.host||'')}" data-input-action="upd-creds" data-i18n-placeholder="panel.host_default" data-i18n-vars="${esc(JSON.stringify({ip:dev.ip||'—'}))}"/></div>
+    <div class="ep-row"><label class="ep-lbl" data-i18n="panel.port">Port</label><input class="ep-in ep-mono" id="cred-port" value="${esc(c.port||'')}" data-input-action="upd-creds" placeholder="443"/></div>
+    <div class="ep-row"><label class="ep-lbl" data-i18n="unifi.username">Username</label><input class="ep-in" id="cred-user" value="${esc(c.user||'')}" data-input-action="upd-creds" autocomplete="off"/></div>
+    <div class="ep-row"><label class="ep-lbl" data-i18n="unifi.password">Password</label><input class="ep-in ep-mono" id="cred-pass" type="password" value="${esc(c.pass||'')}" data-input-action="upd-creds" autocomplete="new-password"/><button class="btn" style="flex:0 0 auto;padding:4px 8px" data-action="toggle-pass" title="Show / hide password" data-i18n-title="panel.password_tip">👁</button></div>
+    <div class="ep-row"><a href="#" data-action="open-mgmt" style="font-size:11px" data-i18n="panel.management">↗ Open management UI</a></div>
+    <div class="ep-row" style="font-size:10px;opacity:.55" data-i18n="panel.credentials_hint">Saved in the project file only — excluded from Share links and PDF/HTML reports.</div>`;
 }
 function updCreds(){
   const d=_selectedDevice();if(!d)return;
@@ -4495,15 +4499,15 @@ function deviceImageBlock(item,type){
   const isUpload=!!item.imgId||/^data:/.test(item.imageUrl||'');
   const hasOverride=!!(item.imgId||item.imageUrl);
   const urlVal=/^data:/.test(item.imageUrl||'')?'':esc(item.imageUrl||'');
-  const urlPh=isUpload?'Uploaded image — Clear to remove':'https://… (overrides model image)';
+  const urlPh=isUpload?'panel.image_uploaded':'panel.image_override';
   return `
-    <div class="ep-device-img"><img id="ep-img" src="${esc(src)}" data-ph="${esc(ph)}" alt="${esc(item.model||'device')}"/></div>
+    <div class="ep-device-img"><img id="ep-img" src="${esc(src)}" data-ph="${esc(ph)}" alt="${esc(item.model||'device')}"${item.model?'':' data-i18n-alt="panel.device"'}/></div>
     <div class="ep-img-actions">
-      <button class="btn ep-img-btn" data-action="upload-device-img">↑ Upload image</button>
-      <button class="btn ep-img-btn"${hasOverride?'':' disabled'} data-action="clear-device-img">✕ Clear</button>
+      <button class="btn ep-img-btn" data-action="upload-device-img" data-i18n="panel.image_upload">↑ Upload image</button>
+      <button class="btn ep-img-btn"${hasOverride?'':' disabled'} data-action="clear-device-img" data-i18n="panel.image_clear">✕ Clear</button>
       <input type="file" id="ep-img-file" accept="image/*" hidden data-change-action="device-img-file"/>
     </div>
-    <div class="ep-row"><label class="ep-lbl">Image URL</label><input class="ep-in ep-mono" id="ep-img-url" value="${urlVal}" data-input-action="upd-img" placeholder="${urlPh}"/></div>`;
+    <div class="ep-row"><label class="ep-lbl" data-i18n="panel.image_url">Image URL</label><input class="ep-in ep-mono" id="ep-img-url" value="${urlVal}" data-input-action="upd-img" data-i18n-placeholder="${urlPh}"/></div>`;
 }
 
 // Attach the placeholder fallback after a panel sets its innerHTML. Called at
@@ -4673,64 +4677,65 @@ function renderCAMPanel(){
   const swOptions=SWS().map(sw=>`<option value="${esc(sw.id)}"${sw.id===c.swId?' selected':''}>${esc(sw.name)} · ${esc(sw.model||'')}</option>`).join('');
   rpBody.innerHTML=`
     ${deviceImageBlock(c,'cam')}
-    <div class="ep-section">Identity</div>
-    <div class="ep-row"><label class="ep-lbl">Name</label><input class="ep-in" id="cam-name" value="${esc(c.name)}" data-input-action="upd-cam"/></div>
-    <div class="ep-row"><label class="ep-lbl">Model</label><select class="ep-sel" id="cam-model" data-input-action="upd-cam">${mOpts}</select></div>
-    <div class="ep-row"><label class="ep-lbl">Resolution</label>
+    <div class="ep-section" data-i18n="panel.identity">Identity</div>
+    <div class="ep-row"><label class="ep-lbl" data-i18n="settings.name">Name</label><input class="ep-in" id="cam-name" value="${esc(c.name)}" data-input-action="upd-cam"/></div>
+    <div class="ep-row"><label class="ep-lbl" data-i18n="inventory.model">Model</label><select class="ep-sel" id="cam-model" data-input-action="upd-cam">${mOpts}</select></div>
+    <div class="ep-row"><label class="ep-lbl" data-i18n="panel.resolution">Resolution</label>
       <select class="ep-sel" id="cam-res" data-input-action="upd-cam">
         ${['8MP','4K','5MP','4MP','2MP','12MP','1080p','720p'].map(r=>`<option${c.resolution===r?' selected':''}>${r}</option>`).join('')}
       </select>
     </div>
-    <div class="ep-section">Lens</div>
+    <div class="ep-section" data-i18n="panel.lens">Lens</div>
     <div class="ep-row ep-slider-row">
-      <label class="ep-lbl">Field of View</label>
+      <label class="ep-lbl" data-i18n="panel.fov">Field of View</label>
       <input class="ep-rng" id="cam-fov" type="range" min="10" max="360" value="${Math.round(c.fov||80)}" data-input-action="upd-cam-fov"/>
       <span class="ep-rng-val" id="cam-fov-v">${Math.round(c.fov||80)}°</span>
     </div>
     <div class="ep-row ep-slider-row">
-      <label class="ep-lbl">View Range</label>
+      <label class="ep-lbl" data-i18n="panel.range">View Range</label>
       <input class="ep-rng" id="cam-range" type="range" min="20" max="400" value="${Math.round(c.range||80)}" data-input-action="upd-cam-range"/>
       <span class="ep-rng-val" id="cam-range-v">${realR}m</span>
     </div>
     <div class="ep-row ep-slider-row">
-      <label class="ep-lbl">Heading</label>
+      <label class="ep-lbl" data-i18n="panel.heading">Heading</label>
       <input class="ep-rng" id="cam-heading" type="range" min="0" max="359" value="${Math.round(c.heading||0)}" data-input-action="upd-cam-heading"/>
       <span class="ep-rng-val" id="cam-heading-v">${Math.round(c.heading||0)}°</span>
     </div>
     <div class="ep-section">DORI (IEC 62676-4)</div>
     <div class="ep-row" style="font-family:'Share Tech Mono';font-size:11px;line-height:1.7;display:block">
       ${doriDistancesM(c.resolution||'4K',Math.max(10,Math.min(360,c.fov||80))).map(b=>
-        `<span style="color:${b.color}">●</span> ${esc(b.label)} (${b.ppm} px/m) ≤ ${b.m>=100?Math.round(b.m):b.m.toFixed(1)} m<br>`).join('')}
+        `<span style="color:${b.color}">●</span> ${panelText('panel.dori.'+b.key)} (${b.ppm} px/m) ≤ ${b.m>=100?Math.round(b.m):b.m.toFixed(1)} m<br>`).join('')}
     </div>
-    <div class="ep-section">Recording</div>
-    <div class="ep-row"><label class="ep-lbl">Bitrate (Mbps)</label><input class="ep-in ep-mono" id="cam-bitrate" type="number" min="0" step="0.5" value="${c.bitrateMbps||''}" data-input-action="upd-cam" placeholder="auto: ${cameraBitrateMbps(c.resolution||'4K',SETTINGS.storageCodec)}"/></div>
-    <div class="ep-row"><label class="ep-lbl">Storage</label><span class="ep-rng-val" id="cam-storage-v">${_camStorageLabel(c)}</span></div>
-    <div class="ep-section">Color</div>
+    <div class="ep-section" data-i18n="panel.recording">Recording</div>
+    <div class="ep-row"><label class="ep-lbl" data-i18n="panel.bitrate">Bitrate (Mbps)</label><input class="ep-in ep-mono" id="cam-bitrate" type="number" min="0" step="0.5" value="${c.bitrateMbps||''}" data-input-action="upd-cam" data-i18n-placeholder="panel.auto_bitrate" data-i18n-vars="${esc(JSON.stringify({rate:cameraBitrateMbps(c.resolution||'4K',SETTINGS.storageCodec)}))}"/></div>
+    <div class="ep-row"><label class="ep-lbl" data-i18n="panel.storage">Storage</label><span class="ep-rng-val" id="cam-storage-v">${_camStorageLabel(c)}</span></div>
+    <div class="ep-section" data-i18n="panel.color">Color</div>
     <div class="color-swatches">
       ${AP_COLORS.map(col=>{
         const isSel=(c.color||'')===col.value;
-        return `<button class="color-swatch${col.value?'':' color-default'}${isSel?' on':''}" ${col.value?`style="background:${col.value}"`:''} data-action="set-cam-color" data-arg="${esc(col.value)}" title="${esc(col.label)}" aria-label="${esc(col.label)}"></button>`;
+        return `<button class="color-swatch${col.value?'':' color-default'}${isSel?' on':''}" ${col.value?`style="background:${col.value}"`:''} data-action="set-cam-color" data-arg="${esc(col.value)}" data-i18n-title="panel.color.${col.label.toLowerCase()}" data-i18n-aria-label="panel.color.${col.label.toLowerCase()}" title="${esc(col.label)}" aria-label="${esc(col.label)}"></button>`;
       }).join('')}
     </div>
-    <div class="ep-section">Network / PoE</div>
-    <div class="ep-row"><label class="ep-lbl">IP Address</label><input class="ep-in ep-mono" id="cam-ip" value="${esc(c.ip||'')}" data-input-action="upd-cam" placeholder="192.168.1.x"/><button class="btn" style="flex:0 0 auto;padding:4px 8px" data-action="suggest-ip-cam" title="Suggest next free IP in this device's VLAN subnet">IP+</button></div>
-    <div class="ep-row"><label class="ep-lbl">MAC Address</label><input class="ep-in ep-mono" id="cam-mac" value="${esc(c.mac||'')}" data-input-action="upd-cam" placeholder="aa:bb:cc:dd:ee:ff"/></div>
-    <div class="ep-row"><label class="ep-lbl">Switch</label>
+    <div class="ep-section" data-i18n="panel.network_poe">Network / PoE</div>
+    <div class="ep-row"><label class="ep-lbl" data-i18n="panel.ip">IP Address</label><input class="ep-in ep-mono" id="cam-ip" value="${esc(c.ip||'')}" data-input-action="upd-cam" placeholder="192.168.1.x"/><button class="btn" style="flex:0 0 auto;padding:4px 8px" data-action="suggest-ip-cam" title="Suggest next free IP in this device's VLAN subnet" data-i18n-title="panel.suggest_ip">IP+</button></div>
+    <div class="ep-row"><label class="ep-lbl" data-i18n="panel.mac">MAC Address</label><input class="ep-in ep-mono" id="cam-mac" value="${esc(c.mac||'')}" data-input-action="upd-cam" placeholder="aa:bb:cc:dd:ee:ff"/></div>
+    <div class="ep-row"><label class="ep-lbl" data-i18n="legend.switch">Switch</label>
       <select class="ep-sel" id="cam-sw" data-input-action="upd-cam">
-        <option value=""${!c.swId?' selected':''}>— None —</option>${swOptions}
+        <option value=""${!c.swId?' selected':''} data-i18n="panel.none">— None —</option>${swOptions}
       </select>
     </div>
-    <div class="ep-row"><label class="ep-lbl">Switch Port</label>${c.swId
+    <div class="ep-row"><label class="ep-lbl" data-i18n="panel.switch_port">Switch Port</label>${c.swId
       ? portControl(devSwitchPorts(c),c.port,'id="cam-port" data-input-action="upd-cam"')
-      : `<input class="ep-in" id="cam-port" value="${esc(c.port||'')}" data-input-action="upd-cam" placeholder="Assign a switch first" disabled/>`}</div>
+      : `<input class="ep-in" id="cam-port" value="${esc(c.port||'')}" data-input-action="upd-cam" placeholder="Assign a switch first" data-i18n-placeholder="panel.assign_switch" disabled/>`}</div>
     <div class="ep-row"><label class="ep-lbl">VLAN</label><input class="ep-in" id="cam-vlan" list="vlan-list" value="${esc(c.vlan||'')}" data-input-action="upd-cam" placeholder="20"/>${vlanDatalist()}</div>
     ${inventoryBlock(c,'cam','upd-cam')}
-    <div class="ep-section">Options</div>
-    <label class="ep-check"><input type="checkbox" ${c.locked?'checked':''} data-change-action="toggle-lock"/><span>Lock position</span></label>
+    <div class="ep-section" data-i18n="panel.options">Options</div>
+    <label class="ep-check"><input type="checkbox" ${c.locked?'checked':''} data-change-action="toggle-lock"/><span data-i18n="panel.lock">Lock position</span></label>
     ${credsBlock(c)}
-    <div class="ep-section">Notes</div>
-    <div class="ep-row"><textarea class="ep-txt" id="cam-notes" rows="3" data-input-action="upd-cam" placeholder="Mount type, lens info, install notes…">${esc(c.notes||'')}</textarea></div>
-    <button class="btn ep-del" data-action="ask-del">✕ Delete Camera</button>`;
+    <div class="ep-section" data-i18n="panel.notes">Notes</div>
+    <div class="ep-row"><textarea class="ep-txt" id="cam-notes" rows="3" data-input-action="upd-cam" placeholder="Mount type, lens info, install notes…" data-i18n-placeholder="panel.camera_notes">${esc(c.notes||'')}</textarea></div>
+    <button class="btn ep-del" data-action="ask-del" data-i18n="panel.delete_camera">✕ Delete Camera</button>`;
+  localizeDOM(rpBody);
   _wireDeviceImg();
 }
 function updCam(){
@@ -4814,79 +4819,80 @@ function renderAPPanel(){
   const realR=Math.round(ap.r*(scaleM/100));
   rpBody.innerHTML=`
     ${deviceImageBlock(ap,'ap')}
-    <div class="ep-section">Identity</div>
-    <div class="ep-row"><label class="ep-lbl">Name</label><input class="ep-in" id="ep-name" value="${ap.name}" data-input-action="upd-ap"/></div>
-    <div class="ep-row"><label class="ep-lbl">AP Model</label><select class="ep-sel" id="ep-model" data-input-action="upd-ap">${mOpts}</select></div>
-    <div class="ep-row"><label class="ep-lbl">Frequency</label>
+    <div class="ep-section" data-i18n="panel.identity">Identity</div>
+    <div class="ep-row"><label class="ep-lbl" data-i18n="settings.name">Name</label><input class="ep-in" id="ep-name" value="${ap.name}" data-input-action="upd-ap"/></div>
+    <div class="ep-row"><label class="ep-lbl" data-i18n="panel.ap_model">AP Model</label><select class="ep-sel" id="ep-model" data-input-action="upd-ap">${mOpts}</select></div>
+    <div class="ep-row"><label class="ep-lbl" data-i18n="panel.frequency">Frequency</label>
       <select class="ep-sel" id="ep-freq" data-input-action="upd-ap">
         <option ${ap.freq==='2.4 / 5 GHz'?'selected':''}>2.4 / 5 GHz</option>
-        <option ${ap.freq==='5 GHz only'?'selected':''}>5 GHz only</option>
-        <option ${ap.freq==='2.4 GHz only'?'selected':''}>2.4 GHz only</option>
+        <option value="5 GHz only" data-i18n="panel.freq_5" ${ap.freq==='5 GHz only'?'selected':''}>5 GHz only</option>
+        <option value="2.4 GHz only" data-i18n="panel.freq_24" ${ap.freq==='2.4 GHz only'?'selected':''}>2.4 GHz only</option>
         <option ${ap.freq==='6 GHz (WiFi 6E)'?'selected':''}>6 GHz (WiFi 6E)</option>
       </select></div>
-    <div class="ep-section">Signal</div>
+    <div class="ep-section" data-i18n="panel.signal">Signal</div>
     <div class="sig-chips">
-      <div class="sig-chip ${ap.sig==='strong'?'on':''}" data-action="set-sig" data-arg="strong">Strong</div>
-      <div class="sig-chip ${ap.sig==='medium'?'on':''}" data-action="set-sig" data-arg="medium">Medium</div>
-      <div class="sig-chip ${ap.sig==='weak'?'on':''}" data-action="set-sig" data-arg="weak">Weak</div>
+      <div class="sig-chip ${ap.sig==='strong'?'on':''}" data-action="set-sig" data-arg="strong" data-i18n="panel.strong">Strong</div>
+      <div class="sig-chip ${ap.sig==='medium'?'on':''}" data-action="set-sig" data-arg="medium" data-i18n="panel.medium">Medium</div>
+      <div class="sig-chip ${ap.sig==='weak'?'on':''}" data-action="set-sig" data-arg="weak" data-i18n="panel.weak">Weak</div>
     </div>
-    <div class="ep-section">Color</div>
+    <div class="ep-section" data-i18n="panel.color">Color</div>
     <div class="color-swatches">
       ${AP_COLORS.map(c=>{
         const isSel=(ap.color||'')===c.value;
         const swatchStyle=c.value?`style="background:${c.value}"`:'class-default';
-        return `<button class="color-swatch${c.value?'':' color-default'}${isSel?' on':''}" ${c.value?`style="background:${c.value}"`:''} data-action="set-color" data-arg="${esc(c.value)}" title="${esc(c.label)}" aria-label="${esc(c.label)}"></button>`;
+        return `<button class="color-swatch${c.value?'':' color-default'}${isSel?' on':''}" ${c.value?`style="background:${c.value}"`:''} data-action="set-color" data-arg="${esc(c.value)}" data-i18n-title="panel.color.${c.label.toLowerCase()}" data-i18n-aria-label="panel.color.${c.label.toLowerCase()}" title="${esc(c.label)}" aria-label="${esc(c.label)}"></button>`;
       }).join('')}
     </div>
-    <div class="ep-section">Coverage Range</div>
+    <div class="ep-section" data-i18n="panel.coverage_range">Coverage Range</div>
     <div class="ep-row ep-slider-row">
       <input class="ep-rng" id="ep-r" type="range" min="15" max="500" value="${Math.round(ap.r)}" data-input-action="upd-ap-r"/>
       <span class="ep-rng-val" id="ep-rv">${realR}m</span>
     </div>
-    <div class="ep-section">Antenna Pattern</div>
-    <div class="ep-row"><label class="ep-lbl">Pattern</label>
+    <div class="ep-section" data-i18n="panel.antenna">Antenna Pattern</div>
+    <div class="ep-row"><label class="ep-lbl" data-i18n="panel.pattern">Pattern</label>
       <select class="ep-sel" id="ep-pattern" data-input-action="upd-ap">
-        ${AP_PATTERN_KEYS.map(k=>`<option value="${k}"${(ap.pattern||'omni')===k?' selected':''}>${esc(AP_PATTERNS[k].label)}</option>`).join('')}
+        ${AP_PATTERN_KEYS.map(k=>`<option value="${k}"${(ap.pattern||'omni')===k?' selected':''} data-i18n="panel.pattern.${k}">${esc(AP_PATTERNS[k].label)}</option>`).join('')}
       </select>
     </div>
     <div class="ep-row ep-slider-row" id="ep-heading-row" style="${(ap.pattern&&ap.pattern!=='omni'&&ap.pattern!=='ceiling')?'':'display:none'}">
-      <label class="ep-lbl">Heading</label>
+      <label class="ep-lbl" data-i18n="panel.heading">Heading</label>
       <input class="ep-rng" id="ep-heading" type="range" min="0" max="359" value="${Math.round(ap.heading||0)}" data-input-action="upd-ap-heading"/>
       <span class="ep-rng-val" id="ep-heading-v">${Math.round(ap.heading||0)}°</span>
     </div>
-    <div class="ep-section">Radio</div>
-    <div class="ep-row"><label class="ep-lbl">Channel</label><input class="ep-in ep-mono" id="ep-channel" value="${esc(ap.channel||'auto')}" data-input-action="upd-ap" placeholder="auto · 6 · 36 · 149 …"/></div>
-    <div class="ep-row"><label class="ep-lbl">Width (MHz)</label>
+    <div class="ep-section" data-i18n="panel.radio">Radio</div>
+    <div class="ep-row"><label class="ep-lbl" data-i18n="panel.channel">Channel</label><input class="ep-in ep-mono" id="ep-channel" value="${esc(ap.channel||'auto')}" data-input-action="upd-ap" placeholder="auto · 6 · 36 · 149 …"/></div>
+    <div class="ep-row"><label class="ep-lbl" data-i18n="panel.width">Width (MHz)</label>
       <select class="ep-sel" id="ep-chanwidth" data-input-action="upd-ap">
         ${CHANNEL_WIDTHS.map(cw=>`<option value="${cw}"${(ap.chanWidth||20)===cw?' selected':''}>${cw} MHz${cw===320?' (WiFi 7)':''}</option>`).join('')}
       </select></div>
-    <div class="ep-row"><label class="ep-lbl">TX Power</label><input class="ep-in ep-mono" id="ep-txpower" value="${esc(ap.txPower||'auto')}" data-input-action="upd-ap" placeholder="auto · low · medium · high · 20 dBm"/></div>
-    <div class="ep-section">Capacity</div>
-    <div class="ep-row"><label class="ep-lbl">Clients</label><input class="ep-in ep-mono" id="ep-clients" type="number" min="0" max="500" value="${ap.capacityClients??25}" data-input-action="upd-ap" title="Expected concurrent clients on this AP"/></div>
-    <div class="ep-row"><label class="ep-lbl">Airtime est.</label><span class="ep-rng-val" id="ep-airtime-v">${_airtimeLabel(ap)}</span></div>
-    <div class="ep-section">Network Info</div>
-    <div class="ep-row"><label class="ep-lbl">IP Address</label><input class="ep-in" id="ep-ip" value="${esc(ap.ip||'')}" data-input-action="upd-ap" placeholder="192.168.1.x"/><button class="btn" style="flex:0 0 auto;padding:4px 8px" data-action="suggest-ip-ap" title="Suggest next free IP in this device's VLAN subnet">IP+</button></div>
-    <div class="ep-row"><label class="ep-lbl">MAC Address</label><input class="ep-in ep-mono" id="ep-mac" value="${ap.mac||''}" data-input-action="upd-ap" placeholder="aa:bb:cc:dd:ee:ff"/></div>
-    <div class="ep-row"><label class="ep-lbl">Switch</label>
+    <div class="ep-row"><label class="ep-lbl" data-i18n="panel.tx_power">TX Power</label><input class="ep-in ep-mono" id="ep-txpower" value="${esc(ap.txPower||'auto')}" data-input-action="upd-ap" placeholder="auto · low · medium · high · 20 dBm"/></div>
+    <div class="ep-section" data-i18n="panel.capacity">Capacity</div>
+    <div class="ep-row"><label class="ep-lbl" data-i18n="panel.clients">Clients</label><input class="ep-in ep-mono" id="ep-clients" type="number" min="0" max="500" value="${ap.capacityClients??25}" data-input-action="upd-ap" title="Expected concurrent clients on this AP" data-i18n-title="panel.clients_tip"/></div>
+    <div class="ep-row"><label class="ep-lbl" data-i18n="panel.airtime">Airtime est.</label><span class="ep-rng-val" id="ep-airtime-v">${_airtimeLabel(ap)}</span></div>
+    <div class="ep-section" data-i18n="panel.network">Network Info</div>
+    <div class="ep-row"><label class="ep-lbl" data-i18n="panel.ip">IP Address</label><input class="ep-in" id="ep-ip" value="${esc(ap.ip||'')}" data-input-action="upd-ap" placeholder="192.168.1.x"/><button class="btn" style="flex:0 0 auto;padding:4px 8px" data-action="suggest-ip-ap" title="Suggest next free IP in this device's VLAN subnet" data-i18n-title="panel.suggest_ip">IP+</button></div>
+    <div class="ep-row"><label class="ep-lbl" data-i18n="panel.mac">MAC Address</label><input class="ep-in ep-mono" id="ep-mac" value="${ap.mac||''}" data-input-action="upd-ap" placeholder="aa:bb:cc:dd:ee:ff"/></div>
+    <div class="ep-row"><label class="ep-lbl" data-i18n="legend.switch">Switch</label>
       <select class="ep-sel" id="ep-sw" data-input-action="upd-ap">
-        <option value=""${!ap.swId?' selected':''}>— None —</option>
+        <option value=""${!ap.swId?' selected':''} data-i18n="panel.none">— None —</option>
         ${SWS().map(sw=>`<option value="${esc(sw.id)}"${sw.id===ap.swId?' selected':''}>${esc(sw.name)} · ${esc(sw.model||'')}</option>`).join('')}
       </select>
     </div>
-    <div class="ep-row"><label class="ep-lbl">Switch Port</label>${ap.swId
+    <div class="ep-row"><label class="ep-lbl" data-i18n="panel.switch_port">Switch Port</label>${ap.swId
       ? portControl(devSwitchPorts(ap),ap.port,'id="ep-port" data-input-action="upd-ap"')
-      : `<input class="ep-in" id="ep-port" value="${esc(ap.port||'')}" data-input-action="upd-ap" placeholder="Assign a switch first" disabled/>`}</div>
+      : `<input class="ep-in" id="ep-port" value="${esc(ap.port||'')}" data-input-action="upd-ap" placeholder="Assign a switch first" data-i18n-placeholder="panel.assign_switch" disabled/>`}</div>
     <div class="ep-row"><label class="ep-lbl">VLAN</label><input class="ep-in" id="ep-vlan" list="vlan-list" value="${esc(ap.vlan||'')}" data-input-action="upd-ap" placeholder="10"/>${vlanDatalist()}</div>
     ${inventoryBlock(ap,'ep','upd-ap')}
-    <div class="ep-section">Options</div>
-    <label class="ep-check"><input type="checkbox" ${ap.locked?'checked':''} data-change-action="toggle-lock"/><span>Lock position</span></label>
+    <div class="ep-section" data-i18n="panel.options">Options</div>
+    <label class="ep-check"><input type="checkbox" ${ap.locked?'checked':''} data-change-action="toggle-lock"/><span data-i18n="panel.lock">Lock position</span></label>
     <div class="ep-btn-row">
-      <button class="btn" data-action="duplicate">⧉ Duplicate</button>
+      <button class="btn" data-action="duplicate">⧉ <span data-i18n="help.duplicate">Duplicate</span></button>
     </div>
     ${credsBlock(ap)}
-    <div class="ep-section">Notes</div>
-    <div class="ep-row"><textarea class="ep-txt" id="ep-notes" rows="4" data-input-action="upd-ap" placeholder="Cable run, switch port, install notes...">${ap.notes||''}</textarea></div>
-    <button class="btn ep-del" data-action="ask-del">✕ Delete AP</button>`;
+    <div class="ep-section" data-i18n="panel.notes">Notes</div>
+    <div class="ep-row"><textarea class="ep-txt" id="ep-notes" rows="4" data-input-action="upd-ap" placeholder="Cable run, switch port, install notes..." data-i18n-placeholder="panel.ap_notes">${ap.notes||''}</textarea></div>
+    <button class="btn ep-del" data-action="ask-del" data-i18n="panel.delete_ap">✕ Delete AP</button>`;
+  localizeDOM(rpBody);
   _wireDeviceImg();
 }
 
@@ -4925,41 +4931,42 @@ function renderSWPanel(){
   }).join('');
   const statusColor=a.overBudget||a.overPorts||a.classFails.length?'#c0382b':'#1e7d3c';
   const portTxt=a.ports!=null?`${a.used}/${a.ports}`:`${a.used}`;
-  const statusLine=`${a.draw.toFixed(0)} W${a.budget>0?` / ${a.budget} W${a.headroom!=null?` (${a.headroom}% free)`:''}`:''} · ${portTxt} ports${a.swCls?` · ${a.swCls.toUpperCase()}`:' · no PoE'}`;
+  const statusLine=`${a.draw.toFixed(0)} W${a.budget>0?` / ${esc(a.budget)} W${a.headroom!=null?` (${panelText('panel.free',{n:a.headroom})})`:''}`:''} · ${esc(portTxt)} ports${a.swCls?` · ${esc(a.swCls.toUpperCase())}`:' · '+panelText('panel.no_poe')}`;
   rpBody.innerHTML=`
     ${deviceImageBlock(sw,'sw')}
-    <div class="ep-section">Identity</div>
-    <div class="ep-row"><label class="ep-lbl">Name</label><input class="ep-in" id="sw-name" value="${esc(sw.name)}" data-input-action="upd-sw"/></div>
-    <div class="ep-row"><label class="ep-lbl">Model</label><select class="ep-sel" id="sw-model" data-input-action="upd-sw">${mOpts}</select></div>
+    <div class="ep-section" data-i18n="panel.identity">Identity</div>
+    <div class="ep-row"><label class="ep-lbl" data-i18n="settings.name">Name</label><input class="ep-in" id="sw-name" value="${esc(sw.name)}" data-input-action="upd-sw"/></div>
+    <div class="ep-row"><label class="ep-lbl" data-i18n="inventory.model">Model</label><select class="ep-sel" id="sw-model" data-input-action="upd-sw">${mOpts}</select></div>
     <div class="ep-row" id="sw-custom-row" style="${isCustom?'':'display:none'}">
-      <label class="ep-lbl">Custom Model Name</label>
-      <input class="ep-in" id="sw-model-custom" value="${isCustom?esc(sw.model||''):''}" data-input-action="upd-sw" placeholder="Enter model name"/>
+      <label class="ep-lbl" data-i18n="panel.custom_model">Custom Model Name</label>
+      <input class="ep-in" id="sw-model-custom" value="${isCustom?esc(sw.model||''):''}" data-input-action="upd-sw" placeholder="Enter model name" data-i18n-placeholder="panel.enter_model"/>
     </div>
-    <div class="ep-row"><label class="ep-lbl">IP Address</label><input class="ep-in ep-mono" id="sw-ip" value="${esc(sw.ip||'')}" data-input-action="upd-sw" placeholder="192.168.1.1"/></div>
-    <div class="ep-row"><label class="ep-lbl">MAC Address</label><input class="ep-in ep-mono" id="sw-mac" value="${esc(sw.mac||'')}" data-input-action="upd-sw" placeholder="aa:bb:cc:dd:ee:ff"/></div>
-    <div class="ep-row"><label class="ep-lbl">PoE Budget (W)</label><input class="ep-in ep-mono" id="sw-poe" type="number" min="0" value="${sw.poeBudget||0}" data-input-action="upd-sw" placeholder="0 for non-PoE"/></div>
-    <div class="ep-row"><label class="ep-lbl">Port Count</label><input class="ep-in ep-mono" id="sw-ports" type="number" min="0" value="${sw.ports||''}" data-input-action="upd-sw" placeholder="${derivedPorts!=null?derivedPorts:'auto'}"/></div>
-    <div class="ep-row"><label class="ep-lbl">Uplink To</label>
+    <div class="ep-row"><label class="ep-lbl" data-i18n="panel.ip">IP Address</label><input class="ep-in ep-mono" id="sw-ip" value="${esc(sw.ip||'')}" data-input-action="upd-sw" placeholder="192.168.1.1"/></div>
+    <div class="ep-row"><label class="ep-lbl" data-i18n="panel.mac">MAC Address</label><input class="ep-in ep-mono" id="sw-mac" value="${esc(sw.mac||'')}" data-input-action="upd-sw" placeholder="aa:bb:cc:dd:ee:ff"/></div>
+    <div class="ep-row"><label class="ep-lbl" data-i18n="panel.budget">PoE Budget (W)</label><input class="ep-in ep-mono" id="sw-poe" type="number" min="0" value="${sw.poeBudget||0}" data-input-action="upd-sw" placeholder="0 for non-PoE" data-i18n-placeholder="panel.non_poe"/></div>
+    <div class="ep-row"><label class="ep-lbl" data-i18n="panel.ports">Port Count</label><input class="ep-in ep-mono" id="sw-ports" type="number" min="0" value="${sw.ports||''}" data-input-action="upd-sw" placeholder="${derivedPorts!=null?derivedPorts:'auto'}"/></div>
+    <div class="ep-row"><label class="ep-lbl" data-i18n="panel.uplink">Uplink To</label>
       <select class="ep-sel" id="sw-uplink" data-input-action="upd-sw">
-        <option value=""${!sw.uplinkId?' selected':''}>— None (root) —</option>${uplinkOpts}
+        <option value=""${!sw.uplinkId?' selected':''} data-i18n="panel.root">— None (root) —</option>${uplinkOpts}
       </select>
     </div>
-    <div class="ep-row" style="font-family:'Share Tech Mono';font-size:11px;color:${statusColor};opacity:.9">${esc(statusLine)}</div>
-    <div class="ep-section">Connected Devices (${a.used})</div>
+    <div class="ep-row" style="font-family:'Share Tech Mono';font-size:11px;color:${statusColor};opacity:.9">${statusLine}</div>
+    <div class="ep-section">${panelText('panel.connected',{n:a.used})}</div>
     ${a.clients.length
       ? a.clients.map(c=>`<div class="ep-row"><label class="ep-lbl">${c.type==='AP'?'●':'◉'} ${esc(c.name)}</label>${portControl(a.ports,c.port,`data-input-action="upd-sw-port" data-dev-id="${esc(c.dev.id)}" data-dev-type="${c.type==='AP'?'ap':'cam'}"`)}</div>`).join('')
-      : `<div class="ep-row" style="opacity:.6;font-size:11px">None assigned. Set this switch on an AP/camera, or use ⚯ Auto-cable.</div>`}
-    <div class="ep-section">Icon Size</div>
+      : `<div class="ep-row" style="opacity:.6;font-size:11px" data-i18n="panel.no_assigned">None assigned. Set this switch on an AP/camera, or use ⚯ Auto-cable.</div>`}
+    <div class="ep-section" data-i18n="panel.icon_size">Icon Size</div>
     <div class="ep-row ep-slider-row">
       <input class="ep-rng" id="sw-size" type="range" min="10" max="80" value="${sw.size||22}" data-input-action="upd-sw-size"/>
       <span class="ep-rng-val" id="sw-size-v">${sw.size||22}px</span>
     </div>
     ${inventoryBlock(sw,'sw','upd-sw')}
     ${credsBlock(sw)}
-    <div class="ep-section">Notes</div>
-    <div class="ep-row"><textarea class="ep-txt" id="sw-notes" rows="3" data-input-action="upd-sw" placeholder="Location, uplink, config notes...">${sw.notes||''}</textarea></div>
-    <label class="ep-check"><input type="checkbox" ${sw.locked?'checked':''} data-change-action="toggle-lock"/><span>Lock position</span></label>
-    <button class="btn ep-del" data-action="ask-del">✕ Delete</button>`;
+    <div class="ep-section" data-i18n="panel.notes">Notes</div>
+    <div class="ep-row"><textarea class="ep-txt" id="sw-notes" rows="3" data-input-action="upd-sw" placeholder="Location, uplink, config notes..." data-i18n-placeholder="panel.switch_notes">${sw.notes||''}</textarea></div>
+    <label class="ep-check"><input type="checkbox" ${sw.locked?'checked':''} data-change-action="toggle-lock"/><span data-i18n="panel.lock">Lock position</span></label>
+    <button class="btn ep-del" data-action="ask-del">✕ <span data-i18n="modal.delete">Delete</span></button>`;
+  localizeDOM(rpBody);
   _wireDeviceImg();
 }
 
@@ -4984,7 +4991,7 @@ function updAP(){
   const pwEl=document.getElementById('ep-txpower');if(pwEl)ap.txPower=pwEl.value;
   const clEl=document.getElementById('ep-clients');
   if(clEl){const n=parseInt(clEl.value,10);if(Number.isFinite(n)&&n>=0)ap.capacityClients=n;}
-  const atEl=document.getElementById('ep-airtime-v');if(atEl)atEl.textContent=_airtimeLabel(ap);
+  const atEl=document.getElementById('ep-airtime-v');if(atEl)atEl.innerHTML=_airtimeLabel(ap);
   ap.ip=document.getElementById('ep-ip').value;
   ap.mac=document.getElementById('ep-mac').value;
   const prevSwId=ap.swId;

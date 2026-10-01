@@ -59,4 +59,30 @@ describe('static interface localization',()=>{
     expect(t('tb.save')).toBe('Save');
     setLang('unknown');expect(getLang()).toBe('en');
   });
+
+  it('preserves literal device values when translating parameterized panel text and attributes',()=>{
+    const select=document.createElement('select');
+    const group=document.createElement('optgroup');
+    group.setAttribute('data-i18n-label','panel.other');
+    const option=document.createElement('option');
+    const port='Port $& <custom> "A"';
+    option.value=port;
+    option.setAttribute('data-i18n','panel.custom_port');
+    option.setAttribute('data-i18n-vars',JSON.stringify({port}));
+    group.append(option);select.append(group);document.body.append(select);
+    const host=document.createElement('input');
+    host.value='Identity';
+    host.setAttribute('data-i18n-placeholder','panel.host_default');
+    host.setAttribute('data-i18n-vars',JSON.stringify({ip:'192.0.2.10'}));
+    document.body.append(host);
+    for(const lang of ['en','fr','en']){
+      setLang(lang);localizeDOM();
+      expect(select.value).toBe(port);
+      expect(option.textContent).toBe(port+(lang==='fr'?' (personnalisé)':' (custom)'));
+      expect(option.childElementCount).toBe(0);
+      expect(group.label).toBe(lang==='fr'?'Autre':'Other');
+      expect(host.value).toBe('Identity');
+      expect(host.placeholder).toBe(t('panel.host_default',{ip:'192.0.2.10'}));
+    }
+  });
 });
