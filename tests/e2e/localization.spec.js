@@ -1,0 +1,72 @@
+import {test,expect} from '@playwright/test';
+
+const languageSelect=page=>page.locator('.ep-row').filter({has:page.locator('[data-i18n="settings.language"]')}).locator('select');
+
+test('language preview updates the open form and toolbar, preserves edits, and cancels cleanly',async({page})=>{
+  const errors=[];page.on('pageerror',e=>errors.push(e.message));
+  await page.goto('/');
+  await expect(page.locator('html')).toHaveAttribute('lang','en');
+  await page.locator('[data-action="show-settings"]').click();
+  const company=page.locator('.ep-row').filter({has:page.locator('[data-i18n="settings.company"]')}).locator('input');
+  await company.fill('Coverage');
+  await languageSelect(page).selectOption('fr');
+  await expect(page.locator('#mdl-title')).toHaveText('Paramètres du projet');
+  await expect(page.locator('[data-action="save"]')).toContainText('Enregistrer');
+  await expect(company).toHaveValue('Coverage');
+  await page.locator('[data-i18n="settings.add_vlan"]').click();
+  await expect(page.locator('input[data-i18n-placeholder="settings.name"]').last()).toHaveAttribute('placeholder','Nom');
+  await languageSelect(page).selectOption('en');
+  await expect(page.locator('#mdl-title')).toHaveText('Project Settings');
+  await expect(company).toHaveValue('Coverage');
+  await languageSelect(page).selectOption('fr');
+  await page.locator('[data-action="modal-close"]').click();
+  await expect(page.locator('html')).toHaveAttribute('lang','en');
+  await expect(page.locator('#brand-lbl')).not.toHaveText('Coverage Planner');
+  expect(errors).toEqual([]);
+});
+
+test('applied French survives UI refreshes and saving, while legacy projects default to English',async({page})=>{
+  const errors=[];page.on('pageerror',e=>errors.push(e.message));
+  await page.goto('/');
+  await page.locator('[data-action="load-sample"]').click();
+  await expect(page.locator('.ap-grp')).toHaveCount(3);
+  const names=await page.locator('#left-list .li-name').allTextContents();
+  await page.locator('[data-action="show-settings"]').click();
+  await languageSelect(page).selectOption('fr');
+  await page.locator('#mdl-ok').click();
+  await expect(page.locator('html')).toHaveAttribute('lang','fr');
+  await expect(page.locator('#left-list .sec-lbl').first()).toHaveText("Points d'accès");
+  expect(await page.locator('#left-list .li-name').allTextContents()).toEqual(names);
+  await page.locator('#btn-anno').click();
+  await expect(page.locator('#hint-bar')).toContainText('Cliquez pour placer');
+  await expect(page.locator('#anno-sub-bar')).toBeVisible();
+  // Single-key shortcuts intentionally ignore focused toolbar buttons.
+  await page.locator('#btn-anno').evaluate(button=>button.blur());
+  await page.keyboard.press('s');
+  await expect(page.locator('#btn-sel')).toHaveClass(/active/);
+  await expect(page.locator('#hint-bar')).toContainText('Cliquez pour sélectionner');
+  await page.locator('#sb-search').fill('no-such-device');
+  await page.locator('#sb-search-clear').click();
+  await expect(page.locator('#left-list .sec-lbl').first()).toHaveText("Points d'accès");
+  await page.locator('[data-action="show-help"]').click();
+  await expect(page.locator('#mdl-title')).toHaveText('Raccourcis clavier');
+  await expect(page.locator('[data-action="modal-close"]')).toHaveText('Fermer');
+  await page.keyboard.press('Escape');
+  await page.locator('[data-action="show-settings"]').click();
+  await expect(languageSelect(page)).toHaveValue('fr');
+  await page.locator('[data-action="modal-close"]').click();
+  const downloadPromise=page.waitForEvent('download');
+  await page.locator('[data-action="save"]').click();
+  const download=await downloadPromise;
+  const stream=await download.createReadStream();const chunks=[];
+  for await(const chunk of stream)chunks.push(chunk);
+  const project=JSON.parse(Buffer.concat(chunks).toString('utf8'));
+  expect(project.settings.language).toBe('fr');
+  const models=project.floors[0].APS.map(ap=>ap.model);
+  expect(models).toContain('U6 Pro');
+  delete project.settings.language;
+  await page.locator('#load-up').setInputFiles({name:'legacy.json',mimeType:'application/json',buffer:Buffer.from(JSON.stringify(project))});
+  await expect(page.locator('html')).toHaveAttribute('lang','en');
+  await expect(page.locator('[data-action="save"]')).toContainText('Save');
+  expect(errors).toEqual([]);
+});

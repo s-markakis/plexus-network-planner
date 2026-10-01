@@ -60,7 +60,8 @@ import {encryptObject,decryptObject} from './src/crypto.js';
 // portable single-file build still works from file:// with no external fetch.
 import * as pdfjsLib from 'pdfjs-dist';
 import PdfWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?worker&inline';
-import {t,setLang,getLang,availableLangs} from './src/i18n.js';
+import {t,setLang,getLang,availableLangs,onLanguageChange} from './src/i18n.js';
+import {localizeDOM,localizeText} from './src/localizeDom.js';
 import {detectWalls} from './src/walldetect.js';
 import {parseDxf} from './src/dxf.js';
 import {importEsx,buildEsxZip} from './src/esx.js';
@@ -181,16 +182,7 @@ function buildGroupedOptions(groups,selected){
     return `<optgroup label="${esc(g.label)}">${opts}</optgroup>`;
   }).join('');
 }
-const HINTS={
-  add: 'Click map to place an AP',
-  sel: 'Click an item to select · Shift+click to add to selection · drag to move',
-  dz:  'Click to mark a dead zone',
-  sw:  'Click to place a switch or router',
-  cam: 'Click to place a camera · rotate via heading slider in the panel',
-  ruler:'Click two points to measure · Esc to clear',
-  wall:'Click two points to draw a wall · Shift for 45° · Esc to cancel',
-  survey:'Click where you are standing — the desktop app samples the live WiFi signal there'
-};
+
 
 // Image store (IndexedDB-backed) lives in ./src/imageStore.js. We import
 // idbPutImage / idbGetImage / idbDeleteImage / newImgId / imgCache /
@@ -296,7 +288,7 @@ function renderFloorTabs(){
     // Delete × (only shown when more than one floor exists)
     if(canDelete){
       const x=document.createElement('button');
-      x.className='ftab-del';x.textContent='×';x.title='Delete floor';
+      x.className='ftab-del';x.textContent='×';x.setAttribute('data-i18n-title','help.delete_floor');x.title=t('help.delete_floor');
       x.addEventListener('click',e=>{
         e.stopPropagation();
         askDeleteFloor(i);
@@ -326,7 +318,7 @@ function askDeleteFloor(i){
   const body=total>0
     ? `Delete <strong>${esc(f.name)}</strong>?<br><br>This will remove ${total} item${total===1?'':'s'} on this floor.`
     : `Delete <strong>${esc(f.name)}</strong>?`;
-  showModal('Delete Floor',body,()=>deleteFloor(i));
+  showModal({i18n:'modal.delete_floor'},body,()=>deleteFloor(i));
 }
 function deleteFloor(i){
   if(FLOORS.length<=1)return;
@@ -898,8 +890,8 @@ function showPoESummary(){
   wrap.style.cssText='font-family:Rajdhani,sans-serif;font-size:13px';
   const sws=SWS();
   if(!sws.length){
-    wrap.textContent='No switches placed yet. Drop a switch on the map (W) then assign APs/cameras to it.';
-    showModalNode('PoE Budget',wrap,null);
+    localizeText(wrap,'poe.empty_help');
+    showModalNode({i18n:'poe.title'},wrap,null);
     return;
   }
   let totalDraw=0,totalBudget=0;
@@ -913,7 +905,7 @@ function showPoESummary(){
       <span style="font-family:'Share Tech Mono';color:${a.overBudget?'#c0382b':'#1e7d3c'}">${a.draw.toFixed(1)} W${a.budget>0?` / ${a.budget} W${a.headroom!=null?` · ${a.headroom}%`:''}`:''}</span>`;
     sec.appendChild(head);
     if(!a.clients.length){
-      const empty=document.createElement('div');empty.style.cssText='font-size:11px;opacity:.6;font-style:italic';empty.textContent='No devices assigned.';
+      const empty=document.createElement('div');empty.style.cssText='font-size:11px;opacity:.6;font-style:italic';localizeText(empty,'poe.unassigned');
       sec.appendChild(empty);
     }else{
       for(const c of a.clients){
@@ -933,14 +925,14 @@ function showPoESummary(){
   total.innerHTML=`<span>Total</span><span style="font-family:'Share Tech Mono'">${totalDraw.toFixed(1)} W${totalBudget>0?` / ${totalBudget} W`:''}</span>`;
   wrap.appendChild(total);
   const foot=document.createElement('div');foot.style.cssText='margin-top:12px;display:flex;gap:8px;flex-wrap:wrap';
-  const mkBtn=(label,fn)=>{const b=document.createElement('button');b.className='btn';b.textContent=label;b.addEventListener('click',fn);foot.appendChild(b);};
-  mkBtn('⚯ Auto-assign to nearest switch',()=>{closeModal();autoAssignSwitches();});
-  mkBtn('✓ Validate network',()=>{closeModal();showValidation();});
+  const mkBtn=(label,fn)=>{const b=document.createElement('button');b.className='btn';localizeText(b,label);b.addEventListener('click',fn);foot.appendChild(b);};
+  mkBtn('poe.auto_assign',()=>{closeModal();autoAssignSwitches();});
+  mkBtn('poe.validate',()=>{closeModal();showValidation();});
   wrap.appendChild(foot);
   const hint=document.createElement('div');hint.style.cssText='margin-top:10px;font-size:10px;opacity:.55';
-  hint.textContent='PoE budgets / port counts are set per switch in the switch properties panel.';
+  localizeText(hint,'poe.hint');
   wrap.appendChild(hint);
-  showModalNode('PoE Budget',wrap,null);
+  showModalNode({i18n:'poe.title'},wrap,null);
 }
 
 // ── Auto-assign devices to nearest switch ─────────────────────────────────
@@ -1115,7 +1107,7 @@ function showValidation(){
   }
   if(!hasMap){const n=document.createElement('div');n.style.cssText='margin-top:10px;font-size:10px;opacity:.55';n.textContent='Cable-length checks skipped — no floor plan on this floor.';wrap.appendChild(n);}
   const scope=document.createElement('div');scope.style.cssText='margin-top:8px;font-size:10px;opacity:.55';scope.textContent=`Checked floor "${f.name||''}".`;wrap.appendChild(scope);
-  showModalNode('Network validation',wrap,null);
+  showModalNode({i18n:'modal.validation'},wrap,null);
 }
 
 // ── Topology / rack view ──────────────────────────────────────────────────
@@ -1125,9 +1117,9 @@ function showTopology(){
   const wrap=document.createElement('div');
   wrap.style.cssText='font-family:Rajdhani,sans-serif;font-size:13px';
   const {all,children,roots}=topologyModel();
-  if(!all.length){wrap.textContent='No switches placed yet.';showModalNode('Network topology',wrap,null);return;}
+  if(!all.length){localizeText(wrap,'poe.no_switches');showModalNode({i18n:'modal.topology'},wrap,null);return;}
   const multiFloor=FLOORS.length>1;
-  const th=document.createElement('div');th.style.cssText='font-weight:700;margin-bottom:4px';th.textContent='Uplink tree';wrap.appendChild(th);
+  const th=document.createElement('div');th.style.cssText='font-weight:700;margin-bottom:4px';localizeText(th,'topology.tree');wrap.appendChild(th);
   const tree=document.createElement('div');wrap.appendChild(tree);
   const seen=new Set();
   const renderNode=(e,depth)=>{
@@ -1146,7 +1138,7 @@ function showTopology(){
   roots.forEach(e=>renderNode(e,0));
   all.forEach(e=>{if(!seen.has(e.sw.id))renderNode(e,0);});  // safety net
   // Rack / port grid per switch.
-  const rh=document.createElement('div');rh.style.cssText='font-weight:700;margin:14px 0 6px';rh.textContent='Rack — port usage';wrap.appendChild(rh);
+  const rh=document.createElement('div');rh.style.cssText='font-weight:700;margin:14px 0 6px';localizeText(rh,'topology.rack');wrap.appendChild(rh);
   for(const e of all){
     const a=analyzeSwitch(e.sw,e.floor);
     const unit=document.createElement('div');unit.style.cssText='margin-bottom:8px;padding:6px 8px;border:1px solid var(--ink-04);border-radius:3px';
@@ -1161,7 +1153,7 @@ function showTopology(){
     cl.textContent=`Cabling: ${cable.runs} runs · ~${cable.totalM} m incl. slack (×${routingFactor()} routing) · ~${Math.ceil(cable.totalM/boxM)} box(es)`;
     wrap.appendChild(cl);
   }
-  showModalNode('Network topology',wrap,null);
+  showModalNode({i18n:'modal.topology'},wrap,null);
 }
 
 // ═══ SHARE LINK ═══════════════════════════════════
@@ -1244,12 +1236,12 @@ async function shareLink(){
     }catch{
       // Clipboard blocked (insecure context, perms). Show the URL in a modal.
       const wrap=document.createElement('div');
-      const p=document.createElement('p');p.textContent='Copy this link:';
+      const p=document.createElement('p');localizeText(p,'share.copy');
       const ta=document.createElement('textarea');
       ta.value=url;ta.rows=4;ta.style.cssText='width:100%;font-family:monospace;font-size:11px';
       ta.addEventListener('focus',()=>ta.select());
       wrap.appendChild(p);wrap.appendChild(ta);
-      showModalNode('Share link',wrap,null);
+      showModalNode({i18n:'modal.share'},wrap,null);
       setTimeout(()=>ta.select(),50);
     }
   }catch(err){
@@ -1546,17 +1538,17 @@ function showUnifiDialog(){
   const wrap=document.createElement('div');wrap.className='settings-form';
   const field=(label,type,value,placeholder)=>{
     const row=document.createElement('div');row.className='ep-row';
-    const lbl=document.createElement('label');lbl.className='ep-lbl';lbl.textContent=label;
+    const lbl=document.createElement('label');lbl.className='ep-lbl';localizeText(lbl,label);
     const inp=document.createElement('input');inp.className='ep-in';inp.type=type;
     inp.value=value||'';inp.placeholder=placeholder||'';
     if(type==='password')inp.autocomplete='new-password';
     row.append(lbl,inp);wrap.appendChild(row);
     return inp;
   };
-  const url=field('Controller URL','text',SETTINGS.unifiUrl,'https://192.168.1.1');
-  const site=field('Site','text',SETTINGS.unifiSite||'default','default');
-  const user=field('Username','text',SETTINGS.unifiUser,'admin');
-  const pass=field('Password','password',_unifiPass,'');
+  const url=field('unifi.url','text',SETTINGS.unifiUrl,'https://192.168.1.1');
+  const site=field('unifi.site','text',SETTINGS.unifiSite||'default','default');
+  const user=field('unifi.username','text',SETTINGS.unifiUser,'admin');
+  const pass=field('unifi.password','password',_unifiPass,'');
   const status=document.createElement('div');
   status.style.cssText='font-family:"Share Tech Mono";font-size:11px;white-space:pre-wrap;margin:8px 0;min-height:16px';
   const saveFields=()=>{
@@ -1568,11 +1560,11 @@ function showUnifiDialog(){
   const cfg=()=>({url:SETTINGS.unifiUrl,site:SETTINGS.unifiSite,user:SETTINGS.unifiUser,pass:_unifiPass});
   const btnRow=document.createElement('div');btnRow.className='ep-btn-row';
   const mkBtn=(label,title)=>{
-    const b=document.createElement('button');b.className='btn';b.textContent=label;b.title=title;
+    const b=document.createElement('button');b.className='btn';localizeText(b,label);b.setAttribute('data-i18n-title',title);b.title=t(title);
     btnRow.appendChild(b);return b;
   };
-  const pullBtn=mkBtn('⇊ Pull devices','Fetch the controller device list and fill in IP / firmware / serial / Live status');
-  const pushBtn=mkBtn('⇈ Push channel plan','Write planned channels/width/tx-power to matching APs on the controller');
+  const pullBtn=mkBtn('unifi.pull','unifi.pull_tip');
+  const pushBtn=mkBtn('unifi.push','unifi.push_tip');
   const busy=(on)=>{pullBtn.disabled=on;pushBtn.disabled=on;};
   pullBtn.addEventListener('click',async()=>{
     saveFields();busy(true);status.textContent='Connecting…';
@@ -1598,9 +1590,9 @@ function showUnifiDialog(){
   wrap.appendChild(btnRow);
   wrap.appendChild(status);
   const hint=document.createElement('div');hint.className='ep-hint';
-  hint.textContent='Works with UniFi OS consoles (UDM/UDR/Cloud Key Gen2) and the legacy software controller. The password is kept for this session only — it is never written to the project file or autosave.';
+  localizeText(hint,'unifi.hint');
   wrap.appendChild(hint);
-  showModalNode('UniFi controller sync',wrap,()=>{saveFields();autosave();});
+  showModalNode({i18n:'modal.unifi'},wrap,()=>{saveFields();autosave();});
 }
 
 // ═══ SAVE / LOAD PROJECT ══════════════════════════
@@ -1689,7 +1681,7 @@ function promptPassphrase(message){
     inp.style.cssText='width:100%;margin-top:10px';
     wrap.appendChild(inp);
     let done=false;
-    showModalNode('Credentials passphrase',wrap,()=>{done=true;resolve(inp.value||'');},()=>{if(!done)resolve(null);});
+    showModalNode({i18n:'settings.passphrase'},wrap,()=>{done=true;resolve(inp.value||'');},()=>{if(!done)resolve(null);});
     setTimeout(()=>inp.focus(),50);
   });
 }
@@ -1718,7 +1710,7 @@ function newProject(){
     toast('New project');
   };
   if(hasAny){
-    showModalText('New Project','Start a new project? Unsaved changes will be lost.',doIt);
+    showModalText({i18n:'modal.new'},{i18n:'modal.new_body'},doIt);
   }else{
     doIt();
   }
@@ -1735,7 +1727,7 @@ function loadProject(input){
       applyStoredCatalog();
       PROJECT_REVISIONS=Array.isArray(data.revisions)?data.revisions:[];
       // Apply the persisted UI language (i18n bundle) right away.
-      if(SETTINGS.language)setLang(SETTINGS.language);
+      setLang(SETTINGS.language||'en');
       curFloor=0;selId=null;selType=null;
       syncScaleFromFloor();
       syncNidFromFloors();
@@ -1759,7 +1751,7 @@ async function loadSampleProject(){
     SETTINGS={...DEFAULT_SETTINGS,...(data.settings||{})};
     applyStoredCatalog();
     PROJECT_REVISIONS=Array.isArray(data.revisions)?data.revisions:[];
-    if(SETTINGS.language)setLang(SETTINGS.language);
+    setLang(SETTINGS.language||'en');
     curFloor=0;selId=null;selType=null;
     syncScaleFromFloor();
     syncNidFromFloors();
@@ -1772,11 +1764,12 @@ async function loadSampleProject(){
 // Update the top-bar brand label to whatever the current SETTINGS specify.
 // Called after settings change or a project load.
 function applySettingsToBrand(){
+  setLang(SETTINGS.language||'en');
   const lbl=document.getElementById('brand-lbl');
   if(lbl){
     const co=SETTINGS.company||'Plexus';
     const f=F();
-    lbl.textContent=f&&f.imgName?co+' · '+f.imgName:co+' Planner';
+    lbl.textContent=f&&f.imgName?co+' · '+f.imgName:co+' '+t('app.planner');
   }
   _syncToolbarFromSettings();
 }
@@ -1787,12 +1780,12 @@ function _syncToolbarFromSettings(){
   const modePill=document.getElementById('heat-mode-pill');
   if(modePill){
     const m=SETTINGS.heatmapMode||'rssi';
-    modePill.textContent=(HEATMAP_MODES[m]||HEATMAP_MODES.rssi).label;
+    localizeText(modePill,'heat.metric_'+(HEATMAP_MODES[m]?m:'rssi'));
   }
   const bandPill=document.getElementById('heat-band-pill');
   if(bandPill){
     const b=SETTINGS.heatmapBand||'all';
-    bandPill.textContent=({all:'All',['2.4']:'2.4 GHz',['5']:'5 GHz',['6']:'6 GHz'})[b]||'All';
+    localizeText(bandPill,({'all':'heat.all','2.4':'heat.band_24','5':'heat.band_5','6':'heat.band_6'})[b]||'heat.all');
   }
   const roam=document.getElementById('btn-roaming');
   if(roam)roam.classList.toggle('active',!!SETTINGS.showRoamingOverlap);
@@ -2054,7 +2047,7 @@ function setMode(m){
   // The auto-fade keeps it visible enough to consult but unobtrusive while you work.
   const hintEl=document.getElementById('hint-bar');
   if(hintEl){
-    hintEl.textContent=HINTS[m]||'';
+    localizeText(hintEl,'hint.'+m);
     hintEl.classList.remove('faded');
     clearTimeout(hintEl._fadeT);
     hintEl._fadeT=setTimeout(()=>hintEl.classList.add('faded'),3500);
@@ -2358,7 +2351,7 @@ function detectWallsFromMap(){
       _detectedWallPreview=segs.map(s=>({fx1:s.x1/cw,fy1:s.y1/ch,fx2:s.x2/cw,fy2:s.y2/ch}));
       renderWalls();
       showModalText(
-        'Wall detection',
+        {i18n:'modal.wall_detection'},
         `Found ${segs.length} straight wall candidates (previewed as dashed blue lines). Add them as drywall walls? You can re-material or delete individual walls afterwards.`,
         ()=>{
           snapshot();
@@ -3049,7 +3042,7 @@ function cycleHeatmapMode(){
   SETTINGS.heatmapMode=keys[(i+1)%keys.length];
   const lbl=(HEATMAP_MODES[SETTINGS.heatmapMode]||HEATMAP_MODES.rssi).label;
   const pill=document.getElementById('heat-mode-pill');
-  if(pill)pill.textContent=lbl;
+  if(pill)localizeText(pill,'heat.metric_'+SETTINGS.heatmapMode);
   render();autosave();
   toast('Heatmap mode: '+lbl);
 }
@@ -3059,7 +3052,7 @@ function cycleHeatmapBand(){
   const i=order.indexOf(cur);
   SETTINGS.heatmapBand=order[(i+1)%order.length];
   const pill=document.getElementById('heat-band-pill');
-  if(pill)pill.textContent=({all:'All',['2.4']:'2.4 GHz',['5']:'5 GHz',['6']:'6 GHz'})[SETTINGS.heatmapBand];
+  if(pill)localizeText(pill,({'all':'heat.all','2.4':'heat.band_24','5':'heat.band_5','6':'heat.band_6'})[SETTINGS.heatmapBand]);
   render();autosave();
   toast('Heatmap band: '+SETTINGS.heatmapBand);
 }
@@ -3888,7 +3881,7 @@ function newRevision(){
 function restoreRevision(id){
   const rev=PROJECT_REVISIONS.find(r=>r.id===id);
   if(!rev)return;
-  showModal('Restore revision',`Replace current floors with revision <strong>${esc(rev.name)}</strong>? Current state will be lost (consider saving a fresh revision first).`,()=>{
+  showModal({i18n:'modal.restore_revision'},`Replace current floors with revision <strong>${esc(rev.name)}</strong>? Current state will be lost (consider saving a fresh revision first).`,()=>{
     snapshot();
     FLOORS=JSON.parse(JSON.stringify(rev.snapshot));
     if(curFloor>=FLOORS.length)curFloor=0;
@@ -3936,7 +3929,7 @@ function showRevisions(){
   const wrap=document.createElement('div');wrap.className='settings-form';
   if(!PROJECT_REVISIONS.length){
     const e=document.createElement('div');e.className='ep-hint';
-    e.textContent='No revisions yet. Save the current state as the first revision below.';
+    localizeText(e,'revisions.empty');
     wrap.appendChild(e);
   } else {
     const list=document.createElement('div');list.className='rev-list';
@@ -3950,26 +3943,26 @@ function showRevisions(){
       const row=document.createElement('div');row.className='rev-row';
       const name=document.createElement('div');name.className='rev-name';
       name.textContent=(rev.baseline?'★ ':'')+rev.name;
-      if(rev.baseline)name.title='Design baseline';
+      if(rev.baseline)name.setAttribute('data-i18n-title','revisions.baseline');name.title=t('revisions.baseline');
       const when=document.createElement('div');when.className='rev-when';when.textContent=new Date(rev.createdAt).toLocaleString(SETTINGS.locale||'en-GB');
       // Mark as the design baseline (one at a time) — the "as-designed" state
       // that later as-built diffs are read against.
       const b=document.createElement('button');b.className='btn';b.textContent=rev.baseline?'★':'☆';
-      b.title=rev.baseline?'Unmark design baseline':'Mark as design baseline';
+      b.setAttribute('data-i18n-title',rev.baseline?'revisions.unmark':'revisions.mark');b.title=t(b.getAttribute('data-i18n-title'));
       b.addEventListener('click',()=>{
         const on=!rev.baseline;
         PROJECT_REVISIONS.forEach(r=>r.baseline=false);
         rev.baseline=on;
         autosave();closeModal();showRevisions();
       });
-      const d=document.createElement('button');d.className='btn';d.textContent='Diff vs now';
-      d.title='What changed between this revision and the current state';
+      const d=document.createElement('button');d.className='btn';localizeText(d,'revisions.diff');
+      d.setAttribute('data-i18n-title','revisions.diff_tip');d.title=t('revisions.diff_tip');
       d.addEventListener('click',()=>{
         showDiff(_diffRevisions(rev.snapshot,_snapshotForRevision()),`${rev.name} → current state`);
       });
-      const r=document.createElement('button');r.className='btn';r.textContent='Restore';
+      const r=document.createElement('button');r.className='btn';localizeText(r,'revisions.restore');
       r.addEventListener('click',()=>{closeModal();restoreRevision(rev.id);});
-      const x=document.createElement('button');x.className='btn danger';x.textContent='×';x.title='Delete';
+      const x=document.createElement('button');x.className='btn danger';x.textContent='×';x.setAttribute('data-i18n-title','modal.delete');x.title=t('modal.delete');
       x.addEventListener('click',()=>{
         PROJECT_REVISIONS=PROJECT_REVISIONS.filter(r=>r.id!==rev.id);
         autosave();closeModal();showRevisions();
@@ -3979,7 +3972,7 @@ function showRevisions(){
     }
     wrap.appendChild(list);
     if(PROJECT_REVISIONS.length>=2){
-      const diffBtn=document.createElement('button');diffBtn.className='btn';diffBtn.textContent='Diff last two revisions';
+      const diffBtn=document.createElement('button');diffBtn.className='btn';localizeText(diffBtn,'revisions.diff_last');
       diffBtn.style.marginTop='12px';
       diffBtn.addEventListener('click',()=>{
         const a=PROJECT_REVISIONS[PROJECT_REVISIONS.length-2].snapshot;
@@ -3992,11 +3985,11 @@ function showRevisions(){
       wrap.appendChild(diffBtn);
     }
   }
-  const saveBtn=document.createElement('button');saveBtn.className='btn btn-primary';saveBtn.textContent='Save current state as new revision';
+  const saveBtn=document.createElement('button');saveBtn.className='btn btn-primary';localizeText(saveBtn,'revisions.save');
   saveBtn.style.marginTop='12px';
   saveBtn.addEventListener('click',()=>{closeModal();newRevision();});
   wrap.appendChild(saveBtn);
-  showModalNode('Revisions',wrap,null);
+  showModalNode({i18n:'tb.revisions'},wrap,null);
 }
 
 // ═══ INVENTORY ════════════════════════════════════
@@ -4008,8 +4001,8 @@ function showInventory(){
   wrap.style.cssText='font-family:Rajdhani,sans-serif;font-size:13px';
   const devs=allDevices();
   if(!devs.length){
-    wrap.textContent='Nothing placed yet. Add APs, cameras or switches first.';
-    showModalNode('Inventory',wrap,null);
+    localizeText(wrap,'inventory.empty');
+    showModalNode({i18n:'tb.inventory'},wrap,null);
     return;
   }
   // Rollout progress pills.
@@ -4032,7 +4025,7 @@ function showInventory(){
   wrap.appendChild(prog);
   // Search box.
   const search=document.createElement('input');
-  search.className='ep-in';search.type='text';search.placeholder='Filter by name, model, serial, IP, status…';
+  search.className='ep-in';search.type='text';search.setAttribute('data-i18n-placeholder','inventory.search');search.placeholder=t('inventory.search');
   search.style.cssText='width:100%;margin-bottom:8px';
   wrap.appendChild(search);
   // Table.
@@ -4041,8 +4034,8 @@ function showInventory(){
   const tbl=document.createElement('table');
   tbl.style.cssText='width:100%;border-collapse:collapse;font-size:12px';
   tbl.innerHTML=`<thead><tr style="position:sticky;top:0;background:var(--bg,inherit)">${
-    ['Floor','Type','Name','Model','Status','Serial','Asset','IP','Switch·Port']
-      .map(h=>`<th style="text-align:left;font-size:9px;letter-spacing:.12em;text-transform:uppercase;padding:6px 8px;border-bottom:1px solid var(--ink-04)">${h}</th>`).join('')
+    ['inventory.floor','inventory.type','settings.name','inventory.model','inventory.status','inventory.serial','inventory.asset','IP','inventory.port']
+      .map(h=>`<th ${h==='IP'?'':`data-i18n="${h}"`} style="text-align:left;font-size:9px;letter-spacing:.12em;text-transform:uppercase;padding:6px 8px;border-bottom:1px solid var(--ink-04)">${esc(h==='IP'?h:t(h))}</th>`).join('')
   }</tr></thead>`;
   const tbody=document.createElement('tbody');
   tbl.appendChild(tbody);scroller.appendChild(tbl);wrap.appendChild(scroller);
@@ -4068,7 +4061,7 @@ function showInventory(){
       const stSel=document.createElement('select');
       stSel.className='ep-sel';stSel.style.cssText='font-size:11px;padding:2px 4px';
       for(const s of DEVICE_STATUSES){
-        const o=document.createElement('option');o.value=s;o.textContent=DEVICE_STATUS_META[s].label;
+        const o=document.createElement('option');o.value=s;localizeText(o,'status.'+s);
         if((dev.status||'planned')===s)o.selected=true;
         stSel.appendChild(o);
       }
@@ -4095,7 +4088,7 @@ function showInventory(){
     }
     if(!shown){
       const tr=document.createElement('tr');
-      tr.innerHTML=`<td colspan="9" style="padding:14px;text-align:center;opacity:.6">No matches.</td>`;
+      tr.innerHTML=`<td colspan="9" style="padding:14px;text-align:center;opacity:.6" data-i18n="inventory.no_matches">${esc(t('inventory.no_matches'))}</td>`;
       tbody.appendChild(tr);
     }
   };
@@ -4105,20 +4098,20 @@ function showInventory(){
   const foot=document.createElement('div');
   foot.style.cssText='display:flex;gap:6px;flex-wrap:wrap;margin-top:10px';
   const mkBtn=(label,title,fn)=>{
-    const b=document.createElement('button');b.className='btn';b.textContent=label;b.title=title;
+    const b=document.createElement('button');b.className='btn';localizeText(b,label);b.setAttribute('data-i18n-title',title);b.title=t(title);
     b.addEventListener('click',fn);foot.appendChild(b);
   };
-  mkBtn('IP+ all','Fill every empty IP from its VLAN subnet',()=>{autoAssignIps();closeModal();showInventory();});
-  mkBtn('Auto-rename','Rename all devices to the convention in Settings → Organization',()=>{autoRenameDevices();closeModal();showInventory();});
-  mkBtn('⇣ Inventory CSV','Export this table as CSV',()=>doInventoryCsv());
-  mkBtn('⇣ IP plan CSV','One row per device with IP/VLAN/subnet',()=>doIpPlanCsv());
-  mkBtn('⇣ Port map CSV','One row per switch port',()=>doPortMapCsv());
-  const hb=document.createElement('button');hb.className='btn btn-primary';hb.textContent='⇩ Handover pack';
-  hb.title='Zip of the HTML summary + every CSV deliverable';
+  mkBtn('inventory.ip_all','inventory.ip_tip',()=>{autoAssignIps();closeModal();showInventory();});
+  mkBtn('inventory.rename','inventory.rename_tip',()=>{autoRenameDevices();closeModal();showInventory();});
+  mkBtn('inventory.csv','inventory.csv_tip',()=>doInventoryCsv());
+  mkBtn('inventory.ip_csv','inventory.ip_csv_tip',()=>doIpPlanCsv());
+  mkBtn('inventory.port_csv','inventory.port_csv_tip',()=>doPortMapCsv());
+  const hb=document.createElement('button');hb.className='btn btn-primary';localizeText(hb,'inventory.handover');
+  hb.setAttribute('data-i18n-title','tip.handover');hb.title=t('tip.handover');
   hb.addEventListener('click',()=>doHandoverPack());
   foot.appendChild(hb);
   wrap.appendChild(foot);
-  showModalNode('Inventory & rollout',wrap,null);
+  showModalNode({i18n:'modal.inventory_rollout'},wrap,null);
   document.getElementById('mdl').classList.add('wide-modal');
 }
 
@@ -4180,7 +4173,7 @@ function applyStoredCatalog(){
 function showPluginCatalogDialog(){
   const wrap=document.createElement('div');wrap.className='settings-form';
   const hint=document.createElement('div');hint.className='ep-hint';
-  hint.innerHTML=`Paste a JSON catalog to add custom vendor models. Saved with the project. Schema:<br>
+  hint.innerHTML=`<span data-i18n="catalog.hint">${esc(t('catalog.hint'))}</span><br>
 <code style="font-size:11px;font-family:monospace;background:rgba(0,0,0,.05);padding:8px;display:block;white-space:pre;margin-top:6px">{"aps":[{"label":"My Vendor","models":["X1"],"range":{"X1":30},"poe":{"X1":15}}],
  "cams":[{"label":"My CCTV","models":["CamA"],"specs":{"CamA":{"fov":90,"range":30,"res":"4K","poeW":8}}}],
  "switches":[{"label":"My SW","models":["SW1"],"ports":{"SW1":24},"poe":{"SW1":380},"class":{"SW1":"bt"}}]}</code>`;
@@ -4189,7 +4182,7 @@ function showPluginCatalogDialog(){
   ta.style.width='100%';ta.style.height='180px';ta.style.fontFamily='monospace';ta.style.fontSize='12px';
   ta.placeholder='{"aps":[...]}';
   wrap.appendChild(ta);
-  showModalNode('Custom vendor catalog',wrap,()=>{
+  showModalNode({i18n:'modal.catalog'},wrap,()=>{
     try{
       const json=JSON.parse(ta.value||'{}');
       if(_mergeCustomCatalog(json)){
@@ -4351,9 +4344,9 @@ function promptCalibration(){
   const inp=document.createElement('input');
   inp.type='number';inp.min='0.1';inp.step='0.1';inp.className='ep-in';
   inp.value=(px*(scaleM/100)).toFixed(1);inp.style.width='130px';
-  const unit=document.createElement('span');unit.textContent='metres';
+  const unit=document.createElement('span');localizeText(unit,'calibrate.metres');
   row.append(inp,unit);wrap.append(p,row);
-  showModalNode('Calibrate scale',wrap,()=>{
+  showModalNode({i18n:'modal.calibrate'},wrap,()=>{
     const realM=parseFloat(inp.value);
     if(!(realM>0)){toast('Enter a positive length');return;}
     snapshot();
@@ -4649,7 +4642,7 @@ async function _rehydrateImages(){
 
 function renderRP(){
   const rph=document.getElementById('rp-head');
-  if(!selId){rph.textContent='Properties';rpBody.innerHTML='<div class="rp-empty"><div class="rp-empty-icon">◎</div><div class="rp-empty-txt">Select an item<br>to edit properties</div></div>';return;}
+  if(!selId){localizeText(rph,'sidebar.properties');rpBody.innerHTML='<div class="rp-empty"><div class="rp-empty-icon">◎</div><div class="rp-empty-txt" data-i18n="sidebar.select">'+esc(t('sidebar.select'))+'</div></div>';return;}
   if(selType==='ap')renderAPPanel();
   else if(selType==='dz')renderDZPanel();
   else if(selType==='sw')renderSWPanel();
@@ -4674,7 +4667,7 @@ function totalStorageGb(){
 }
 function renderCAMPanel(){
   const c=CAMS().find(x=>x.id===selId);if(!c)return;
-  document.getElementById('rp-head').textContent='Edit Camera';
+  localizeText(document.getElementById('rp-head'),'sidebar.edit_camera');
   const mOpts=buildGroupedOptions(CAM_MODEL_GROUPS,c.model||'G4 Pro');
   const realR=Math.round((c.range||80)*(scaleM/100));
   const swOptions=SWS().map(sw=>`<option value="${esc(sw.id)}"${sw.id===c.swId?' selected':''}>${esc(sw.name)} · ${esc(sw.model||'')}</option>`).join('');
@@ -4777,7 +4770,7 @@ function setCamColor(col){const c=CAMS().find(x=>x.id===selId);if(!c)return;snap
 
 function renderWallPanel(){
   const w=WALLS().find(x=>x.id===selId);if(!w)return;
-  document.getElementById('rp-head').textContent='Edit Wall';
+  localizeText(document.getElementById('rp-head'),'sidebar.edit_wall');
   const mat=WALL_MATERIALS[w.material]||WALL_MATERIALS.drywall;
   const px=_wallPx(w);
   const lengthPx=Math.hypot(px.x2-px.x1,px.y2-px.y1);
@@ -4816,7 +4809,7 @@ function updWall(){
 
 function renderAPPanel(){
   const ap=APS().find(a=>a.id===selId);if(!ap)return;
-  document.getElementById('rp-head').textContent='Edit AP';
+  localizeText(document.getElementById('rp-head'),'sidebar.edit_ap');
   const mOpts=buildGroupedOptions(AP_MODEL_GROUPS,ap.model||'U6 Pro');
   const realR=Math.round(ap.r*(scaleM/100));
   rpBody.innerHTML=`
@@ -4899,7 +4892,7 @@ function renderAPPanel(){
 
 function renderDZPanel(){
   const dz=DZS().find(a=>a.id===selId);if(!dz)return;
-  document.getElementById('rp-head').textContent='Edit Dead Zone';
+  localizeText(document.getElementById('rp-head'),'sidebar.edit_dz');
   const realR=Math.round(dz.r*(scaleM/100));
   rpBody.innerHTML=`
     <div class="ep-section">Label</div>
@@ -4917,7 +4910,7 @@ function renderDZPanel(){
 
 function renderSWPanel(){
   const sw=SWS().find(a=>a.id===selId);if(!sw)return;
-  document.getElementById('rp-head').textContent='Edit Switch/Router';
+  localizeText(document.getElementById('rp-head'),'sidebar.edit_switch');
   const mOpts=buildGroupedOptions(SW_MODEL_GROUPS,sw.model||'USW-24-PoE');
   // If the stored model isn't in our known list, treat it as a custom override
   const isCustom=!SW_MODELS.includes(sw.model||'');
@@ -5082,13 +5075,13 @@ function renderList(){
   const cnts=document.getElementById('sb-counters');
   if(cnts){
     cnts.innerHTML=`
-      <span class="cnt-pill" title="Access Points"><span class="cnt-icon">●</span><span class="cnt-num">${apN}</span><span class="cnt-lbl">APs</span></span>
-      <span class="cnt-pill" title="Switches / Routers"><span class="cnt-icon">⊞</span><span class="cnt-num">${swN}</span><span class="cnt-lbl">SW</span></span>
-      <span class="cnt-pill" title="Cameras"><span class="cnt-icon">◉</span><span class="cnt-num">${cmN}</span><span class="cnt-lbl">CAM</span></span>
-      <span class="cnt-pill" title="Dead Zones"><span class="cnt-icon">⚠</span><span class="cnt-num">${dzN}</span><span class="cnt-lbl">DZ</span></span>
-      <span class="cnt-pill" title="Walls"><span class="cnt-icon">▌</span><span class="cnt-num">${wN}</span><span class="cnt-lbl">W</span></span>`;
+      <span class="cnt-pill" data-i18n-title="report.aps" title="${esc(t('report.aps'))}"><span class="cnt-icon">●</span><span class="cnt-num">${apN}</span><span class="cnt-lbl">APs</span></span>
+      <span class="cnt-pill" data-i18n-title="sidebar.switches" title="${esc(t('sidebar.switches'))}"><span class="cnt-icon">⊞</span><span class="cnt-num">${swN}</span><span class="cnt-lbl">SW</span></span>
+      <span class="cnt-pill" data-i18n-title="report.cameras" title="${esc(t('report.cameras'))}"><span class="cnt-icon">◉</span><span class="cnt-num">${cmN}</span><span class="cnt-lbl">CAM</span></span>
+      <span class="cnt-pill" data-i18n-title="report.dead_zones" title="${esc(t('report.dead_zones'))}"><span class="cnt-icon">⚠</span><span class="cnt-num">${dzN}</span><span class="cnt-lbl">DZ</span></span>
+      <span class="cnt-pill" data-i18n-title="sidebar.walls" title="${esc(t('sidebar.walls'))}"><span class="cnt-icon">▌</span><span class="cnt-num">${wN}</span><span class="cnt-lbl">W</span></span>`;
   }
-  if(!total){leftList.innerHTML='<div class="empty-msg">Nothing yet.<br>Click map to place items.</div>';return;}
+  if(!total){leftList.innerHTML='<div class="empty-msg" data-i18n="sidebar.empty">'+esc(t('sidebar.empty'))+'</div>';return;}
 
   // Search filter — case-insensitive, matches against multiple fields per item.
   // Empty query returns true for everything, so the no-search case is no-op fast.
@@ -5113,7 +5106,7 @@ function renderList(){
   }
 
   if(filteredAPs.length){
-    const h=document.createElement('div');h.className='sec-lbl';h.textContent='Access Points';leftList.appendChild(h);
+    const h=document.createElement('div');h.className='sec-lbl';localizeText(h,'report.aps');leftList.appendChild(h);
     filteredAPs.forEach(ap=>{
       const d=document.createElement('div');d.className='list-item'+(ap.id===selId?' active':'')+(ap.locked?' locked':'');
       const sigDots={strong:'●●●',medium:'●●○',weak:'●○○'}[ap.sig||'strong'];
@@ -5124,7 +5117,7 @@ function renderList(){
     });
   }
   if(filteredSWs.length){
-    const h=document.createElement('div');h.className='sec-lbl';h.textContent='Switches/Routers';leftList.appendChild(h);
+    const h=document.createElement('div');h.className='sec-lbl';localizeText(h,'sidebar.switches');leftList.appendChild(h);
     filteredSWs.forEach(sw=>{
       const d=document.createElement('div');d.className='list-item sw-item'+(sw.id===selId?' active':'');
       d.innerHTML=`<span style="font-size:12px">⊞</span><div class="li-info"><div class="li-name">${esc(sw.name)}<span class="li-status" style="background:${statusMeta(sw).color}" title="${esc(statusMeta(sw).label)}"></span></div><div class="li-sub">${esc(sw.model||'')}</div></div><button class="li-del" data-action="quick-del" data-id="${sw.id}" data-type="sw">✕</button>`;
@@ -5132,7 +5125,7 @@ function renderList(){
     });
   }
   if(filteredCAMs.length){
-    const h=document.createElement('div');h.className='sec-lbl';h.textContent='Cameras';leftList.appendChild(h);
+    const h=document.createElement('div');h.className='sec-lbl';localizeText(h,'report.cameras');leftList.appendChild(h);
     filteredCAMs.forEach(c=>{
       const d=document.createElement('div');d.className='list-item cam-item'+(c.id===selId?' active':'')+(c.locked?' locked':'');
       const dotStyle=c.color?` style="background:${esc(c.color)}"`:'';
@@ -5141,7 +5134,7 @@ function renderList(){
     });
   }
   if(filteredDZs.length){
-    const h=document.createElement('div');h.className='sec-lbl';h.textContent='Dead Zones';leftList.appendChild(h);
+    const h=document.createElement('div');h.className='sec-lbl';localizeText(h,'report.dead_zones');leftList.appendChild(h);
     filteredDZs.forEach(dz=>{
       const d=document.createElement('div');d.className='list-item dz-item'+(dz.id===selId?' active':'');
       d.innerHTML=`<span style="font-size:12px">⚠</span><span class="li-name">${esc(dz.label)}</span><button class="li-del" data-action="quick-del" data-id="${dz.id}" data-type="dz">✕</button>`;
@@ -5149,7 +5142,7 @@ function renderList(){
     });
   }
   if(filteredWalls.length){
-    const h=document.createElement('div');h.className='sec-lbl';h.textContent=`Walls (${filteredWalls.length}${q?' / '+wN:''})`;leftList.appendChild(h);
+    const h=document.createElement('div');h.className='sec-lbl';h.innerHTML=`<span data-i18n="sidebar.walls">${esc(t('sidebar.walls'))}</span> (${filteredWalls.length}${q?' / '+wN:''})`;leftList.appendChild(h);
     filteredWalls.forEach(w=>{
       // Use original WALLS() index for display (W-1, W-2, etc.) so numbers match the master list
       const i=WALLS().indexOf(w);
@@ -5169,11 +5162,11 @@ function renderList(){
 function askDel(){
   if(selId==null)return;
   const target={id:selId,type:selType};
-  showModalText('Delete Item','Remove this item from the map?',()=>doDelete(target));
+  showModalText({i18n:'modal.delete_item'},{i18n:'modal.delete_map'},()=>doDelete(target));
 }
 function qDel(id,type){
   const target={id,type};
-  showModalText('Delete Item','Remove this item?',()=>doDelete(target));
+  showModalText({i18n:'modal.delete_item'},{i18n:'modal.remove'},()=>doDelete(target));
 }
 function doDelete(target){
   if(!target)return;
@@ -5197,7 +5190,10 @@ let _modalReturnFocus=null;
 // DOM node; callers wanting to pass plain text should use showModalText.
 function _showModalEl(title,bodyEl,okCB,cancelCB){
   _modalReturnFocus=document.activeElement;
-  document.getElementById('mdl-title').textContent=title;
+  const titleEl=document.getElementById('mdl-title');
+  titleEl.removeAttribute('data-i18n');
+  if(title && typeof title==='object' && title.i18n)localizeText(titleEl,title.i18n);
+  else titleEl.textContent=title;
   const body=document.getElementById('mdl-body');
   body.replaceChildren(bodyEl);
   modalCB=okCB||null;modalCancelCB=cancelCB||null;
@@ -5205,7 +5201,8 @@ function _showModalEl(title,bodyEl,okCB,cancelCB){
   const ok=document.getElementById('mdl-ok');
   if(ok){ok.style.display=okCB?'':'none';}
   const cancel=document.querySelector('#mdl .mdl-actions .btn:not(#mdl-ok)');
-  if(cancel)cancel.textContent=okCB?'Cancel':'Close';
+  if(cancel)localizeText(cancel,okCB?'modal.cancel':'modal.close');
+  localizeDOM(body);
   document.getElementById('mbg').classList.add('vis');
   // Move focus into the dialog so screen readers announce it and Tab is trapped.
   const mdl=document.getElementById('mdl');
@@ -5233,6 +5230,11 @@ document.addEventListener('keydown',e=>{
 // Plain-text body (auto-escaped). Newlines become <br>.
 function showModalText(title,text,okCB,cancelCB){
   const div=document.createElement('div');
+  if(text && typeof text==='object' && text.i18n){
+    localizeText(div,text.i18n);
+    _showModalEl(title,div,okCB,cancelCB);
+    return;
+  }
   String(text||'').split(/\n/).forEach((line,i,arr)=>{
     div.appendChild(document.createTextNode(line));
     if(i<arr.length-1)div.appendChild(document.createElement('br'));
@@ -5339,7 +5341,9 @@ function updateCnt(){document.getElementById('ap-cnt').textContent=APS().length;
 function togglePresent(){
   pres=!pres;
   document.getElementById('btn-pres').classList.toggle('active',pres);
-  document.getElementById('btn-pres').textContent=pres?'■ Exit':'▶ Present';
+  const button=document.getElementById('btn-pres');
+  button.replaceChildren(document.createTextNode(pres?'■ ':'▶ '),document.createElement('span'));
+  localizeText(button.lastElementChild,pres?'tb.exit':'tb.present');
   ['hint-bar','left-sb','right-sb'].forEach(id=>{const el=document.getElementById(id);if(el)el.style.display=pres?'none':'';});
   // Hide the meta + tools rows, but keep the floor-row so users can still flip floors.
   document.querySelectorAll('.topbar-meta, .topbar-tools').forEach(el=>{el.style.display=pres?'none':'';});
@@ -5695,14 +5699,14 @@ function tryRestoreAutosave(){
     const hasContent=(data.floors||[]).some(f=>(f.APS&&f.APS.length)||(f.DZS&&f.DZS.length)||(f.SWS&&f.SWS.length)||f.img||f.imgId);
     if(!hasContent){localStorage.removeItem(AUTOSAVE_KEY);return false;}
     const when=data.savedAt?new Date(data.savedAt).toLocaleString():'previous session';
-    showModalText('Restore Previous Session?',`A saved session from ${when} was found.\n\nRestore it, or start fresh?`,
+    showModalText({i18n:'modal.restore_session'},`A saved session from ${when} was found.\n\nRestore it, or start fresh?`,
       async ()=>{
         const [migrated]=migrateProject(data);
         FLOORS=migrated.floors;
         SETTINGS={...DEFAULT_SETTINGS,...(migrated.settings||{})};
         applyStoredCatalog();
         PROJECT_REVISIONS=Array.isArray(migrated.revisions)?migrated.revisions:[];
-        if(SETTINGS.language)setLang(SETTINGS.language);
+        setLang(SETTINGS.language||'en');
         curFloor=0;selId=null;selType=null;
         syncScaleFromFloor();
         syncNidFromFloors();
@@ -5987,21 +5991,24 @@ document.addEventListener('keydown',e=>{
 // Per-project branding/locale shown in HTML & PDF exports. Built as DOM nodes
 // (no innerHTML) so user-supplied strings are inert.
 function showSettings(){
+  const savedLanguage=getLang();
   const wrap=document.createElement('div');wrap.className='settings-form';
 
   // ── Helpers for compact rows ──
   const inputs={};
   const addText=(key,label,placeholder)=>{
     const row=document.createElement('div');row.className='ep-row';
-    const lbl=document.createElement('label');lbl.className='ep-lbl';lbl.textContent=label;
+    const lbl=document.createElement('label');lbl.className='ep-lbl';localizeText(lbl,label);
     const inp=document.createElement('input');inp.className='ep-in';inp.type='text';
-    inp.value=SETTINGS[key]??'';inp.placeholder=placeholder||'';
+    inp.value=SETTINGS[key]??'';if(placeholder && typeof placeholder==='object'){
+      inp.setAttribute('data-i18n-placeholder',placeholder.i18n);inp.placeholder=t(placeholder.i18n);
+    }else inp.placeholder=placeholder||'';
     row.appendChild(lbl);row.appendChild(inp);wrap.appendChild(row);
     inputs[key]=inp;
   };
   const addNumber=(key,label,min,max,step)=>{
     const row=document.createElement('div');row.className='ep-row';
-    const lbl=document.createElement('label');lbl.className='ep-lbl';lbl.textContent=label;
+    const lbl=document.createElement('label');lbl.className='ep-lbl';localizeText(lbl,label);
     const inp=document.createElement('input');inp.className='ep-in';inp.type='number';
     if(min!==undefined)inp.min=min;if(max!==undefined)inp.max=max;
     if(step!==undefined)inp.step=step;
@@ -6011,10 +6018,10 @@ function showSettings(){
   };
   const addSelect=(key,label,options)=>{
     const row=document.createElement('div');row.className='ep-row';
-    const lbl=document.createElement('label');lbl.className='ep-lbl';lbl.textContent=label;
+    const lbl=document.createElement('label');lbl.className='ep-lbl';localizeText(lbl,label);
     const sel=document.createElement('select');sel.className='ep-in';
     for(const o of options){
-      const op=document.createElement('option');op.value=o.value;op.textContent=o.label;
+      const op=document.createElement('option');op.value=o.value;if(o.i18n)localizeText(op,o.i18n);else op.textContent=o.label;
       if(String(SETTINGS[key])===String(o.value))op.selected=true;
       sel.appendChild(op);
     }
@@ -6023,33 +6030,35 @@ function showSettings(){
   };
   const addCheck=(key,label)=>{
     const row=document.createElement('div');row.className='ep-row';
-    const lbl=document.createElement('label');lbl.className='ep-lbl';lbl.textContent=label;
+    const lbl=document.createElement('label');lbl.className='ep-lbl';localizeText(lbl,label);
     const inp=document.createElement('input');inp.type='checkbox';
     inp.checked=!!SETTINGS[key];
     row.appendChild(lbl);row.appendChild(inp);wrap.appendChild(row);
     inputs[key]=inp;
   };
   const addHeading=(text)=>{
-    const h=document.createElement('div');h.className='settings-heading';h.textContent=text;
+    const h=document.createElement('div');h.className='settings-heading';localizeText(h,text);
     wrap.appendChild(h);
   };
 
   // ── Branding ──
-  addHeading('Branding');
-  addText('company','Company / Brand','Plexus');
-  addText('tagline','Tagline','Network Planning');
-  addText('contact','Contact','hello@plexus.example');
-  addText('metaLine','Cover meta line','optional, shown above the logo on exports');
-  addText('reportTitle','Report title','Network Audit Report');
-  addText('footerLine','Footer line','optional, shown in HTML/PDF report footer');
-  addText('logoDataUrl','Brand logo (data URL)','data:image/png;base64,...');
-  addText('locale','Date locale','en-GB');
-  addSelect('language','UI language',availableLangs().map(c=>({value:c,label:c})));
+  addHeading('settings.branding');
+  addText('company','settings.company','Plexus');
+  addText('tagline','settings.tagline',{i18n:'settings.tagline_placeholder'});
+  addText('contact','settings.contact','hello@plexus.example');
+  addText('metaLine','settings.meta_line',{i18n:'settings.meta_placeholder'});
+  addText('reportTitle','settings.report_title',{i18n:'settings.report_placeholder'});
+  addText('footerLine','settings.footer_line',{i18n:'settings.footer_placeholder'});
+  addText('logoDataUrl','settings.logo','data:image/png;base64,...');
+  addText('locale','settings.locale','en-GB');
+  addSelect('language','settings.language',availableLangs().map(c=>({value:c,label:c})));
+
+  inputs.language.addEventListener('change',()=>setLang(inputs.language.value));
 
   // ── Coverage display ──
-  addHeading('Coverage display');
+  addHeading('settings.display');
   const opacityRow=document.createElement('div');opacityRow.className='ep-row ep-slider-row';
-  const opacityLbl=document.createElement('label');opacityLbl.className='ep-lbl';opacityLbl.textContent='Coverage opacity';
+  const opacityLbl=document.createElement('label');opacityLbl.className='ep-lbl';localizeText(opacityLbl,'settings.coverage_opacity');
   const opacityIn=document.createElement('input');
   opacityIn.type='range';opacityIn.min='20';opacityIn.max='100';opacityIn.step='5';
   opacityIn.className='ep-rng';
@@ -6065,63 +6074,63 @@ function showSettings(){
     SETTINGS.coverageOpacity=v;
     render();
   });
-  addSelect('heatmapMode','Heatmap mode',HEATMAP_MODE_KEYS.map(k=>({value:k,label:HEATMAP_MODES[k].label})));
-  addSelect('heatmapBand','Heatmap band',[
-    {value:'all',label:'All bands'},
-    {value:'2.4',label:'2.4 GHz'},
-    {value:'5',label:'5 GHz'},
-    {value:'6',label:'6 GHz'},
+  addSelect('heatmapMode','settings.heatmap_mode',HEATMAP_MODE_KEYS.map(k=>({value:k,i18n:'heat.metric_'+k})));
+  addSelect('heatmapBand','settings.heatmap_band',[
+    {value:'all',i18n:'heat.band_all'},
+    {value:'2.4',i18n:'heat.band_24'},
+    {value:'5',i18n:'heat.band_5'},
+    {value:'6',i18n:'heat.band_6'},
   ]);
-  addCheck('showRoamingOverlap','Show roaming-overlap layer (≥2 APs ≥ -67 dBm)');
+  addCheck('showRoamingOverlap','settings.roaming_detail');
 
   // ── RF model + regulatory ──
-  addHeading('RF model & regulatory');
-  addSelect('propagationModel','Propagation model',PROPAGATION_MODEL_KEYS.map(k=>({value:k,label:PROPAGATION_MODELS[k].label})));
-  addSelect('regulatoryRegion','Regulatory region',REGULATORY_REGION_KEYS.map(k=>({value:k,label:REGULATORY_REGIONS[k].label})));
-  addNumber('noiseFloorDbm','Noise floor (dBm)',-110,-70,1);
-  addNumber('floorSlabAttenDb','Floor slab attenuation (dB)',0,40,1);
-  addCheck('showFloorLeakage','Include neighbouring floors in heatmap');
+  addHeading('settings.rf');
+  addSelect('propagationModel','settings.propagation_model',PROPAGATION_MODEL_KEYS.map(k=>({value:k,label:PROPAGATION_MODELS[k].label})));
+  addSelect('regulatoryRegion','settings.regulatory_region',REGULATORY_REGION_KEYS.map(k=>({value:k,label:REGULATORY_REGIONS[k].label})));
+  addNumber('noiseFloorDbm','settings.noise_floor',-110,-70,1);
+  addNumber('floorSlabAttenDb','settings.floor_slab',0,40,1);
+  addCheck('showFloorLeakage','settings.show_floor_leakage');
 
   // ── Architect scale ──
-  addHeading('Drawing scale');
-  addSelect('archScale','Architect scale preset',[
-    {value:'',label:'Custom (use scale toolbar)'},
+  addHeading('settings.drawing');
+  addSelect('archScale','settings.arch_scale',[
+    {value:'',i18n:'settings.custom_scale'},
     ...ARCH_SCALE_PRESETS.map(p=>({value:p.label,label:`${p.label} (${p.m100px} m / 100 px)`})),
   ]);
 
   // ── Organization ──
-  addHeading('Organization');
-  addText('siteCode','Site code','HQ — feeds {site} in the name pattern');
-  addText('namePattern','Device name pattern','{site}-F{floor}-{type}{nn}');
+  addHeading('settings.organization');
+  addText('siteCode','settings.site_code',{i18n:'settings.site_placeholder'});
+  addText('namePattern','settings.name_pattern','{site}-F{floor}-{type}{nn}');
   const nameHint=document.createElement('div');nameHint.className='ep-hint';
-  nameHint.textContent='Tokens: {site} {floor} {type} {n}/{nn}/{nnn}. Validate flags names that break the pattern; Inventory → Auto-rename applies it to every device.';
+  localizeText(nameHint,'settings.name_hint');
   wrap.appendChild(nameHint);
 
   // ── Cabling & capacity ──
-  addHeading('Cabling & capacity');
-  addNumber('cableRoutingFactor','Cable routing factor',1,3,0.05);
-  addNumber('cableBoxM','Cable box length (m)',1,1000,1);
-  addNumber('expectedClients','Expected concurrent clients',0,100000,1);
-  addNumber('perClientMbps','Per-client demand (Mbps)',0.5,100,0.5);
-  addCheck('colorByVlan','Colour devices by VLAN on the map');
+  addHeading('settings.cabling');
+  addNumber('cableRoutingFactor','settings.routing',1,3,0.05);
+  addNumber('cableBoxM','settings.box',1,1000,1);
+  addNumber('expectedClients','settings.clients',0,100000,1);
+  addNumber('perClientMbps','settings.demand',0.5,100,0.5);
+  addCheck('colorByVlan','settings.vlan_colors');
 
   // ── Cameras: DORI + storage ──
-  addHeading('Cameras');
-  addCheck('showDori','Show DORI pixel-density bands in camera cones');
-  addNumber('retentionDays','Video retention (days)',1,365,1);
-  addSelect('storageCodec','Recording codec',[
+  addHeading('report.cameras');
+  addCheck('showDori','settings.dori');
+  addNumber('retentionDays','settings.retention',1,365,1);
+  addSelect('storageCodec','settings.codec',[
     {value:'h265',label:'H.265 / HEVC'},
     {value:'h264',label:'H.264 / AVC'},
   ]);
 
   // ── VLAN registry ──
-  addHeading('VLANs');
+  addHeading('settings.vlans');
   const vlanWrap=document.createElement('div');
   const vlanRows=[];
   const addVlanRow=(v)=>{
     const row=document.createElement('div');row.className='ep-row';row.style.cssText='display:flex;gap:4px;align-items:center';
     const id=document.createElement('input');id.className='ep-in';id.placeholder='ID';id.value=(v&&v.id)||'';id.style.cssText='width:50px;flex:0 0 auto';
-    const name=document.createElement('input');name.className='ep-in';name.placeholder='Name';name.value=(v&&v.name)||'';
+    const name=document.createElement('input');name.className='ep-in';name.setAttribute('data-i18n-placeholder','settings.name');name.placeholder=t('settings.name');name.value=(v&&v.name)||'';
     const color=document.createElement('input');color.type='color';color.value=(v&&v.color)||'#1565c0';color.style.cssText='width:30px;height:28px;padding:0;border:none;background:none;flex:0 0 auto';
     const subnet=document.createElement('input');subnet.className='ep-in ep-mono';subnet.placeholder='10.0.10.0/24';subnet.value=(v&&v.subnet)||'';subnet.style.cssText='width:118px;flex:0 0 auto';
     const del=document.createElement('button');del.className='btn';del.textContent='✕';del.style.cssText='flex:0 0 auto;padding:4px 8px';
@@ -6133,25 +6142,25 @@ function showSettings(){
   };
   vlanList().forEach(addVlanRow);
   wrap.appendChild(vlanWrap);
-  const addVlanBtn=document.createElement('button');addVlanBtn.className='btn';addVlanBtn.textContent='+ Add VLAN';addVlanBtn.style.marginTop='4px';
+  const addVlanBtn=document.createElement('button');addVlanBtn.className='btn';localizeText(addVlanBtn,'settings.add_vlan');addVlanBtn.style.marginTop='4px';
   addVlanBtn.addEventListener('click',()=>addVlanRow());
   wrap.appendChild(addVlanBtn);
 
   // ── Security ──
-  addHeading('Security');
+  addHeading('settings.security');
   const credRow=document.createElement('div');credRow.className='ep-row';
-  const credLbl=document.createElement('label');credLbl.className='ep-lbl';credLbl.textContent='Credentials passphrase';
+  const credLbl=document.createElement('label');credLbl.className='ep-lbl';localizeText(credLbl,'settings.passphrase');
   const credInp=document.createElement('input');
   credInp.type='password';credInp.className='ep-in';credInp.autocomplete='new-password';
-  credInp.value=_credPass;credInp.placeholder='blank = store credentials unencrypted';
+  credInp.value=_credPass;credInp.setAttribute('data-i18n-placeholder','settings.passphrase_placeholder');credInp.placeholder=t('settings.passphrase_placeholder');
   credRow.append(credLbl,credInp);wrap.appendChild(credRow);
   const credHint=document.createElement('div');credHint.className='ep-hint';
-  credHint.textContent='When set, device credentials are AES-256-GCM encrypted in saved project files and never written to autosave or Share links. Session-only — not stored anywhere; you re-enter it to unlock an encrypted project.';
+  localizeText(credHint,'settings.credentials_hint');
   wrap.appendChild(credHint);
 
   const hint=document.createElement('div');
   hint.className='ep-hint';
-  hint.textContent='Saved with the project. Used in HTML/PDF exports, the heatmap pipeline, the top-bar brand label, and channel/Tx planning. Routing factor scales straight-line cable runs; VLAN subnets feed the “suggest IP” buttons.';
+  localizeText(hint,'settings.detail_hint');
   wrap.appendChild(hint);
 
   const apply=()=>{
@@ -6181,7 +6190,7 @@ function showSettings(){
     _credPass=credInp.value||'';
     const opacity=parseInt(opacityIn.value,10)||100;
     if(SETTINGS.coverageOpacity!==opacity){SETTINGS.coverageOpacity=opacity;changed=true;}
-    if(SETTINGS.language)setLang(SETTINGS.language);
+    setLang(SETTINGS.language||'en');
     // Apply architect scale: convert to m/100px and propagate to current floor.
     if(SETTINGS.archScale){
       const preset=ARCH_SCALE_PRESETS.find(p=>p.label===SETTINGS.archScale);
@@ -6198,12 +6207,13 @@ function showSettings(){
     }
   };
   const cancel=()=>{
+    setLang(savedLanguage);
     if(SETTINGS.coverageOpacity!==savedOpacity){
       SETTINGS.coverageOpacity=savedOpacity;
       render();
     }
   };
-  showModalNode('Project Settings',wrap,apply,cancel);
+  showModalNode({i18n:'settings.title'},wrap,apply,cancel);
 }
 
 // ═══ HELP OVERLAY ═════════════════════════════════
@@ -6211,61 +6221,61 @@ function showSettings(){
 // inadvertently inject markup.
 function _helpRow(parent,parts){
   const row=document.createElement('div');row.className='help-row';
-  // parts: array of either {kbd:'A'} | {text:'foo'} | {desc:'Add AP'}
+  // parts: array of either {kbd:'A'} | {text:'foo'} | {desc:'mode.add'}
   // We render kbd/text inline, then push desc into a <span>.
   parts.forEach(p=>{
     if(p.kbd){const k=document.createElement('kbd');k.textContent=p.kbd;row.appendChild(k);}
     else if(p.sep){row.appendChild(document.createTextNode(p.sep));}
-    else if(p.text){row.appendChild(document.createTextNode(p.text));}
-    else if(p.desc){const s=document.createElement('span');s.textContent=p.desc;row.appendChild(s);}
+    else if(p.text){const span=document.createElement('span');if(p.text==='+')span.textContent='+';else localizeText(span,p.text);row.appendChild(span);}
+    else if(p.desc){const s=document.createElement('span');localizeText(s,p.desc);row.appendChild(s);}
   });
   parent.appendChild(row);
 }
 function _helpSection(grid,title,rows){
   const sec=document.createElement('div');sec.className='help-sec';
-  const h=document.createElement('div');h.className='help-h';h.textContent=title;sec.appendChild(h);
+  const h=document.createElement('div');h.className='help-h';localizeText(h,title);sec.appendChild(h);
   rows.forEach(r=>_helpRow(sec,r));
   grid.appendChild(sec);
 }
 function showHelp(){
   const grid=document.createElement('div');grid.className='help-grid';
-  _helpSection(grid,'Modes',[
-    [{kbd:'A'},{desc:'Add AP'}],
-    [{kbd:'S'},{desc:'Select'}],
-    [{kbd:'D'},{desc:'Dead Zone'}],
-    [{kbd:'W'},{desc:'Switch / Router'}],
-    [{kbd:'L'},{desc:'Wall (draw)'}],
-    [{kbd:'R'},{desc:'Ruler / Measure'}],
-    [{kbd:'C'},{desc:'Camera'}],
-    [{kbd:'N'},{desc:'Annotation'}],
-    [{kbd:'P'},{desc:'Present mode'}],
+  _helpSection(grid,'help.modes',[
+    [{kbd:'A'},{desc:'mode.add'}],
+    [{kbd:'S'},{desc:'mode.select'}],
+    [{kbd:'D'},{desc:'mode.dead_zone'}],
+    [{kbd:'W'},{desc:'mode.switch'}],
+    [{kbd:'L'},{desc:'mode.wall'}],
+    [{kbd:'R'},{desc:'mode.ruler'}],
+    [{kbd:'C'},{desc:'mode.camera'}],
+    [{kbd:'N'},{desc:'mode.annotation'}],
+    [{kbd:'P'},{desc:'help.present'}],
   ]);
-  _helpSection(grid,'View',[
-    [{kbd:'O'},{desc:'Toggle Overlaps'}],
-    [{kbd:'H'},{desc:'Toggle Heatmap'}],
-    [{kbd:'G'},{desc:'Toggle Grid'}],
-    [{kbd:'V'},{desc:'Toggle Coverage'}],
-    [{kbd:'+'},{sep:' / '},{kbd:'-'},{desc:'Zoom'}],
-    [{kbd:'0'},{desc:'Fit to screen'}],
-    [{kbd:'Space'},{text:' + drag'},{desc:'Pan'}],
-    [{text:'Scroll'},{desc:'Zoom in/out'}],
+  _helpSection(grid,'help.view',[
+    [{kbd:'O'},{desc:'help.overlaps'}],
+    [{kbd:'H'},{desc:'help.heatmap'}],
+    [{kbd:'G'},{desc:'help.grid'}],
+    [{kbd:'V'},{desc:'help.coverage'}],
+    [{kbd:'+'},{sep:' / '},{kbd:'-'},{desc:'help.zoom'}],
+    [{kbd:'0'},{desc:'help.fit'}],
+    [{kbd:'Space'},{text:'help.drag'},{desc:'help.pan'}],
+    [{text:'help.scroll'},{desc:'help.zoom_in_out'}],
   ]);
-  _helpSection(grid,'Edit',[
-    [{kbd:'Ctrl'},{text:'+'},{kbd:'Z'},{desc:'Undo'}],
-    [{kbd:'Ctrl'},{text:'+'},{kbd:'Y'},{desc:'Redo'}],
-    [{kbd:'Del'},{desc:'Delete selected'}],
-    [{kbd:'Esc'},{desc:'Deselect / close modal'}],
-    [{kbd:'Shift'},{text:'+click AP'},{desc:'Duplicate'}],
+  _helpSection(grid,'help.edit',[
+    [{kbd:'Ctrl'},{text:'+'},{kbd:'Z'},{desc:'tb.undo'}],
+    [{kbd:'Ctrl'},{text:'+'},{kbd:'Y'},{desc:'tb.redo'}],
+    [{kbd:'Del'},{desc:'help.delete'}],
+    [{kbd:'Esc'},{desc:'help.deselect'}],
+    [{kbd:'Shift'},{text:'help.click_ap'},{desc:'help.duplicate'}],
   ]);
-  _helpSection(grid,'Floors',[
-    [{text:'Click '},{kbd:'+'},{desc:'Add floor'}],
-    [{text:'Double-click tab'},{desc:'Rename'}],
-    [{text:'Click '},{kbd:'×'},{text:' on tab'},{desc:'Delete floor'}],
+  _helpSection(grid,'report.floors',[
+    [{text:'help.click'},{kbd:'+'},{desc:'tip.floor'}],
+    [{text:'help.double_click'},{desc:'help.rename'}],
+    [{text:'help.click'},{kbd:'×'},{text:'help.on_tab'},{desc:'help.delete_floor'}],
   ]);
-  _helpSection(grid,'Help',[
-    [{kbd:'?'},{desc:'Show this panel'}],
+  _helpSection(grid,'tb.help',[
+    [{kbd:'?'},{desc:'help.show'}],
   ]);
-  showModalNode('Keyboard Shortcuts',grid,null);
+  showModalNode({i18n:'help.title'},grid,null);
   // Widen the modal for the help grid
   const mdl=document.getElementById('mdl');
   if(mdl)mdl.classList.add('help-modal');
@@ -6393,3 +6403,12 @@ setTimeout(async ()=>{
   const loaded=await tryLoadFromHash();
   if(!loaded)tryRestoreAutosave();
 },100);
+
+// Localize the initial static interface and every subsequent language change.
+onLanguageChange(()=>{
+  localizeDOM();
+  const label=document.getElementById('brand-lbl');
+  const floor=F();
+  if(label && !(floor&&floor.imgName))label.textContent=(SETTINGS.company||'Plexus')+' '+t('app.planner');
+});
+localizeDOM();

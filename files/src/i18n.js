@@ -8,10 +8,22 @@ import {fr} from './i18n/fr.js';
 const bundles=/** @type {Record<string,Record<string,string>>} */({en,fr});
 
 let _lang='en';
+const languageListeners=new Set();
+
+/** Subscribe to UI language changes. Returns an unsubscribe function.
+ * @param {() => void} listener
+ */
+export function onLanguageChange(listener){
+  languageListeners.add(listener);
+  return ()=>languageListeners.delete(listener);
+}
 
 /** Set the active language code. Falls back to English if unknown. */
 export function setLang(code){
-  _lang=bundles[code]?code:'en';
+  const next=bundles[code]?code:'en';
+  if(next===_lang)return;
+  _lang=next;
+  languageListeners.forEach(listener=>listener());
 }
 
 /** Return the active language code. */
