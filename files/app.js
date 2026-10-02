@@ -1466,7 +1466,7 @@ function importEsxFile(input){
   input.value='';
 }
 async function doExportEsx(){
-  toast('Building .esx…');
+  toast(t('export.building_esx'));
   const floors=[];
   for(const f of FLOORS){
     let imageBytes=null,imgW=1000,imgH=800;
@@ -1490,7 +1490,7 @@ async function doExportEsx(){
   }
   const bytes=buildEsxZip(floors,{projectName:SETTINGS.company||'Plexus'});
   _downloadFile('plexus-project.esx',bytes,'application/octet-stream');
-  toast('Ekahau .esx exported (best-effort — verify in Ekahau)');
+  toast(t('export.esx_done'));
 }
 
 // ═══ UNIFI CONTROLLER SYNC (desktop app only) ═════
@@ -3645,7 +3645,7 @@ function _cableCsvString(){
 }
 function doCableCsv(){
   const csv=_cableCsvString();
-  if(!csv){toast('No linked devices to export');return;}
+  if(!csv){toast(t('export.no_links'));return;}
   _downloadFile('cable-schedule.csv',csv,'text/csv');
   toast(t('toast.cable_exported'));
 }
@@ -3666,9 +3666,9 @@ function _ipPlanCsvString(){
 }
 function doIpPlanCsv(){
   const csv=_ipPlanCsvString();
-  if(!csv){toast('No device has an IP, VLAN or MAC yet');return;}
+  if(!csv){toast(t('export.no_network_data'));return;}
   _downloadFile('ip-plan.csv',csv,'text/csv');
-  toast('IP plan exported');
+  toast(t('export.ip_done'));
 }
 
 // Port map: one row per switch port (free ports included), plus clients
@@ -3701,9 +3701,9 @@ function _portMapCsvString(){
 }
 function doPortMapCsv(){
   const csv=_portMapCsvString();
-  if(!csv){toast('No switches placed yet');return;}
+  if(!csv){toast(t('export.no_switches'));return;}
   _downloadFile('port-map.csv',csv,'text/csv');
-  toast('Port map exported');
+  toast(t('export.ports_done'));
 }
 
 // Inventory: the as-built record — identity, status and install fields for
@@ -3721,9 +3721,9 @@ function _inventoryCsvString(){
 }
 function doInventoryCsv(){
   const csv=_inventoryCsvString();
-  if(!csv){toast('Nothing placed yet');return;}
+  if(!csv){toast(t('export.no_devices'));return;}
   _downloadFile('inventory.csv',csv,'text/csv');
-  toast('Inventory exported');
+  toast(t('export.inventory_done'));
 }
 
 // ═══ HANDOVER PACK ════════════════════════════════
@@ -3772,7 +3772,7 @@ ${reportNetworkHtml()}
 </body></html>`;
 }
 function doHandoverPack(){
-  if(!allDevices().length){toast('Nothing placed yet');return;}
+  if(!allDevices().length){toast(t('export.no_devices'));return;}
   const files=[{name:'summary.html',data:_handoverSummaryHtml()}];
   for(const [name,csv] of [
     ['inventory.csv',_inventoryCsvString()],
@@ -3785,7 +3785,7 @@ function doHandoverPack(){
   const date=new Date().toISOString().slice(0,10);
   const site=(SETTINGS.siteCode||SETTINGS.company||'plexus').toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,'')||'plexus';
   _downloadFile(`${site}-handover-${date}.zip`,zip,'application/zip');
-  toast(`Handover pack: ${files.length} files zipped`);
+  toast(t('export.handover_done',{n:files.length}));
 }
 
 // ═══ PER-AP INSTALL SHEETS ════════════════════════
@@ -3860,7 +3860,7 @@ ${sections}
 <button class="print-btn" onclick="window.print()">Print / Save as PDF</button>
 </body></html>`;
   if(w){w.document.open();w.document.write(html);w.document.close();toast(t('toast.installs_exported'));}
-  else toast('Allow pop-ups to open the install sheets');
+  else toast(t('export.allow_popups'));
 }
 
 // ═══ REVISIONS + DIFF ═════════════════════════════
@@ -4194,10 +4194,10 @@ function showPluginCatalogDialog(){
         _accumulateCatalog(json);
         autosave();
         renderRP();   // refresh an open device panel so new models show in dropdowns
-        toast('Catalog merged & saved');
-      }else toast('Nothing to merge');
+        toast(t('catalog.merged'));
+      }else toast(t('catalog.no_changes'));
     }catch(err){
-      toast('Invalid JSON: '+(err&&err.message||err));
+      toast(t('catalog.invalid_json')+(err&&err.message||err));
     }
   });
 }
@@ -4343,7 +4343,8 @@ function promptCalibration(){
   const wrap=document.createElement('div');
   wrap.style.cssText='font-family:Rajdhani,sans-serif;font-size:13px';
   const p=document.createElement('div');
-  p.textContent=`This line is ${px.toFixed(0)} px. Enter its real-world length:`;
+  p.setAttribute('data-i18n-vars',JSON.stringify({px:px.toFixed(0)}));
+  localizeText(p,'calibrate.line_length');
   p.style.marginBottom='8px';
   const row=document.createElement('div');row.style.cssText='display:flex;gap:6px;align-items:center';
   const inp=document.createElement('input');
@@ -5524,14 +5525,14 @@ html,body{background:#efece5;min-height:100vh;display:flex;flex-direction:column
 ${APS().length?`<table class="at"><thead><tr><th>#</th><th>Name</th><th>Model</th><th>Freq</th><th>Ch</th><th>TX</th><th>Signal</th><th>IP</th><th>MAC</th><th>Port</th><th>VLAN</th><th>Notes</th></tr></thead><tbody>${APS().map((ap,i)=>`<tr><td>${i+1}</td><td>${apImg.has(ap)?`<img class="thumb" src="${apImg.get(ap)}" alt=""/>`:''}${ap.name}</td><td>${ap.model||''}</td><td>${ap.freq}</td><td style="font-family:'Share Tech Mono',monospace;font-size:10px">${ap.channel||'auto'}</td><td style="font-family:'Share Tech Mono',monospace;font-size:10px">${ap.txPower||'auto'}</td><td class="${{strong:'ss',medium:'sm',weak:'sw'}[ap.sig]}">${{strong:'● Strong',medium:'● Medium',weak:'● Weak'}[ap.sig]}</td><td style="font-family:'Share Tech Mono',monospace;font-size:10px">${ap.ip||'—'}</td><td style="font-family:'Share Tech Mono',monospace;font-size:10px">${ap.mac||'—'}</td><td>${ap.port||'—'}</td><td>${ap.vlan||'—'}</td><td style="font-size:10px;color:rgba(0,0,0,.55)">${esc(ap.comment||ap.notes||'—')}</td></tr>`).join('')}</tbody></table>`:''}
 ${SETTINGS.footerLine?`<footer class="ft">${esc(SETTINGS.footerLine)}</footer>`:''}
 </body></html>`;
-  const blob=new Blob([html],{type:'text/html'});const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=(name||'wifi').replace(/\s+/g,'_')+'_coverage.html';a.click();toast('Exported!');
+  const blob=new Blob([html],{type:'text/html'});const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=(name||'wifi').replace(/\s+/g,'_')+'_coverage.html';a.click();toast(t('toast.exported'));
 }
 
 // ═══ PDF ══════════════════════════════════════════
 async function doPDF(){
   // Resolve each floor's image (from IDB) and load it into a temporary
   // HTMLImageElement so we know its natural dimensions for the overlay SVG.
-  toast('Building PDF…');
+  toast(t('export.building_pdf'));
   const floorRecords=[];
   for(const f of FLOORS){
     const src=await resolveFloorImage(f).catch(()=>f.img||'');
@@ -5661,7 +5662,7 @@ ${SETTINGS.footerLine?`<div class="footer-line">${esc(SETTINGS.footerLine)}</div
 <button class="print-btn" onclick="window.print()">Print / Save as PDF</button>
 </body></html>`);
   w.document.close();
-  toast('PDF preview opened — use Print to save as PDF');
+  toast(t('export.pdf_preview'));
 }
 
 // ═══ INIT ═════════════════════════════════════════
