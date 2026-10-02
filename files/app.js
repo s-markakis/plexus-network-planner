@@ -626,19 +626,21 @@ function topologyModel(){
   return {all,byId,children,roots};
 }
 // A switch's port grid as HTML (filled cells = device on that port number).
-function portGridHtml(a,border){
+function portGridHtml(a,border,localized=false){
   border=border||'var(--ink-04)';
-  if(a.ports==null)return `<div style="font-size:11px;opacity:.7">${a.used} device(s) · port count unknown</div>`;
+  if(a.ports==null)return `<div style="font-size:11px;opacity:.7">${localized?panelText('topology.unknown_ports',{n:a.used}):`${a.used} device(s) · port count unknown`}</div>`;
   const byPort=new Map();
   for(const c of a.clients){const p=parseInt(c.port,10);if(p>=1&&p<=a.ports)byPort.set(p,c);}
   let cells='';
   for(let i=1;i<=a.ports;i++){
     const c=byPort.get(i);
     const bg=c?(c.type==='AP'?'#1565c0':'#6a1b9a'):'transparent';
-    cells+=`<div title="${esc(c?`Port ${i}: ${c.name} (${c.model})`:`Port ${i}: free`)}" style="width:17px;height:14px;border:1px solid ${border};border-radius:2px;display:flex;align-items:center;justify-content:center;font-size:8px;font-family:'Share Tech Mono',monospace;background:${bg};color:${c?'#fff':'inherit'}">${i}</div>`;
+    const titleKey=c?'topology.port_used':'topology.port_free';
+    const titleVars={n:i,name:c?.name||'',model:c?.model||''};
+    cells+=`<div ${localized?`data-i18n-title="${titleKey}" data-i18n-vars="${esc(JSON.stringify(titleVars))}" `:''}title="${esc(c?`Port ${i}: ${c.name} (${c.model})`:`Port ${i}: free`)}" style="width:17px;height:14px;border:1px solid ${border};border-radius:2px;display:flex;align-items:center;justify-content:center;font-size:8px;font-family:'Share Tech Mono',monospace;background:${bg};color:${c?'#fff':'inherit'}">${i}</div>`;
   }
   const noPort=a.clients.filter(c=>{const p=parseInt(c.port,10);return !(p>=1&&p<=a.ports);});
-  const extra=noPort.length?`<div style="font-size:10px;opacity:.6;margin-top:3px">${noPort.length} device(s) without a port #</div>`:'';
+  const extra=noPort.length?`<div style="font-size:10px;opacity:.6;margin-top:3px">${localized?panelText('topology.missing_ports',{n:noPort.length}):`${noPort.length} device(s) without a port #`}</div>`:'';
   return `<div style="display:flex;flex-wrap:wrap;gap:3px">${cells}</div>${extra}`;
 }
 // Suggest the next free IP within a device's VLAN subnet (CIDR like
@@ -900,8 +902,8 @@ function showPoESummary(){
     totalDraw+=a.draw;totalBudget+=a.budget;
     const sec=document.createElement('div');sec.style.cssText='margin-bottom:14px;padding-bottom:10px;border-bottom:1px solid rgba(0,0,0,.08)';
     const head=document.createElement('div');head.style.cssText='display:flex;justify-content:space-between;font-weight:600;margin-bottom:4px';
-    const portStr=a.ports!=null?` · ${a.used}/${a.ports} ports`:` · ${a.used} ports`;
-    head.innerHTML=`<span>${esc(sw.name)} <span style="font-family:'Share Tech Mono';font-size:10px;opacity:.6">${esc(sw.model||'')}${esc(portStr)}</span></span>
+    const portStr=a.ports!=null?panelText('poe.ports_known',{used:a.used,ports:a.ports}):panelText('poe.ports_unknown',{used:a.used});
+    head.innerHTML=`<span>${esc(sw.name)} <span style="font-family:'Share Tech Mono';font-size:10px;opacity:.6">${esc(sw.model||'')}${portStr}</span></span>
       <span style="font-family:'Share Tech Mono';color:${a.overBudget?'#c0382b':'#1e7d3c'}">${a.draw.toFixed(1)} W${a.budget>0?` / ${a.budget} W${a.headroom!=null?` · ${a.headroom}%`:''}`:''}</span>`;
     sec.appendChild(head);
     if(!a.clients.length){
@@ -915,14 +917,14 @@ function showPoESummary(){
         sec.appendChild(li);
       }
     }
-    const warn=(txt)=>{const d=document.createElement('div');d.style.cssText='font-size:11px;color:#c0382b;margin-top:4px;font-weight:600';d.textContent=txt;sec.appendChild(d);};
-    if(a.overBudget)warn('⚠ Draw exceeds budget — switch may shut down PoE on lower-priority ports.');
-    if(a.overPorts)warn(`⚠ ${a.used} devices on a ${a.ports}-port switch — over capacity.`);
-    if(a.classFails.length)warn(`⚠ ${a.classFails.length} device(s) need ${a.classFails.map(c=>c.cls).sort().pop()} PoE; switch delivers ${a.swCls||'none'}.`);
+    const warn=(key,vars={})=>{const d=document.createElement('div');d.style.cssText='font-size:11px;color:#c0382b;margin-top:4px;font-weight:600';d.setAttribute('data-i18n-vars',JSON.stringify(vars));localizeText(d,key);sec.appendChild(d);};
+    if(a.overBudget)warn('poe.draw_warning');
+    if(a.overPorts)warn('poe.port_warning',{used:a.used,ports:a.ports});
+    if(a.classFails.length)warn(a.swCls?'poe.class_warning':'poe.class_warning_none',{n:a.classFails.length,required:a.classFails.map(c=>c.cls).sort().pop(),delivered:a.swCls||''});
     wrap.appendChild(sec);
   }
   const total=document.createElement('div');total.style.cssText='margin-top:8px;padding-top:8px;border-top:1px solid #000;font-weight:600;display:flex;justify-content:space-between';
-  total.innerHTML=`<span>Total</span><span style="font-family:'Share Tech Mono'">${totalDraw.toFixed(1)} W${totalBudget>0?` / ${totalBudget} W`:''}</span>`;
+  total.innerHTML=`${panelText('poe.total')}<span style="font-family:'Share Tech Mono'">${totalDraw.toFixed(1)} W${totalBudget>0?` / ${totalBudget} W`:''}</span>`;
   wrap.appendChild(total);
   const foot=document.createElement('div');foot.style.cssText='margin-top:12px;display:flex;gap:8px;flex-wrap:wrap';
   const mkBtn=(label,fn)=>{const b=document.createElement('button');b.className='btn';localizeText(b,label);b.addEventListener('click',fn);foot.appendChild(b);};
@@ -1129,9 +1131,9 @@ function showTopology(){
     const row=document.createElement('div');
     row.style.cssText=`padding:3px 0 3px ${depth*18}px;display:flex;justify-content:space-between;gap:10px`;
     const portStr=a.ports!=null?`${a.used}/${a.ports}`:`${a.used}`;
-    const floorTag=multiFloor?` <span style="opacity:.45;font-size:9px">[${esc(e.floor.name||('Floor '+(e.floorIdx+1)))}]</span>`:'';
+    const floorTag=multiFloor?` <span style="opacity:.45;font-size:9px">[${e.floor.name?esc(e.floor.name):panelText('topology.floor',{n:e.floorIdx+1})}]</span>`:'';
     row.innerHTML=`<span>${depth?'└ ':''}⊞ <strong>${esc(e.sw.name)}</strong> <span style="opacity:.55;font-family:'Share Tech Mono';font-size:10px">${esc(e.sw.model||'')}</span>${floorTag}</span>
-      <span style="font-family:'Share Tech Mono';font-size:10px;opacity:.7">${portStr} ports · ${a.draw.toFixed(0)} W</span>`;
+      <span style="font-family:'Share Tech Mono';font-size:10px;opacity:.7">${panelText('topology.usage',{ports:portStr,draw:a.draw.toFixed(0)})}</span>`;
     tree.appendChild(row);
     children.get(e.sw.id).forEach(c=>renderNode(c,depth+1));
   };
@@ -1142,7 +1144,7 @@ function showTopology(){
   for(const e of all){
     const a=analyzeSwitch(e.sw,e.floor);
     const unit=document.createElement('div');unit.style.cssText='margin-bottom:8px;padding:6px 8px;border:1px solid var(--ink-04);border-radius:3px';
-    unit.innerHTML=`<div style="display:flex;justify-content:space-between;font-size:11px;margin-bottom:4px"><span><strong>${esc(e.sw.name)}</strong> <span style="opacity:.55;font-size:10px">${esc(e.sw.model||'')}</span></span><span style="font-family:'Share Tech Mono';opacity:.7">${a.ports!=null?`${a.used}/${a.ports}`:`${a.used}/?`}${a.overPorts?' ⚠':''}</span></div>${portGridHtml(a)}`;
+    unit.innerHTML=`<div style="display:flex;justify-content:space-between;font-size:11px;margin-bottom:4px"><span><strong>${esc(e.sw.name)}</strong> <span style="opacity:.55;font-size:10px">${esc(e.sw.model||'')}</span></span><span style="font-family:'Share Tech Mono';opacity:.7">${a.ports!=null?`${a.used}/${a.ports}`:`${a.used}/?`}${a.overPorts?' ⚠':''}</span></div>${portGridHtml(a,undefined,true)}`;
     wrap.appendChild(unit);
   }
   // Cabling rollup.
@@ -1150,7 +1152,7 @@ function showTopology(){
   if(cable.runs>0){
     const boxM=parseFloat(SETTINGS.cableBoxM)||305;
     const cl=document.createElement('div');cl.style.cssText='margin-top:12px;padding-top:8px;border-top:1px solid var(--ink-04);font-size:11px;opacity:.8';
-    cl.textContent=`Cabling: ${cable.runs} runs · ~${cable.totalM} m incl. slack (×${routingFactor()} routing) · ~${Math.ceil(cable.totalM/boxM)} box(es)`;
+    cl.setAttribute('data-i18n-vars',JSON.stringify({runs:cable.runs,meters:cable.totalM,routing:routingFactor(),boxes:Math.ceil(cable.totalM/boxM)}));localizeText(cl,'topology.cabling');
     wrap.appendChild(cl);
   }
   showModalNode({i18n:'modal.topology'},wrap,null);
@@ -3866,7 +3868,7 @@ function _snapshotForRevision(){
   return JSON.parse(JSON.stringify(FLOORS,_stripCacheReplacer));
 }
 function newRevision(){
-  const name=prompt('Revision name (e.g., "rev B – after client walk")','rev '+String.fromCharCode(65+PROJECT_REVISIONS.length));
+  const name=prompt(t('revisions.name_prompt'),'rev '+String.fromCharCode(65+PROJECT_REVISIONS.length));
   if(!name)return;
   PROJECT_REVISIONS.push({
     id:'rev'+(++nid),
@@ -3889,33 +3891,35 @@ function restoreRevision(id){
   });
 }
 function _diffRevisions(a,b){
+  // Escaped display spans update in place when the language changes.
   // Walk floor by floor and report adds/removes/moves of APs+CAMs+SWs+DZs+WALLS.
   const out=[];
   const fLen=Math.max(a.length,b.length);
   for(let i=0;i<fLen;i++){
     const fa=a[i],fb=b[i];
-    if(!fa){out.push(`+ Floor "${fb.name||i}" added`);continue;}
-    if(!fb){out.push(`- Floor "${fa.name||i}" removed`);continue;}
+    if(!fa){out.push(panelText('revisions.floor_added',{name:fb.name||i}));continue;}
+    if(!fb){out.push(panelText('revisions.floor_removed',{name:fa.name||i}));continue;}
     for(const kind of ['APS','CAMS','SWS','DZS','WALLS']){
       const la=fa[kind]||[],lb=fb[kind]||[];
+      const kindLabel=panelText('revisions.kind.'+kind);
       const ids=new Set([...la.map(x=>x.id),...lb.map(x=>x.id)]);
       for(const id of ids){
         const ia=la.find(x=>x.id===id), ib=lb.find(x=>x.id===id);
-        if(ia && !ib)out.push(`- [${fa.name||i}] ${kind.slice(0,-1)} ${ia.name||id} removed`);
-        else if(!ia && ib)out.push(`+ [${fb.name||i}] ${kind.slice(0,-1)} ${ib.name||id} added`);
+        if(ia && !ib)out.push(`- [${esc(fa.name||i)}] ${kindLabel} ${esc(ia.name||id)} ${panelText('revisions.removed')}`);
+        else if(!ia && ib)out.push(`+ [${esc(fb.name||i)}] ${kindLabel} ${esc(ib.name||id)} ${panelText('revisions.added')}`);
         else if(ia && ib){
           // Walls carry endpoint coords (fx1/fy1/fx2/fy2); everything else
           // has a single fx/fy anchor.
           const moved=kind==='WALLS'
             ? (ia.fx1!==ib.fx1||ia.fy1!==ib.fy1||ia.fx2!==ib.fx2||ia.fy2!==ib.fy2)
             : (ia.fx!==ib.fx||ia.fy!==ib.fy);
-          if(moved)out.push(`~ [${fa.name||i}] ${kind.slice(0,-1)} ${ia.name||id} ${kind==='WALLS'?'reshaped':'moved'}`);
+          if(moved)out.push(`~ [${esc(fa.name||i)}] ${kindLabel} ${esc(ia.name||id)} ${panelText(kind==='WALLS'?'revisions.reshaped':'revisions.moved')}`);
           // Field-level changes — the as-designed vs as-built story: identity,
           // wiring and rollout fields, not geometry.
           if(kind!=='WALLS'&&kind!=='DZS'){
             for(const fld of ['name','model','ip','vlan','port','swId','status','serial','channel','txPower']){
               const va=ia[fld]??'',vb=ib[fld]??'';
-              if(String(va)!==String(vb))out.push(`~ [${fa.name||i}] ${kind.slice(0,-1)} ${ia.name||id}: ${fld} ${va===''?'(empty)':va} → ${vb===''?'(empty)':vb}`);
+              if(String(va)!==String(vb))out.push(`~ [${esc(fa.name||i)}] ${kindLabel} ${esc(ia.name||id)}: ${panelText('revisions.field.'+fld)} ${va===''?panelText('revisions.empty_value'):esc(va)} → ${vb===''?panelText('revisions.empty_value'):esc(vb)}`);
             }
           }
         }
@@ -3935,7 +3939,8 @@ function showRevisions(){
     const showDiff=(lines,label)=>{
       const old=wrap.querySelector('.rev-diff');if(old)old.remove();
       const out=document.createElement('pre');out.className='rev-diff';
-      out.textContent=(label?label+'\n\n':'')+(lines.length?lines.join('\n'):'(no differences detected)');
+      out.innerHTML=(label?label+'\n\n':'')+(lines.length?lines.join('\n'):panelText('revisions.no_diff'));
+      localizeDOM(out);
       wrap.appendChild(out);
     };
     for(const rev of PROJECT_REVISIONS){
@@ -3957,7 +3962,7 @@ function showRevisions(){
       const d=document.createElement('button');d.className='btn';localizeText(d,'revisions.diff');
       d.setAttribute('data-i18n-title','revisions.diff_tip');d.title=t('revisions.diff_tip');
       d.addEventListener('click',()=>{
-        showDiff(_diffRevisions(rev.snapshot,_snapshotForRevision()),`${rev.name} → current state`);
+        showDiff(_diffRevisions(rev.snapshot,_snapshotForRevision()),`${esc(rev.name)} → ${panelText('revisions.current_state')}`);
       });
       const r=document.createElement('button');r.className='btn';localizeText(r,'revisions.restore');
       r.addEventListener('click',()=>{closeModal();restoreRevision(rev.id);});
@@ -3978,7 +3983,8 @@ function showRevisions(){
         const b=PROJECT_REVISIONS[PROJECT_REVISIONS.length-1].snapshot;
         const lines=_diffRevisions(a,b);
         const out=document.createElement('pre');out.className='rev-diff';
-        out.textContent=lines.length?lines.join('\n'):'(no differences detected)';
+        out.innerHTML=lines.length?lines.join('\n'):panelText('revisions.no_diff');
+        localizeDOM(out);
         wrap.appendChild(out);
       });
       wrap.appendChild(diffBtn);
