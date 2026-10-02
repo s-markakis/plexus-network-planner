@@ -24,6 +24,7 @@ import {
   channelsOverlapMhz,
   widthThroughputMult,
 } from './src/geometry.js';
+import {localizeMigrationMessage} from './src/localizeMigration.js';
 import {computeHeatGrid} from './src/heatmap.js';
 // Heatmap computation runs in a Web Worker (inline-bundled like the PDF
 // worker) so dragging an AP never janks the main thread. computeHeatGrid is
@@ -60,7 +61,8 @@ import {encryptObject,decryptObject} from './src/crypto.js';
 // portable single-file build still works from file:// with no external fetch.
 import * as pdfjsLib from 'pdfjs-dist';
 import PdfWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?worker&inline';
-import {t,setLang,getLang,availableLangs} from './src/i18n.js';
+import {t,setLang,getLang,availableLangs,onLanguageChange} from './src/i18n.js';
+import {localizeDOM,localizeText} from './src/localizeDom.js';
 import {detectWalls} from './src/walldetect.js';
 import {parseDxf} from './src/dxf.js';
 import {importEsx,buildEsxZip} from './src/esx.js';
@@ -176,21 +178,12 @@ function buildGroupedOptions(groups,selected){
   return groups.map(g=>{
     const opts=g.models.map(m=>{
       const isSel=(m===selected)||(!known&&m==='Custom/Other');
-      return `<option${isSel?' selected':''}>${esc(m)}</option>`;
+      return `<option value="${esc(m)}"${isSel?' selected':''}${m==='Custom/Other'?' data-i18n="panel.custom_other"':''}>${esc(m)}</option>`;
     }).join('');
-    return `<optgroup label="${esc(g.label)}">${opts}</optgroup>`;
+    return `<optgroup label="${esc(g.label)}"${g.label==='Other'&&g.models.length===1&&g.models[0]==='Custom/Other'?' data-i18n-label="panel.other"':''}>${opts}</optgroup>`;
   }).join('');
 }
-const HINTS={
-  add: 'Click map to place an AP',
-  sel: 'Click an item to select · Shift+click to add to selection · drag to move',
-  dz:  'Click to mark a dead zone',
-  sw:  'Click to place a switch or router',
-  cam: 'Click to place a camera · rotate via heading slider in the panel',
-  ruler:'Click two points to measure · Esc to clear',
-  wall:'Click two points to draw a wall · Shift for 45° · Esc to cancel',
-  survey:'Click where you are standing — the desktop app samples the live WiFi signal there'
-};
+
 
 // Image store (IndexedDB-backed) lives in ./src/imageStore.js. We import
 // idbPutImage / idbGetImage / idbDeleteImage / newImgId / imgCache /
@@ -296,7 +289,7 @@ function renderFloorTabs(){
     // Delete × (only shown when more than one floor exists)
     if(canDelete){
       const x=document.createElement('button');
-      x.className='ftab-del';x.textContent='×';x.title='Delete floor';
+      x.className='ftab-del';x.textContent='×';x.setAttribute('data-i18n-title','help.delete_floor');x.title=t('help.delete_floor');
       x.addEventListener('click',e=>{
         e.stopPropagation();
         askDeleteFloor(i);
@@ -320,13 +313,13 @@ function renderFloorTabs(){
   document.getElementById('fl-cnt').textContent=FLOORS.length;
 }
 function askDeleteFloor(i){
-  if(FLOORS.length<=1){toast('Cannot delete the only floor');return;}
+  if(FLOORS.length<=1){toast(t('notify.cannot_delete_the_only_floor'));return;}
   const f=FLOORS[i];
   const total=(f.APS?.length||0)+(f.DZS?.length||0)+(f.SWS?.length||0);
   const body=total>0
-    ? `Delete <strong>${esc(f.name)}</strong>?<br><br>This will remove ${total} item${total===1?'':'s'} on this floor.`
-    : `Delete <strong>${esc(f.name)}</strong>?`;
-  showModal('Delete Floor',body,()=>deleteFloor(i));
+    ? t('confirm.floor_items',{name:esc(f.name),n:total,suffix:total===1?'':'s'})
+    : t('confirm.floor',{name:esc(f.name)});
+  showModal({i18n:'modal.delete_floor'},body,()=>deleteFloor(i));
 }
 function deleteFloor(i){
   if(FLOORS.length<=1)return;
@@ -341,7 +334,7 @@ function deleteFloor(i){
   else if(curFloor>i)curFloor--;
   selId=null;selType=null;
   loadFloorImage();renderFloorTabs();render();renderList();renderRP();
-  toast('Floor deleted');
+  toast(t('notify.floor_deleted'));
 }
 function startFloorRename(nameEl,floor){
   const tabEl=nameEl.parentElement;
@@ -377,7 +370,7 @@ function addFloor(){
   const inheritedScale=F()?.scaleM||100;
   FLOORS.push({id:'f'+(++nid),name:defaultName,img:'',imgId:'',imgName:'',APS:[],DZS:[],SWS:[],WALLS:[],CAMS:[],ANNOS:[],SAMPLES:[],scaleM:inheritedScale});
   switchFloor(FLOORS.length-1);
-  toast('Floor added');
+  toast(t('notify.floor_added'));
   // Immediately enter rename mode on the new tab so user can pick a real name
   setTimeout(()=>{
     const tabs=document.querySelectorAll('#floor-tabs .ftab');
@@ -402,7 +395,7 @@ function loadFloorImage(){
   // render correctly during the transition.
   const applySrc=(src,name)=>{
     mapImg.src=src||'';if(mmImg)mmImg.src=src||'';
-    document.getElementById('brand-lbl').textContent=src?(SETTINGS.company||'Plexus')+' · '+(name||''):(SETTINGS.company||'Plexus')+' Planner';
+    document.getElementById('brand-lbl').textContent=src?(SETTINGS.company||'Plexus')+' · '+(name||''):(SETTINGS.company||'Plexus')+' '+t('app.planner');
     if(src&&mapImg.complete&&mapImg.naturalWidth>0){fitZoom();render();renderMM();updateScaleBar();calcCoverage();}
     updateEmptyState();
   };
@@ -428,7 +421,7 @@ async function _applyMapDataUrl(dataUrl,name,label){
     mapImg.src=dataUrl;if(mmImg)mmImg.src=dataUrl;
     document.getElementById('brand-lbl').textContent=(SETTINGS.company||'Plexus')+' · '+name;
     updateEmptyState();
-    toast('Map loaded: '+label);
+    toast(t('notify.map_loaded')+label);
     if(oldId&&oldId!==id)idbDeleteImage(oldId).catch(()=>{});
   }catch(err){
     // IndexedDB unavailable or quota exceeded — fall back to inline.
@@ -436,7 +429,7 @@ async function _applyMapDataUrl(dataUrl,name,label){
     mapImg.src=dataUrl;if(mmImg)mmImg.src=dataUrl;
     document.getElementById('brand-lbl').textContent=(SETTINGS.company||'Plexus')+' · '+name;
     updateEmptyState();
-    toast('Map loaded (inline fallback)');
+    toast(t('notify.map_loaded_inline_fallback'));
   }
 }
 // Render the first page of a PDF to a PNG data-URL at a crisp resolution.
@@ -464,10 +457,10 @@ function uploadMap(input){
   const name=file.name.replace(/\.[^/.]+$/,'');
   const isPdf=file.type==='application/pdf'||/\.pdf$/i.test(file.name);
   if(isPdf){
-    toast('Rendering PDF…');
+    toast(t('notify.rendering_pdf'));
     _pdfFirstPageDataUrl(file)
       .then(dataUrl=>_applyMapDataUrl(dataUrl,name,file.name+' (page 1)'))
-      .catch(err=>{console.error('PDF import failed',err);toast('Could not read PDF: '+(err&&err.message||err));});
+      .catch(err=>{console.error('PDF import failed',err);toast(t('notify.could_not_read_pdf')+(err&&err.message||err));});
     input.value='';
     return;
   }
@@ -485,7 +478,7 @@ function uploadMap(input){
 // finishes in well under a second for realistic floor sizes.
 function autoPlaceAPs(){
   const w=mapImg.naturalWidth,h=mapImg.naturalHeight;
-  if(!w||!h){toast('Upload a map first');return;}
+  if(!w||!h){toast(t('notify.upload_a_map_first'));return;}
   const model=AP_RANGE_M[SETTINGS.lastModel]?SETTINGS.lastModel:'U6 Pro';
   const r=rangeMToPx(AP_RANGE_M[model]);
   // Build a sample grid (the same one sampleFloorCoverage uses, conceptually).
@@ -552,7 +545,7 @@ function autoPlaceAPs(){
   render();renderList();renderRP();calcCoverage();
   if(placedNow.length){
     const pct=Math.round(coveredCount()/samples.length*100);
-    toast(`Placed ${placedNow.length} ${model} AP${placedNow.length===1?'':'s'} — ${pct}% coverage`);
+    toast(t('notify.placed',{n:placedNow.length,model,pct,suffix:placedNow.length===1?'':'s'}));
     // Capacity sanity check vs this floor's switches (ports + PoE budget).
     if(SWS().length){
       let ports=0,portsKnown=true,budget=0;
@@ -560,12 +553,12 @@ function autoPlaceAPs(){
       const devCount=APS().length+CAMS().length;
       const draw=APS().reduce((n,a)=>n+(AP_POE_W[a.model]||10),0)+CAMS().reduce((n,c)=>n+((CAM_SPECS[c.model]||{}).poeW||0),0);
       const issues=[];
-      if(portsKnown && devCount>ports)issues.push(`${devCount} devices vs ${ports} ports`);
-      if(budget>0 && draw>budget)issues.push(`${draw.toFixed(0)} W vs ${budget} W PoE`);
-      if(issues.length)toast('⚠ Switch capacity: '+issues.join(' · ')+' — add/upgrade switches');
+      if(portsKnown && devCount>ports)issues.push(t('notify.capacity_ports',{devices:devCount,ports}));
+      if(budget>0 && draw>budget)issues.push(t('notify.capacity_poe',{draw:draw.toFixed(0),budget}));
+      if(issues.length)toast(t('notify.switch_capacity')+issues.join(' · ')+t('notify.add_upgrade_switches'));
     }
   }else{
-    toast('Already at target coverage — nothing to place');
+    toast(t('notify.already_at_target_coverage_nothing_to_place'));
   }
 }
 
@@ -634,19 +627,21 @@ function topologyModel(){
   return {all,byId,children,roots};
 }
 // A switch's port grid as HTML (filled cells = device on that port number).
-function portGridHtml(a,border){
+function portGridHtml(a,border,localized=false){
   border=border||'var(--ink-04)';
-  if(a.ports==null)return `<div style="font-size:11px;opacity:.7">${a.used} device(s) · port count unknown</div>`;
+  if(a.ports==null)return `<div style="font-size:11px;opacity:.7">${localized?panelText('topology.unknown_ports',{n:a.used}):`${a.used} device(s) · port count unknown`}</div>`;
   const byPort=new Map();
   for(const c of a.clients){const p=parseInt(c.port,10);if(p>=1&&p<=a.ports)byPort.set(p,c);}
   let cells='';
   for(let i=1;i<=a.ports;i++){
     const c=byPort.get(i);
     const bg=c?(c.type==='AP'?'#1565c0':'#6a1b9a'):'transparent';
-    cells+=`<div title="${esc(c?`Port ${i}: ${c.name} (${c.model})`:`Port ${i}: free`)}" style="width:17px;height:14px;border:1px solid ${border};border-radius:2px;display:flex;align-items:center;justify-content:center;font-size:8px;font-family:'Share Tech Mono',monospace;background:${bg};color:${c?'#fff':'inherit'}">${i}</div>`;
+    const titleKey=c?'topology.port_used':'topology.port_free';
+    const titleVars={n:i,name:c?.name||'',model:c?.model||''};
+    cells+=`<div ${localized?`data-i18n-title="${titleKey}" data-i18n-vars="${esc(JSON.stringify(titleVars))}" `:''}title="${esc(c?`Port ${i}: ${c.name} (${c.model})`:`Port ${i}: free`)}" style="width:17px;height:14px;border:1px solid ${border};border-radius:2px;display:flex;align-items:center;justify-content:center;font-size:8px;font-family:'Share Tech Mono',monospace;background:${bg};color:${c?'#fff':'inherit'}">${i}</div>`;
   }
   const noPort=a.clients.filter(c=>{const p=parseInt(c.port,10);return !(p>=1&&p<=a.ports);});
-  const extra=noPort.length?`<div style="font-size:10px;opacity:.6;margin-top:3px">${noPort.length} device(s) without a port #</div>`:'';
+  const extra=noPort.length?`<div style="font-size:10px;opacity:.6;margin-top:3px">${localized?panelText('topology.missing_ports',{n:noPort.length}):`${noPort.length} device(s) without a port #`}</div>`:'';
   return `<div style="display:flex;flex-wrap:wrap;gap:3px">${cells}</div>${extra}`;
 }
 // Suggest the next free IP within a device's VLAN subnet (CIDR like
@@ -699,9 +694,9 @@ function apAirtimePct(ap,floor){
 }
 function _airtimeLabel(ap){
   const pct=apAirtimePct(ap);
-  if(pct===Infinity)return '∞ (no throughput)';
+  if(pct===Infinity)return panelText('panel.no_throughput');
   const flag=pct>90?' ⚠':'';
-  return pct+'%'+flag+` @ ${parseFloat(SETTINGS.perClientMbps)||5} Mbps/client`;
+  return panelText('panel.airtime_value',{pct,flag,rate:parseFloat(SETTINGS.perClientMbps)||5});
 }
 
 function totalClientCapacity(){
@@ -765,11 +760,11 @@ function analyzeSwitch(sw,floor){
 function portOptions(ports,cur){
   cur=(cur==null?'':String(cur)).trim();
   const curNum=/^\d+$/.test(cur)?parseInt(cur,10):null;
-  let html=`<option value=""${cur===''?' selected':''}>— unassigned —</option>`;
+  let html=`<option value=""${cur===''?' selected':''} data-i18n="panel.unassigned">— unassigned —</option>`;
   if(cur!=='' && (curNum===null || (ports!=null && (curNum<1||curNum>ports))))
-    html+=`<option value="${esc(cur)}" selected>${esc(cur)} (custom)</option>`;
+    html+=`<option value="${esc(cur)}" selected data-i18n="panel.custom_port" data-i18n-vars="${esc(JSON.stringify({port:cur}))}">${esc(cur)} (custom)</option>`;
   if(ports!=null)for(let i=1;i<=ports;i++)
-    html+=`<option value="${i}"${curNum===i?' selected':''}>Port ${i}</option>`;
+    html+=`<option value="${i}"${curNum===i?' selected':''} data-i18n="panel.port_number" data-i18n-vars="${esc(JSON.stringify({n:i}))}">Port ${i}</option>`;
   return html;
 }
 // A port picker: numbered <select> when the switch's port count is known, else
@@ -778,21 +773,21 @@ function portControl(ports,cur,attrs){
   cur=cur==null?'':String(cur);
   return ports!=null
     ? `<select class="ep-sel" ${attrs}>${portOptions(ports,cur)}</select>`
-    : `<input class="ep-in" type="number" min="1" value="${esc(cur)}" placeholder="Port #" ${attrs}/>`;
+    : `<input class="ep-in" type="number" min="1" value="${esc(cur)}" placeholder="Port #" data-i18n-placeholder="panel.port_hint" ${attrs}/>`;
 }
 // <option>s for the install-status picker.
 function statusOptions(cur){
   cur=DEVICE_STATUSES.includes(cur)?cur:'planned';
-  return DEVICE_STATUSES.map(s=>`<option value="${s}"${s===cur?' selected':''}>${DEVICE_STATUS_META[s].label}</option>`).join('');
+  return DEVICE_STATUSES.map(s=>`<option value="${s}"${s===cur?' selected':''} data-i18n="status.${s}">${DEVICE_STATUS_META[s].label}</option>`).join('');
 }
 // Shared "Status & Inventory" panel section. `p` is the element-id prefix
 // (ep / cam / sw) and `act` the panel's data-input-action.
 function inventoryBlock(dev,p,act){
-  return `<div class="ep-section">Status &amp; Inventory</div>
-    <div class="ep-row"><label class="ep-lbl">Status</label><select class="ep-sel" id="${p}-status" data-input-action="${act}">${statusOptions(dev.status)}</select></div>
-    <div class="ep-row"><label class="ep-lbl">Serial #</label><input class="ep-in ep-mono" id="${p}-serial" value="${esc(dev.serial||'')}" data-input-action="${act}" placeholder="from the unit label"/></div>
-    <div class="ep-row"><label class="ep-lbl">Asset Tag</label><input class="ep-in ep-mono" id="${p}-asset" value="${esc(dev.assetTag||'')}" data-input-action="${act}" placeholder="ASSET-0001"/></div>
-    <div class="ep-row"><label class="ep-lbl">Firmware</label><input class="ep-in ep-mono" id="${p}-firmware" value="${esc(dev.firmware||'')}" data-input-action="${act}" placeholder="e.g. 6.5.28"/></div>`;
+  return `<div class="ep-section" data-i18n="panel.inventory">Status &amp; Inventory</div>
+    <div class="ep-row"><label class="ep-lbl" data-i18n="inventory.status">Status</label><select class="ep-sel" id="${p}-status" data-input-action="${act}">${statusOptions(dev.status)}</select></div>
+    <div class="ep-row"><label class="ep-lbl" data-i18n="panel.serial">Serial #</label><input class="ep-in ep-mono" id="${p}-serial" value="${esc(dev.serial||'')}" data-input-action="${act}" placeholder="from the unit label" data-i18n-placeholder="panel.serial_hint"/></div>
+    <div class="ep-row"><label class="ep-lbl" data-i18n="panel.asset">Asset Tag</label><input class="ep-in ep-mono" id="${p}-asset" value="${esc(dev.assetTag||'')}" data-input-action="${act}" placeholder="ASSET-0001"/></div>
+    <div class="ep-row"><label class="ep-lbl" data-i18n="panel.firmware">Firmware</label><input class="ep-in ep-mono" id="${p}-firmware" value="${esc(dev.firmware||'')}" data-input-action="${act}" placeholder="e.g. 6.5.28" data-i18n-placeholder="panel.firmware_hint"/></div>`;
 }
 // Read the shared section back into the device. Safe when the section isn't
 // in the current panel (elements missing → no-op).
@@ -813,9 +808,9 @@ function devSwitchPorts(dev){
 function suggestIp(type){
   const list=type==='cam'?CAMS():APS();
   const d=list.find(x=>x.id===selId);if(!d)return;
-  if(!vlanById(d.vlan)){toast('Set this device’s VLAN first (see Settings → VLANs)');return;}
+  if(!vlanById(d.vlan)){toast(t('notify.set_this_device_s_vlan_first_see_settings_vlans'));return;}
   const ip=nextFreeIp(d);
-  if(!ip){toast('No subnet on that VLAN, or its range is full');return;}
+  if(!ip){toast(t('notify.no_subnet_on_that_vlan_or_its_range_is_full'));return;}
   snapshot();d.ip=ip;
   render();renderList();
   if(type==='cam')renderCAMPanel();else renderAPPanel();
@@ -860,7 +855,7 @@ function autoAssignIps(){
     const v=vlanById(dev.vlan);
     return !!(v&&v.subnet);
   });
-  if(!todo.length){toast('No devices with a subnet-backed VLAN are missing an IP');return;}
+  if(!todo.length){toast(t('notify.no_devices_with_a_subnet_backed_vlan_are_missing_an_ip'));return;}
   snapshot();
   let n=0;
   for(const {dev} of todo){
@@ -870,13 +865,13 @@ function autoAssignIps(){
     dev.ip=ip;used.add(ip);n++;
   }
   render();renderList();renderRP();
-  toast(n?`Assigned ${n} IP address${n===1?'':'es'}`:'No free addresses left in the VLAN subnets');
+  toast(n?t('notify.ips',{n,suffix:n===1?'':t('notify.address_suffix')}):t('notify.no_free_addresses_left_in_the_vlan_subnets'));
 }
 // Rename every AP/camera/switch to the convention in SETTINGS.namePattern,
 // numbering devices per floor and type in list order.
 function autoRenameDevices(){
   const pattern=(SETTINGS.namePattern||'').trim();
-  if(!patternHasNumber(pattern)){toast('Set a name pattern with a number token first (Settings → Organization)');return;}
+  if(!patternHasNumber(pattern)){toast(t('notify.set_a_name_pattern_with_a_number_token_first_settings_organization'));return;}
   snapshot();
   let n=0;
   FLOORS.forEach((f,floorIdx)=>{
@@ -888,7 +883,7 @@ function autoRenameDevices(){
     }
   });
   render();renderList();renderRP();
-  toast(n?`Renamed ${n} device${n===1?'':'s'}`:'All names already follow the pattern');
+  toast(n?t('notify.renamed',{n,suffix:n===1?'':'s'}):t('notify.all_names_already_follow_the_pattern'));
 }
 
 // Walk every switch on the current floor, summarise PoE draw vs budget, port
@@ -898,8 +893,8 @@ function showPoESummary(){
   wrap.style.cssText='font-family:Rajdhani,sans-serif;font-size:13px';
   const sws=SWS();
   if(!sws.length){
-    wrap.textContent='No switches placed yet. Drop a switch on the map (W) then assign APs/cameras to it.';
-    showModalNode('PoE Budget',wrap,null);
+    localizeText(wrap,'poe.empty_help');
+    showModalNode({i18n:'poe.title'},wrap,null);
     return;
   }
   let totalDraw=0,totalBudget=0;
@@ -908,12 +903,12 @@ function showPoESummary(){
     totalDraw+=a.draw;totalBudget+=a.budget;
     const sec=document.createElement('div');sec.style.cssText='margin-bottom:14px;padding-bottom:10px;border-bottom:1px solid rgba(0,0,0,.08)';
     const head=document.createElement('div');head.style.cssText='display:flex;justify-content:space-between;font-weight:600;margin-bottom:4px';
-    const portStr=a.ports!=null?` · ${a.used}/${a.ports} ports`:` · ${a.used} ports`;
-    head.innerHTML=`<span>${esc(sw.name)} <span style="font-family:'Share Tech Mono';font-size:10px;opacity:.6">${esc(sw.model||'')}${esc(portStr)}</span></span>
+    const portStr=a.ports!=null?panelText('poe.ports_known',{used:a.used,ports:a.ports}):panelText('poe.ports_unknown',{used:a.used});
+    head.innerHTML=`<span>${esc(sw.name)} <span style="font-family:'Share Tech Mono';font-size:10px;opacity:.6">${esc(sw.model||'')}${portStr}</span></span>
       <span style="font-family:'Share Tech Mono';color:${a.overBudget?'#c0382b':'#1e7d3c'}">${a.draw.toFixed(1)} W${a.budget>0?` / ${a.budget} W${a.headroom!=null?` · ${a.headroom}%`:''}`:''}</span>`;
     sec.appendChild(head);
     if(!a.clients.length){
-      const empty=document.createElement('div');empty.style.cssText='font-size:11px;opacity:.6;font-style:italic';empty.textContent='No devices assigned.';
+      const empty=document.createElement('div');empty.style.cssText='font-size:11px;opacity:.6;font-style:italic';localizeText(empty,'poe.unassigned');
       sec.appendChild(empty);
     }else{
       for(const c of a.clients){
@@ -923,24 +918,24 @@ function showPoESummary(){
         sec.appendChild(li);
       }
     }
-    const warn=(txt)=>{const d=document.createElement('div');d.style.cssText='font-size:11px;color:#c0382b;margin-top:4px;font-weight:600';d.textContent=txt;sec.appendChild(d);};
-    if(a.overBudget)warn('⚠ Draw exceeds budget — switch may shut down PoE on lower-priority ports.');
-    if(a.overPorts)warn(`⚠ ${a.used} devices on a ${a.ports}-port switch — over capacity.`);
-    if(a.classFails.length)warn(`⚠ ${a.classFails.length} device(s) need ${a.classFails.map(c=>c.cls).sort().pop()} PoE; switch delivers ${a.swCls||'none'}.`);
+    const warn=(key,vars={})=>{const d=document.createElement('div');d.style.cssText='font-size:11px;color:#c0382b;margin-top:4px;font-weight:600';d.setAttribute('data-i18n-vars',JSON.stringify(vars));localizeText(d,key);sec.appendChild(d);};
+    if(a.overBudget)warn('poe.draw_warning');
+    if(a.overPorts)warn('poe.port_warning',{used:a.used,ports:a.ports});
+    if(a.classFails.length)warn(a.swCls?'poe.class_warning':'poe.class_warning_none',{n:a.classFails.length,required:a.classFails.map(c=>c.cls).sort().pop(),delivered:a.swCls||''});
     wrap.appendChild(sec);
   }
   const total=document.createElement('div');total.style.cssText='margin-top:8px;padding-top:8px;border-top:1px solid #000;font-weight:600;display:flex;justify-content:space-between';
-  total.innerHTML=`<span>Total</span><span style="font-family:'Share Tech Mono'">${totalDraw.toFixed(1)} W${totalBudget>0?` / ${totalBudget} W`:''}</span>`;
+  total.innerHTML=`${panelText('poe.total')}<span style="font-family:'Share Tech Mono'">${totalDraw.toFixed(1)} W${totalBudget>0?` / ${totalBudget} W`:''}</span>`;
   wrap.appendChild(total);
   const foot=document.createElement('div');foot.style.cssText='margin-top:12px;display:flex;gap:8px;flex-wrap:wrap';
-  const mkBtn=(label,fn)=>{const b=document.createElement('button');b.className='btn';b.textContent=label;b.addEventListener('click',fn);foot.appendChild(b);};
-  mkBtn('⚯ Auto-assign to nearest switch',()=>{closeModal();autoAssignSwitches();});
-  mkBtn('✓ Validate network',()=>{closeModal();showValidation();});
+  const mkBtn=(label,fn)=>{const b=document.createElement('button');b.className='btn';localizeText(b,label);b.addEventListener('click',fn);foot.appendChild(b);};
+  mkBtn('poe.auto_assign',()=>{closeModal();autoAssignSwitches();});
+  mkBtn('poe.validate',()=>{closeModal();showValidation();});
   wrap.appendChild(foot);
   const hint=document.createElement('div');hint.style.cssText='margin-top:10px;font-size:10px;opacity:.55';
-  hint.textContent='PoE budgets / port counts are set per switch in the switch properties panel.';
+  localizeText(hint,'poe.hint');
   wrap.appendChild(hint);
-  showModalNode('PoE Budget',wrap,null);
+  showModalNode({i18n:'poe.title'},wrap,null);
 }
 
 // ── Auto-assign devices to nearest switch ─────────────────────────────────
@@ -950,7 +945,7 @@ function showPoESummary(){
 // is internally consistent.
 function autoAssignSwitches(){
   const sws=SWS();
-  if(!sws.length){toast('Place a switch first (W)');return;}
+  if(!sws.length){toast(t('notify.place_a_switch_first_w'));return;}
   const w=mapImg.naturalWidth||1,h=mapImg.naturalHeight||1;
   // Running tallies per switch so we don't oversubscribe as we assign.
   const state=new Map(sws.map(sw=>{
@@ -986,7 +981,7 @@ function autoAssignSwitches(){
   }
   render();renderList();renderRP();
   showCables=true;document.getElementById('btn-cables')?.classList.add('active');render();
-  toast(assigned?`Assigned ${assigned} device(s) to nearest switch`:'All devices already on nearest switch');
+  toast(assigned?t('notify.assigned',{n:assigned}):t('notify.all_devices_already_on_nearest_switch'));
 }
 
 // ── Network validation ────────────────────────────────────────────────────
@@ -998,17 +993,17 @@ function showValidation(){
   const sws=SWS();
   for(const sw of sws){
     const a=analyzeSwitch(sw,f);
-    if(a.overBudget)errors.push(`${sw.name}: PoE draw ${a.draw.toFixed(0)} W exceeds ${a.budget} W budget.`);
-    else if(a.budget>0 && a.headroom!=null && a.headroom<10 && a.draw>0)warns.push(`${sw.name}: only ${a.headroom}% PoE headroom left.`);
-    if(a.overPorts)errors.push(`${sw.name}: ${a.used} devices on ${a.ports} ports — over capacity.`);
-    for(const c of a.classFails)errors.push(`${c.name} needs ${c.cls} PoE but ${sw.name} delivers ${a.swCls||'none'}.`);
-    if(!a.swCls && a.clients.some(c=>c.w>0))warns.push(`${sw.name} has PoE devices but no PoE budget set.`);
+    if(a.overBudget)errors.push(t('validation.poe_over_budget',{v0:sw.name,v1:a.draw.toFixed(0),v2:a.budget}));
+    else if(a.budget>0 && a.headroom!=null && a.headroom<10 && a.draw>0)warns.push(t('validation.poe_headroom',{v0:sw.name,v1:a.headroom}));
+    if(a.overPorts)errors.push(t('validation.port_capacity',{v0:sw.name,v1:a.used,v2:a.ports}));
+    for(const c of a.classFails)errors.push(t('validation.poe_class',{v0:c.name,v1:c.cls,v2:sw.name,v3:a.swCls||'none'}));
+    if(!a.swCls && a.clients.some(c=>c.w>0))warns.push(t('validation.poe_unset',{v0:sw.name}));
     // Duplicate port labels on the same switch.
     const seen=new Map();
     for(const c of a.clients){
       const p=(c.port||'').trim().toLowerCase();
       if(!p)continue;
-      if(seen.has(p))warns.push(`${sw.name}: port "${c.port}" used by both ${seen.get(p)} and ${c.name}.`);
+      if(seen.has(p))warns.push(t('validation.duplicate_port',{v0:sw.name,v1:c.port,v2:seen.get(p),v3:c.name}));
       else seen.set(p,c.name);
     }
   }
@@ -1018,22 +1013,22 @@ function showValidation(){
     if(!dev.swId)return;
     const sw=sws.find(s=>s.id===dev.swId);if(!sw)return;
     const m=cableRunM(dev,sw,f);
-    if(m>100)errors.push(`${label}: cable run to ${sw.name} is ${m.toFixed(0)} m (>100 m Ethernet limit).`);
-    else if(m>90)warns.push(`${label}: cable run to ${sw.name} is ${m.toFixed(0)} m (near 100 m limit).`);
+    if(m>100)errors.push(t('validation.cable_too_long',{v0:label,v1:sw.name,v2:m.toFixed(0)}));
+    else if(m>90)warns.push(t('validation.cable_near_limit',{v0:label,v1:sw.name,v2:m.toFixed(0)}));
   };
   if(hasMap){APS().forEach(ap=>checkRun(ap,ap.name));CAMS().forEach(c=>checkRun(c,c.name));}
   // Unassigned devices (informational).
-  APS().forEach(ap=>{if(!ap.swId)infos.push(`${ap.name} is not assigned to a switch.`);});
-  CAMS().forEach(c=>{if(!c.swId)infos.push(`${c.name} is not assigned to a switch.`);});
+  APS().forEach(ap=>{if(!ap.swId)infos.push(t('validation.unassigned',{v0:ap.name}));});
+  CAMS().forEach(c=>{if(!c.swId)infos.push(t('validation.unassigned',{v0:c.name}));});
   // Duplicate IPs across all floor devices + switches.
   const ipMap=new Map();
-  const noteIp=(ip,name)=>{const k=(ip||'').trim();if(!k)return;if(ipMap.has(k))warns.push(`Duplicate IP ${k}: ${ipMap.get(k)} and ${name}.`);else ipMap.set(k,name);};
+  const noteIp=(ip,name)=>{const k=(ip||'').trim();if(!k)return;if(ipMap.has(k))warns.push(t('validation.duplicate_ip',{v0:k,v1:ipMap.get(k),v2:name}));else ipMap.set(k,name);};
   APS().forEach(ap=>noteIp(ap.ip,ap.name));
   CAMS().forEach(c=>noteIp(c.ip,c.name));
   sws.forEach(sw=>noteIp(sw.ip,sw.name));
   // VLANs referenced but not in the registry (only when a registry exists).
   if(vlanList().length){
-    const checkVlan=(dev,label)=>{const v=(dev.vlan||'').trim();if(v&&!vlanById(v))warns.push(`${label}: VLAN "${v}" is not in the VLAN registry.`);};
+    const checkVlan=(dev,label)=>{const v=(dev.vlan||'').trim();if(v&&!vlanById(v))warns.push(t('validation.unknown_vlan',{v0:label,v1:v}));};
     APS().forEach(ap=>checkVlan(ap,ap.name));
     CAMS().forEach(c=>checkVlan(c,c.name));
   }
@@ -1042,7 +1037,7 @@ function showValidation(){
     const v=vlanById(dev.vlan);
     const ip=(dev.ip||'').trim();
     if(!ip||!v||!v.subnet)return;
-    if(!ipInCidr(ip,v.subnet))warns.push(`${label}: IP ${ip} is outside VLAN ${v.id} subnet ${v.subnet}.`);
+    if(!ipInCidr(ip,v.subnet))warns.push(t('validation.ip_outside_subnet',{v0:label,v1:ip,v2:v.id,v3:v.subnet}));
   };
   APS().forEach(ap=>checkIpSubnet(ap,ap.name));
   CAMS().forEach(c=>checkIpSubnet(c,c.name));
@@ -1054,8 +1049,8 @@ function showValidation(){
       if(!v.subnet)continue;
       const u=subnetUsage(v.subnet,allIps);
       if(!u)continue;
-      if(u.pct>=100)errors.push(`VLAN ${v.id} subnet ${v.subnet} is full (${u.used}/${u.capacity} hosts).`);
-      else if(u.pct>=90)warns.push(`VLAN ${v.id} subnet ${v.subnet} is ${u.pct}% full (${u.used}/${u.capacity} hosts).`);
+      if(u.pct>=100)errors.push(t('validation.subnet_full',{v0:v.id,v1:v.subnet,v2:u.used,v3:u.capacity}));
+      else if(u.pct>=90)warns.push(t('validation.subnet_nearly_full',{v0:v.id,v1:v.subnet,v2:u.pct,v3:u.used,v4:u.capacity}));
     }
   }
   // Naming convention (when one is configured in Settings → Organization).
@@ -1067,7 +1062,7 @@ function showValidation(){
     }
     if(offenders.length){
       const shown=offenders.slice(0,3).join(', ');
-      warns.push(`${offenders.length} device name${offenders.length===1?'':'s'} break the "${SETTINGS.namePattern}" convention (${shown}${offenders.length>3?', …':''}) — Inventory → Auto-rename fixes them.`);
+      warns.push(t('validation.naming',{v0:offenders.length,v1:offenders.length===1?'':'s',v2:SETTINGS.namePattern,v3:shown,v4:offenders.length>3?', …':''}));
     }
   }
   // Per-AP airtime utilization (this floor). Demand = clients × per-client
@@ -1076,23 +1071,23 @@ function showValidation(){
     for(const ap of APS()){
       if(!(ap.capacityClients>0))continue;
       const pct=apAirtimePct(ap,f);
-      if(pct===Infinity)errors.push(`${ap.name}: expected ${ap.capacityClients} clients but the cell delivers no usable throughput.`);
-      else if(pct>100)errors.push(`${ap.name}: airtime ~${pct}% — ${ap.capacityClients} clients × ${parseFloat(SETTINGS.perClientMbps)||5} Mbps exceeds what this cell can carry.`);
-      else if(pct>80)warns.push(`${ap.name}: airtime ~${pct}% — near saturation; consider a wider channel or another AP.`);
+      if(pct===Infinity)errors.push(t('validation.no_throughput',{v0:ap.name,v1:ap.capacityClients}));
+      else if(pct>100)errors.push(t('validation.airtime_over_capacity',{v0:ap.name,v1:pct,v2:ap.capacityClients,v3:parseFloat(SETTINGS.perClientMbps)||5}));
+      else if(pct>80)warns.push(t('validation.airtime_near_capacity',{v0:ap.name,v1:pct}));
     }
   }
   // Client-capacity rollup (building-wide; only when an expectation is set).
   const expected=parseInt(SETTINGS.expectedClients,10)||0;
   if(expected>0){
     const cap=totalClientCapacity();
-    if(cap<expected)warns.push(`Client capacity ${cap} < expected ${expected} — consider more/denser APs.`);
-    else infos.push(`Client capacity ${cap} ≥ expected ${expected}.`);
+    if(cap<expected)warns.push(t('validation.client_capacity_low',{v0:cap,v1:expected}));
+    else infos.push(t('validation.client_capacity_ok',{v0:cap,v1:expected}));
   }
   // Camera storage rollup (building-wide).
   const storGb=totalStorageGb();
   if(storGb>0){
     const days=parseInt(SETTINGS.retentionDays,10)||30;
-    infos.push(`Camera recording needs ~${storGb>=1000?(storGb/1000).toFixed(2)+' TB':Math.round(storGb)+' GB'} of NVR storage for ${days}-day retention (${SETTINGS.storageCodec==='h264'?'H.264':'H.265'}).`);
+    infos.push(t('validation.camera_storage',{v0:storGb>=1000?(storGb/1000).toFixed(2)+' TB':Math.round(storGb)+' GB',v1:days,v2:SETTINGS.storageCodec==='h264'?'H.264':'H.265'}));
   }
 
   const wrap=document.createElement('div');
@@ -1101,7 +1096,7 @@ function showValidation(){
   // storage rollup) still print below a passing result.
   if(!errors.length&&!warns.length){
     const ok=document.createElement('div');ok.style.cssText='color:#1e7d3c;font-weight:700;font-size:15px;padding:6px 0';
-    ok.textContent='✓ All checks passed.';wrap.appendChild(ok);
+    ok.textContent=t('validation.passed');wrap.appendChild(ok);
   }
   {
     const group=(title,items,color,icon)=>{
@@ -1109,13 +1104,13 @@ function showValidation(){
       const h=document.createElement('div');h.style.cssText=`font-weight:700;margin:10px 0 4px;color:${color}`;h.textContent=`${icon} ${title} (${items.length})`;wrap.appendChild(h);
       for(const it of items){const d=document.createElement('div');d.style.cssText='font-size:12px;padding:2px 0 2px 16px';d.textContent=it;wrap.appendChild(d);}
     };
-    group('Errors',errors,'#c0382b','✕');
-    group('Warnings',warns,'#b8860b','⚠');
-    group('Info',infos,'#555','ℹ');
+    group(t('validation.errors'),errors,'#c0382b','✕');
+    group(t('validation.warnings'),warns,'#b8860b','⚠');
+    group(t('validation.info'),infos,'#555','ℹ');
   }
-  if(!hasMap){const n=document.createElement('div');n.style.cssText='margin-top:10px;font-size:10px;opacity:.55';n.textContent='Cable-length checks skipped — no floor plan on this floor.';wrap.appendChild(n);}
-  const scope=document.createElement('div');scope.style.cssText='margin-top:8px;font-size:10px;opacity:.55';scope.textContent=`Checked floor "${f.name||''}".`;wrap.appendChild(scope);
-  showModalNode('Network validation',wrap,null);
+  if(!hasMap){const n=document.createElement('div');n.style.cssText='margin-top:10px;font-size:10px;opacity:.55';n.textContent=t('validation.no_plan');wrap.appendChild(n);}
+  const scope=document.createElement('div');scope.style.cssText='margin-top:8px;font-size:10px;opacity:.55';scope.textContent=t('validation.floor',{name:f.name||''});wrap.appendChild(scope);
+  showModalNode({i18n:'modal.validation'},wrap,null);
 }
 
 // ── Topology / rack view ──────────────────────────────────────────────────
@@ -1125,9 +1120,9 @@ function showTopology(){
   const wrap=document.createElement('div');
   wrap.style.cssText='font-family:Rajdhani,sans-serif;font-size:13px';
   const {all,children,roots}=topologyModel();
-  if(!all.length){wrap.textContent='No switches placed yet.';showModalNode('Network topology',wrap,null);return;}
+  if(!all.length){localizeText(wrap,'poe.no_switches');showModalNode({i18n:'modal.topology'},wrap,null);return;}
   const multiFloor=FLOORS.length>1;
-  const th=document.createElement('div');th.style.cssText='font-weight:700;margin-bottom:4px';th.textContent='Uplink tree';wrap.appendChild(th);
+  const th=document.createElement('div');th.style.cssText='font-weight:700;margin-bottom:4px';localizeText(th,'topology.tree');wrap.appendChild(th);
   const tree=document.createElement('div');wrap.appendChild(tree);
   const seen=new Set();
   const renderNode=(e,depth)=>{
@@ -1137,20 +1132,20 @@ function showTopology(){
     const row=document.createElement('div');
     row.style.cssText=`padding:3px 0 3px ${depth*18}px;display:flex;justify-content:space-between;gap:10px`;
     const portStr=a.ports!=null?`${a.used}/${a.ports}`:`${a.used}`;
-    const floorTag=multiFloor?` <span style="opacity:.45;font-size:9px">[${esc(e.floor.name||('Floor '+(e.floorIdx+1)))}]</span>`:'';
+    const floorTag=multiFloor?` <span style="opacity:.45;font-size:9px">[${e.floor.name?esc(e.floor.name):panelText('topology.floor',{n:e.floorIdx+1})}]</span>`:'';
     row.innerHTML=`<span>${depth?'└ ':''}⊞ <strong>${esc(e.sw.name)}</strong> <span style="opacity:.55;font-family:'Share Tech Mono';font-size:10px">${esc(e.sw.model||'')}</span>${floorTag}</span>
-      <span style="font-family:'Share Tech Mono';font-size:10px;opacity:.7">${portStr} ports · ${a.draw.toFixed(0)} W</span>`;
+      <span style="font-family:'Share Tech Mono';font-size:10px;opacity:.7">${panelText('topology.usage',{ports:portStr,draw:a.draw.toFixed(0)})}</span>`;
     tree.appendChild(row);
     children.get(e.sw.id).forEach(c=>renderNode(c,depth+1));
   };
   roots.forEach(e=>renderNode(e,0));
   all.forEach(e=>{if(!seen.has(e.sw.id))renderNode(e,0);});  // safety net
   // Rack / port grid per switch.
-  const rh=document.createElement('div');rh.style.cssText='font-weight:700;margin:14px 0 6px';rh.textContent='Rack — port usage';wrap.appendChild(rh);
+  const rh=document.createElement('div');rh.style.cssText='font-weight:700;margin:14px 0 6px';localizeText(rh,'topology.rack');wrap.appendChild(rh);
   for(const e of all){
     const a=analyzeSwitch(e.sw,e.floor);
     const unit=document.createElement('div');unit.style.cssText='margin-bottom:8px;padding:6px 8px;border:1px solid var(--ink-04);border-radius:3px';
-    unit.innerHTML=`<div style="display:flex;justify-content:space-between;font-size:11px;margin-bottom:4px"><span><strong>${esc(e.sw.name)}</strong> <span style="opacity:.55;font-size:10px">${esc(e.sw.model||'')}</span></span><span style="font-family:'Share Tech Mono';opacity:.7">${a.ports!=null?`${a.used}/${a.ports}`:`${a.used}/?`}${a.overPorts?' ⚠':''}</span></div>${portGridHtml(a)}`;
+    unit.innerHTML=`<div style="display:flex;justify-content:space-between;font-size:11px;margin-bottom:4px"><span><strong>${esc(e.sw.name)}</strong> <span style="opacity:.55;font-size:10px">${esc(e.sw.model||'')}</span></span><span style="font-family:'Share Tech Mono';opacity:.7">${a.ports!=null?`${a.used}/${a.ports}`:`${a.used}/?`}${a.overPorts?' ⚠':''}</span></div>${portGridHtml(a,undefined,true)}`;
     wrap.appendChild(unit);
   }
   // Cabling rollup.
@@ -1158,10 +1153,10 @@ function showTopology(){
   if(cable.runs>0){
     const boxM=parseFloat(SETTINGS.cableBoxM)||305;
     const cl=document.createElement('div');cl.style.cssText='margin-top:12px;padding-top:8px;border-top:1px solid var(--ink-04);font-size:11px;opacity:.8';
-    cl.textContent=`Cabling: ${cable.runs} runs · ~${cable.totalM} m incl. slack (×${routingFactor()} routing) · ~${Math.ceil(cable.totalM/boxM)} box(es)`;
+    cl.setAttribute('data-i18n-vars',JSON.stringify({runs:cable.runs,meters:cable.totalM,routing:routingFactor(),boxes:Math.ceil(cable.totalM/boxM)}));localizeText(cl,'topology.cabling');
     wrap.appendChild(cl);
   }
-  showModalNode('Network topology',wrap,null);
+  showModalNode({i18n:'modal.topology'},wrap,null);
 }
 
 // ═══ SHARE LINK ═══════════════════════════════════
@@ -1235,25 +1230,25 @@ async function shareLink(){
     const b64=await _b64urlFromBytes(bytes);
     const url=`${location.origin}${location.pathname}#p=${b64}`;
     if(url.length>8000){
-      toast('Project too large for a URL — use 💾 Save instead');
+      toast(t('notify.project_too_large_for_a_url_use_save_instead'));
       return;
     }
     try{
       await navigator.clipboard.writeText(url);
-      toast('Share link copied to clipboard (no floor-plan image)');
+      toast(t('notify.share_link_copied_to_clipboard_no_floor_plan_image'));
     }catch{
       // Clipboard blocked (insecure context, perms). Show the URL in a modal.
       const wrap=document.createElement('div');
-      const p=document.createElement('p');p.textContent='Copy this link:';
+      const p=document.createElement('p');localizeText(p,'share.copy');
       const ta=document.createElement('textarea');
       ta.value=url;ta.rows=4;ta.style.cssText='width:100%;font-family:monospace;font-size:11px';
       ta.addEventListener('focus',()=>ta.select());
       wrap.appendChild(p);wrap.appendChild(ta);
-      showModalNode('Share link',wrap,null);
+      showModalNode({i18n:'modal.share'},wrap,null);
       setTimeout(()=>ta.select(),50);
     }
   }catch(err){
-    toast('Share failed: '+(err.message||'unknown error'));
+    toast(t('notify.share_failed')+(err.message||t('notify.unknown_error')));
   }
 }
 async function tryLoadFromHash(){
@@ -1274,10 +1269,10 @@ async function tryLoadFromHash(){
     loadFloorImage();renderFloorTabs();render();renderList();renderRP();calcCoverage();
     // Strip the hash so a reload doesn't keep loading the same project.
     history.replaceState(null,'',location.pathname+location.search);
-    toast(warnings.length?warnings[0]:'Project loaded from link');
+    toast(warnings.length?localizeMigrationMessage(warnings[0]):t('notify.project_loaded_from_link'));
     return true;
   }catch(err){
-    toast('Could not decode shared link');
+    toast(t('notify.could_not_decode_shared_link'));
     return false;
   }
 }
@@ -1288,7 +1283,7 @@ async function tryLoadFromHash(){
 // We accept <line>, <polyline>, <polygon>, and the line-like subset of <path>.
 function importSvgWalls(input){
   const file=input.files[0];if(!file)return;
-  if(!mapImg.naturalWidth){toast('Upload a floor-plan image first so we know the scale');input.value='';return;}
+  if(!mapImg.naturalWidth){toast(t('notify.upload_a_floor_plan_image_first_so_we_know_the_scale'));input.value='';return;}
   const reader=new FileReader();
   reader.onload=e=>{
     try{
@@ -1358,7 +1353,7 @@ function importSvgWalls(input){
           }
         }
       });
-      if(!segs.length){toast('No line segments found in that SVG');return;}
+      if(!segs.length){toast(t('notify.no_line_segments_found_in_that_svg'));return;}
       // Map SVG viewBox coords → fractional image coords.
       snapshot();
       const imgW=mapImg.naturalWidth,imgH=mapImg.naturalHeight;
@@ -1369,9 +1364,9 @@ function importSvgWalls(input){
       }
       invalidateCoverageCache();
       render();renderList();calcCoverage();
-      toast(`Imported ${segs.length} walls from SVG`);
+      toast(t('notify.svg',{n:segs.length}));
     }catch(err){
-      toast('SVG import failed: '+(err.message||'invalid SVG'));
+      toast(t('notify.svg_import_failed')+(err.message||t('notify.invalid_svg')));
     }
   };
   reader.readAsText(file);
@@ -1389,7 +1384,7 @@ function importDxfWalls(input){
   reader.onload=async e=>{
     try{
       const {segments,minX,minY,maxX,maxY}=parseDxf(String(e.target.result||''));
-      if(!segments.length){toast('No LINE/POLYLINE entities found in that DXF');return;}
+      if(!segments.length){toast(t('notify.no_line_polyline_entities_found_in_that_dxf'));return;}
       const spanX=Math.max(1e-9,maxX-minX),spanY=Math.max(1e-9,maxY-minY);
       let w=mapImg.naturalWidth,h=mapImg.naturalHeight;
       if(!w||!h){
@@ -1411,9 +1406,9 @@ function importDxfWalls(input){
       }
       invalidateCoverageCache();
       render();renderList();calcCoverage();
-      toast(`Imported ${segments.length} walls from DXF`);
+      toast(t('notify.dxf',{n:segments.length}));
     }catch(err){
-      toast('DXF import failed: '+(err&&err.message||err));
+      toast(t('notify.dxf_import_failed')+(err&&err.message||err));
     }
   };
   reader.readAsText(file);
@@ -1426,11 +1421,11 @@ function importDxfWalls(input){
 // cameras, IPAM, inventory) stays on our side.
 function importEsxFile(input){
   const file=input.files[0];if(!file)return;
-  toast('Reading Ekahau project…');
+  toast(t('notify.reading_ekahau_project'));
   file.arrayBuffer()
     .then(buf=>importEsx(new Uint8Array(buf)))
     .then(async ({floors,warnings})=>{
-      if(!floors.length){toast('No floors found in that .esx');return;}
+      if(!floors.length){toast(t('notify.no_floors_found_in_that_esx'));return;}
       snapshot();
       const firstNew=FLOORS.length;
       for(const ef of floors){
@@ -1466,13 +1461,13 @@ function importEsxFile(input){
       syncNidFromFloors();
       switchFloor(firstNew);
       warnings.forEach(w=>console.warn('[esx import]',w));
-      toast(`Imported ${floors.length} floor(s) from Ekahau${warnings.length?` — ${warnings.length} warning(s) in console`:''}`);
+      toast(t('notify.esx',{n:floors.length,warnings:warnings.length?t('notify.esx_warnings',{n:warnings.length}):''}));
     })
-    .catch(err=>toast('ESX import failed: '+(err&&err.message||err)));
+    .catch(err=>toast(t('notify.esx_import_failed')+(err&&err.message||err)));
   input.value='';
 }
 async function doExportEsx(){
-  toast('Building .esx…');
+  toast(t('export.building_esx'));
   const floors=[];
   for(const f of FLOORS){
     let imageBytes=null,imgW=1000,imgH=800;
@@ -1496,7 +1491,7 @@ async function doExportEsx(){
   }
   const bytes=buildEsxZip(floors,{projectName:SETTINGS.company||'Plexus'});
   _downloadFile('plexus-project.esx',bytes,'application/octet-stream');
-  toast('Ekahau .esx exported (best-effort — verify in Ekahau)');
+  toast(t('export.esx_done'));
 }
 
 // ═══ UNIFI CONTROLLER SYNC (desktop app only) ═════
@@ -1541,22 +1536,22 @@ function _unifiChannelPlan(){
 }
 function showUnifiDialog(){
   if(!(window.plexusNative&&window.plexusNative.unifiPull)){
-    toast('UniFi sync needs the desktop app');return;
+    toast(t('notify.unifi_sync_needs_the_desktop_app'));return;
   }
   const wrap=document.createElement('div');wrap.className='settings-form';
   const field=(label,type,value,placeholder)=>{
     const row=document.createElement('div');row.className='ep-row';
-    const lbl=document.createElement('label');lbl.className='ep-lbl';lbl.textContent=label;
+    const lbl=document.createElement('label');lbl.className='ep-lbl';localizeText(lbl,label);
     const inp=document.createElement('input');inp.className='ep-in';inp.type=type;
     inp.value=value||'';inp.placeholder=placeholder||'';
     if(type==='password')inp.autocomplete='new-password';
     row.append(lbl,inp);wrap.appendChild(row);
     return inp;
   };
-  const url=field('Controller URL','text',SETTINGS.unifiUrl,'https://192.168.1.1');
-  const site=field('Site','text',SETTINGS.unifiSite||'default','default');
-  const user=field('Username','text',SETTINGS.unifiUser,'admin');
-  const pass=field('Password','password',_unifiPass,'');
+  const url=field('unifi.url','text',SETTINGS.unifiUrl,'https://192.168.1.1');
+  const site=field('unifi.site','text',SETTINGS.unifiSite||'default','default');
+  const user=field('unifi.username','text',SETTINGS.unifiUser,'admin');
+  const pass=field('unifi.password','password',_unifiPass,'');
   const status=document.createElement('div');
   status.style.cssText='font-family:"Share Tech Mono";font-size:11px;white-space:pre-wrap;margin:8px 0;min-height:16px';
   const saveFields=()=>{
@@ -1568,39 +1563,39 @@ function showUnifiDialog(){
   const cfg=()=>({url:SETTINGS.unifiUrl,site:SETTINGS.unifiSite,user:SETTINGS.unifiUser,pass:_unifiPass});
   const btnRow=document.createElement('div');btnRow.className='ep-btn-row';
   const mkBtn=(label,title)=>{
-    const b=document.createElement('button');b.className='btn';b.textContent=label;b.title=title;
+    const b=document.createElement('button');b.className='btn';localizeText(b,label);b.setAttribute('data-i18n-title',title);b.title=t(title);
     btnRow.appendChild(b);return b;
   };
-  const pullBtn=mkBtn('⇊ Pull devices','Fetch the controller device list and fill in IP / firmware / serial / Live status');
-  const pushBtn=mkBtn('⇈ Push channel plan','Write planned channels/width/tx-power to matching APs on the controller');
+  const pullBtn=mkBtn('unifi.pull','unifi.pull_tip');
+  const pushBtn=mkBtn('unifi.push','unifi.push_tip');
   const busy=(on)=>{pullBtn.disabled=on;pushBtn.disabled=on;};
   pullBtn.addEventListener('click',async()=>{
-    saveFields();busy(true);status.textContent='Connecting…';
+    saveFields();busy(true);status.textContent=t('notify.connecting');
     const res=await window.plexusNative.unifiPull(cfg());
     busy(false);
     if(!res.ok){status.textContent='✕ '+res.error;return;}
     const n=_applyUnifiDevices(res.devices);
-    status.textContent=`✓ Controller reports ${res.devices.length} device(s); matched ${n} to this plan (by MAC, then name). IP / firmware / serial / status updated.`;
+    status.textContent=t('notify.unifi_matched',{count:res.devices.length,n});
   });
   pushBtn.addEventListener('click',async()=>{
     saveFields();
     const changes=_unifiChannelPlan();
-    if(!changes.length){status.textContent='✕ No APs with a concrete channel — run ⌁ Auto-channel first.';return;}
-    if(!confirm(`Push channel/width/tx settings for ${changes.length} AP(s) to the controller? Radios will briefly drop clients when they retune.`))return;
-    busy(true);status.textContent='Pushing…';
+    if(!changes.length){status.textContent=t('notify.no_channel');return;}
+    if(!confirm(t('confirm.unifi',{n:changes.length})))return;
+    busy(true);status.textContent=t('notify.pushing');
     const res=await window.plexusNative.unifiPush({...cfg(),changes});
     busy(false);
     if(!res.ok){status.textContent='✕ '+res.error;return;}
     const okN=res.results.filter(r=>r.ok).length;
     const fails=res.results.filter(r=>!r.ok);
-    status.textContent=`✓ Updated ${okN}/${res.results.length} AP(s).`+(fails.length?'\n'+fails.map(f=>`  ✕ ${f.name}: ${f.error}`).join('\n'):'');
+    status.textContent=t('notify.unifi_updated',{n:okN,total:res.results.length})+(fails.length?'\n'+fails.map(f=>`  ✕ ${f.name}: ${f.error}`).join('\n'):'');
   });
   wrap.appendChild(btnRow);
   wrap.appendChild(status);
   const hint=document.createElement('div');hint.className='ep-hint';
-  hint.textContent='Works with UniFi OS consoles (UDM/UDR/Cloud Key Gen2) and the legacy software controller. The password is kept for this session only — it is never written to the project file or autosave.';
+  localizeText(hint,'unifi.hint');
   wrap.appendChild(hint);
-  showModalNode('UniFi controller sync',wrap,()=>{saveFields();autosave();});
+  showModalNode({i18n:'modal.unifi'},wrap,()=>{saveFields();autosave();});
 }
 
 // ═══ SAVE / LOAD PROJECT ══════════════════════════
@@ -1641,7 +1636,7 @@ async function saveProject(){
   const blob=new Blob([JSON.stringify(data,_stripCacheReplacer,2)],{type:'application/json'});
   const a=document.createElement('a');a.href=URL.createObjectURL(blob);
   a.download='plexus_project.json';a.click();
-  toast(_credPass?'Project saved (credentials encrypted)':'Project saved');
+  toast(_credPass?t('notify.project_saved_credentials_encrypted'):t('notify.project_saved'));
 }
 // ── Credential vault (encrypt-at-rest for saved/exported projects) ─────────
 // Gather {deviceId: creds} across floors.
@@ -1667,7 +1662,7 @@ async function _encryptCredsInto(data){
 // and reattach the decrypted creds to the in-memory devices.
 async function _unlockCreds(data){
   if(!data||!data.credsVault)return;
-  const pass=await promptPassphrase('This project’s credentials are encrypted.\nEnter the passphrase to unlock them, or Cancel to keep them locked:');
+  const pass=await promptPassphrase('credentials.unlock_instructions');
   if(pass==null)return;
   try{
     const map=await decryptObject(data.credsVault,pass);
@@ -1675,21 +1670,22 @@ async function _unlockCreds(data){
     for(const f of FLOORS)for(const key of ['APS','CAMS','SWS'])
       for(const d of (f[key]||[]))if(map[d.id])d.creds=map[d.id];
     render();renderRP();
-    toast('Credentials unlocked');
+    toast(t('notify.credentials_unlocked'));
   }catch{
-    toast('Wrong passphrase — credentials stay locked');
+    toast(t('notify.wrong_passphrase_credentials_stay_locked'));
   }
 }
 // Modal password prompt → resolves to the string, or null if cancelled.
 function promptPassphrase(message){
   return new Promise(resolve=>{
     const wrap=document.createElement('div');wrap.style.cssText='font-family:Rajdhani,sans-serif;font-size:13px';
-    String(message).split('\n').forEach((line,i,arr)=>{wrap.appendChild(document.createTextNode(line));if(i<arr.length-1)wrap.appendChild(document.createElement('br'));});
+    const instructions=document.createElement('div');instructions.style.whiteSpace='pre-line';
+    localizeText(instructions,message);wrap.appendChild(instructions);
     const inp=document.createElement('input');inp.type='password';inp.className='ep-in';inp.autocomplete='off';
     inp.style.cssText='width:100%;margin-top:10px';
     wrap.appendChild(inp);
     let done=false;
-    showModalNode('Credentials passphrase',wrap,()=>{done=true;resolve(inp.value||'');},()=>{if(!done)resolve(null);});
+    showModalNode({i18n:'settings.passphrase'},wrap,()=>{done=true;resolve(inp.value||'');},()=>{if(!done)resolve(null);});
     setTimeout(()=>inp.focus(),50);
   });
 }
@@ -1715,10 +1711,10 @@ function newProject(){
     lastAutosavePayload='';
     invalidateCoverageCache();
     loadFloorImage();renderFloorTabs();render();renderList();renderRP();calcCoverage();
-    toast('New project');
+    toast(t('notify.new_project'));
   };
   if(hasAny){
-    showModalText('New Project','Start a new project? Unsaved changes will be lost.',doIt);
+    showModalText({i18n:'modal.new'},{i18n:'modal.new_body'},doIt);
   }else{
     doIt();
   }
@@ -1735,7 +1731,7 @@ function loadProject(input){
       applyStoredCatalog();
       PROJECT_REVISIONS=Array.isArray(data.revisions)?data.revisions:[];
       // Apply the persisted UI language (i18n bundle) right away.
-      if(SETTINGS.language)setLang(SETTINGS.language);
+      setLang(SETTINGS.language||'en');
       curFloor=0;selId=null;selType=null;
       syncScaleFromFloor();
       syncNidFromFloors();
@@ -1744,9 +1740,9 @@ function loadProject(input){
       await _rehydrateImages();
       applySettingsToBrand();
       loadFloorImage();renderFloorTabs();render();renderList();renderRP();calcCoverage();
-      if(warnings.length){toast(warnings[0]);}else{toast('Project loaded');}
+      if(warnings.length){toast(localizeMigrationMessage(warnings[0]));}else{toast(t('notify.project_loaded'));}
       await _unlockCreds(data);   // prompt for the passphrase if creds are encrypted
-    }catch(err){toast('Error loading project: '+(err.message||'invalid file'));}
+    }catch(err){toast(t('notify.error_loading_project')+(localizeMigrationMessage(err.message)||t('notify.invalid_file')));}
   };
   reader.readAsText(file);input.value='';
 }
@@ -1759,24 +1755,25 @@ async function loadSampleProject(){
     SETTINGS={...DEFAULT_SETTINGS,...(data.settings||{})};
     applyStoredCatalog();
     PROJECT_REVISIONS=Array.isArray(data.revisions)?data.revisions:[];
-    if(SETTINGS.language)setLang(SETTINGS.language);
+    setLang(SETTINGS.language||'en');
     curFloor=0;selId=null;selType=null;
     syncScaleFromFloor();
     syncNidFromFloors();
     await _rehydrateImages();
     applySettingsToBrand();
     loadFloorImage();renderFloorTabs();render();renderList();renderRP();calcCoverage();
-    if(warnings.length){toast(warnings[0]);}else{toast('Sample project loaded — drag things around');}
-  }catch(err){toast('Error loading sample: '+(err.message||'unknown'));}
+    if(warnings.length){toast(localizeMigrationMessage(warnings[0]));}else{toast(t('notify.sample_project_loaded_drag_things_around'));}
+  }catch(err){toast(t('notify.error_loading_sample')+(err.message||t('notify.unknown')));}
 }
 // Update the top-bar brand label to whatever the current SETTINGS specify.
 // Called after settings change or a project load.
 function applySettingsToBrand(){
+  setLang(SETTINGS.language||'en');
   const lbl=document.getElementById('brand-lbl');
   if(lbl){
     const co=SETTINGS.company||'Plexus';
     const f=F();
-    lbl.textContent=f&&f.imgName?co+' · '+f.imgName:co+' Planner';
+    lbl.textContent=f&&f.imgName?co+' · '+f.imgName:co+' '+t('app.planner');
   }
   _syncToolbarFromSettings();
 }
@@ -1787,12 +1784,12 @@ function _syncToolbarFromSettings(){
   const modePill=document.getElementById('heat-mode-pill');
   if(modePill){
     const m=SETTINGS.heatmapMode||'rssi';
-    modePill.textContent=(HEATMAP_MODES[m]||HEATMAP_MODES.rssi).label;
+    localizeText(modePill,'heat.metric_'+(HEATMAP_MODES[m]?m:'rssi'));
   }
   const bandPill=document.getElementById('heat-band-pill');
   if(bandPill){
     const b=SETTINGS.heatmapBand||'all';
-    bandPill.textContent=({all:'All',['2.4']:'2.4 GHz',['5']:'5 GHz',['6']:'6 GHz'})[b]||'All';
+    localizeText(bandPill,({'all':'heat.all','2.4':'heat.band_24','5':'heat.band_5','6':'heat.band_6'})[b]||'heat.all');
   }
   const roam=document.getElementById('btn-roaming');
   if(roam)roam.classList.toggle('active',!!SETTINGS.showRoamingOverlap);
@@ -2023,7 +2020,7 @@ function undo(){
   loadFloorImage();renderFloorTabs();render();renderList();renderRP();calcCoverage();
   document.getElementById('btn-undo').disabled=!undoStack.length;
   document.getElementById('btn-redo').disabled=false;
-  toast('Undo');
+  toast(t('notify.undo'));
 }
 function redo(){
   if(!redoStack.length)return;
@@ -2033,7 +2030,7 @@ function redo(){
   loadFloorImage();renderFloorTabs();render();renderList();renderRP();calcCoverage();
   document.getElementById('btn-redo').disabled=!redoStack.length;
   document.getElementById('btn-undo').disabled=false;
-  toast('Redo');
+  toast(t('notify.redo'));
 }
 
 // ═══ MODE ═════════════════════════════════════════
@@ -2054,7 +2051,7 @@ function setMode(m){
   // The auto-fade keeps it visible enough to consult but unobtrusive while you work.
   const hintEl=document.getElementById('hint-bar');
   if(hintEl){
-    hintEl.textContent=HINTS[m]||'';
+    localizeText(hintEl,'hint.'+m);
     hintEl.classList.remove('faded');
     clearTimeout(hintEl._fadeT);
     hintEl._fadeT=setTimeout(()=>hintEl.classList.add('faded'),3500);
@@ -2065,7 +2062,7 @@ function setMode(m){
 viewport.addEventListener('click',e=>{
   if(panning||spaceDown||e.button!==0)return;
   if(e.target.closest('.ap-grp,.dz-grp,.sw-grp'))return;
-  if(!mapImg.naturalWidth){toast('Upload a map image first');return;}
+  if(!mapImg.naturalWidth){toast(t('notify.upload_a_map_image_first'));return;}
   const raw=vpToImg(e.clientX,e.clientY);
   const {x,y}=snapPt(raw.x,raw.y);
   const {fx,fy}=imgToFrac(x,y);
@@ -2088,19 +2085,19 @@ viewport.addEventListener('click',e=>{
       cableLossDb:0,txPowerDbm:20,mountHeightM:2.7,downtiltDeg:0,
       capacityClients:25,chanWidth:40,
     });
-    sel(id,'ap');setMode('sel');render();renderList();calcCoverage();toast('AP placed — edit in panel');
+    sel(id,'ap');setMode('sel');render();renderList();calcCoverage();toast(t('notify.ap_placed_edit_in_panel'));
   }else if(mode==='dz'){
     snapshot();
     const id='dz'+nid++;
     const num=nextNameSuffix(DZS(),/^Dead Zone (\d+)/);
     DZS().push({id,label:'Dead Zone '+num,fx,fy,r:40,locked:false});
-    sel(id,'dz');setMode('sel');render();renderList();toast('Dead zone marked');
+    sel(id,'dz');setMode('sel');render();renderList();toast(t('notify.dead_zone_marked'));
   }else if(mode==='sw'){
     snapshot();
     const id='sw'+nid++;
     const num=nextNameSuffix(SWS(),/^SW-(\d+)/);
     SWS().push({id,name:'SW-'+num,model:'USW-24-PoE',ip:'',notes:'',fx,fy,size:22,locked:false,poeBudget:SW_POE_BUDGET_W['USW-24-PoE']||0,ports:0,uplinkId:''});
-    sel(id,'sw');setMode('sel');render();renderList();toast('Switch placed');
+    sel(id,'sw');setMode('sel');render();renderList();toast(t('notify.switch_placed'));
   }else if(mode==='cam'){
     snapshot();
     const id='cm'+nid++;
@@ -2114,7 +2111,7 @@ viewport.addEventListener('click',e=>{
       heading:0, resolution:spec.res,
       ip:'',mac:'',swId:'',port:'',vlan:'',notes:'',color:'',locked:false,
     });
-    sel(id,'cam');setMode('sel');render();renderList();toast('Camera placed — set heading in panel');
+    sel(id,'cam');setMode('sel');render();renderList();toast(t('notify.camera_placed_set_heading_in_panel'));
   }else if(mode==='ruler'){
     if(!rulerStart){
       rulerStart={x,y};rulerEnd=null;rulerHover={x,y};
@@ -2122,7 +2119,7 @@ viewport.addEventListener('click',e=>{
       rulerEnd={x,y};
       if(calibratePending){calibratePending=false;renderRuler();promptCalibration();return;}
       const distM=Math.hypot(rulerEnd.x-rulerStart.x,rulerEnd.y-rulerStart.y)*(scaleM/100);
-      toast(`${distM.toFixed(1)} m · Click again for new measurement`);
+      toast(t('notify.measurement',{m:distM.toFixed(1)}));
     }else{
       // Start a new measurement
       rulerStart={x,y};rulerEnd=null;rulerHover={x,y};
@@ -2149,11 +2146,11 @@ viewport.addEventListener('click',e=>{
     // Live survey (desktop app): click = "I'm standing here", sample the OS's
     // current WiFi connection and drop a survey point at the click.
     if(!(window.plexusNative&&window.plexusNative.wifiSample)){
-      toast('Live survey needs the desktop app');return;
+      toast(t('notify.live_survey_needs_the_desktop_app'));return;
     }
-    toast('Sampling WiFi…');
+    toast(t('notify.sampling_wifi'));
     window.plexusNative.wifiSample().then(res=>{
-      if(!res||!res.ok){toast('WiFi sample failed: '+((res&&res.error)||'no WiFi info'));return;}
+      if(!res||!res.ok){toast(t('notify.wifi_sample_failed')+((res&&res.error)||t('notify.no_wifi_info')));return;}
       snapshot();
       SAMPLES().push({
         id:'s'+(++nid),fx,fy,
@@ -2163,7 +2160,7 @@ viewport.addEventListener('click',e=>{
         floorName:F().name||'',
       });
       render();
-      toast(`Sampled ${res.rssi} dBm${res.ssid?' on '+res.ssid:''}${res.channel?` · ch ${res.channel}`:''}`);
+      toast(t('notify.sample',{rssi:res.rssi,ssid:res.ssid?t('notify.sample_ssid',{ssid:res.ssid}):'',channel:res.channel?` · ch ${res.channel}`:''}));
     });
   }else{
     desel();render();
@@ -2295,7 +2292,7 @@ function renderWalls(){
       const lbl=mk('text');
       lbl.setAttribute('x',mx);lbl.setAttribute('y',my);
       lbl.setAttribute('class','wall-lbl');
-      lbl.textContent=mat.label;
+      localizeText(lbl,'sidebar.wall.'+(WALL_MATERIALS[w.material]?w.material:'drywall'));
       wallLayer.appendChild(lbl);
 
       // Vertex handles — drag to reshape the wall endpoints in place.
@@ -2341,8 +2338,8 @@ function renderWalls(){
 let _detectedWallPreview=null;
 function detectWallsFromMap(){
   const w=mapImg.naturalWidth,h=mapImg.naturalHeight;
-  if(!w||!h){toast('Upload a floor plan first');return;}
-  toast('Detecting walls…');
+  if(!w||!h){toast(t('notify.upload_a_floor_plan_first'));return;}
+  toast(t('notify.detecting_walls'));
   // Let the toast paint before the (CPU-bound) detection pass runs.
   setTimeout(()=>{
     try{
@@ -2354,12 +2351,12 @@ function detectWallsFromMap(){
       ctx.fillStyle='#fff';ctx.fillRect(0,0,cw,ch);   // flatten transparency
       ctx.drawImage(mapImg,0,0,cw,ch);
       const segs=detectWalls(ctx.getImageData(0,0,cw,ch));
-      if(!segs.length){toast('No wall-like lines found — try the SVG/DXF import instead');return;}
+      if(!segs.length){toast(t('notify.no_wall_like_lines_found_try_the_svg_dxf_import_instead'));return;}
       _detectedWallPreview=segs.map(s=>({fx1:s.x1/cw,fy1:s.y1/ch,fx2:s.x2/cw,fy2:s.y2/ch}));
       renderWalls();
       showModalText(
-        'Wall detection',
-        `Found ${segs.length} straight wall candidates (previewed as dashed blue lines). Add them as drywall walls? You can re-material or delete individual walls afterwards.`,
+        {i18n:'modal.wall_detection'},
+        t('confirm.walls',{n:segs.length}),
         ()=>{
           snapshot();
           for(const s of _detectedWallPreview){
@@ -2369,13 +2366,13 @@ function detectWallsFromMap(){
           _detectedWallPreview=null;
           invalidateCoverageCache();
           render();renderList();calcCoverage();
-          toast(`Added ${n} detected walls`);
+          toast(t('notify.walls',{n}));
         },
         ()=>{_detectedWallPreview=null;renderWalls();},
       );
     }catch(err){
       _detectedWallPreview=null;
-      toast('Wall detection failed: '+(err&&err.message||err));
+      toast(t('notify.wall_detection_failed')+(err&&err.message||err));
     }
   },30);
 }
@@ -2433,7 +2430,7 @@ function finishMarquee(){
   const first=selection.values().next().value;
   if(first){[selType,selId]=first.split(':');}else{selId=null;selType=null;}
   render();renderList();renderRP();
-  if(selection.size>1)toast(`${selection.size} items selected`);
+  if(selection.size>1)toast(t('notify.selected',{n:selection.size}));
 }
 
 // Bulk-delete every currently selected item. Used by Delete/Backspace when
@@ -2452,7 +2449,7 @@ function deleteSelection(){
   clearSelection();
   invalidateCoverageCache();
   render();renderList();renderRP();calcCoverage();
-  toast(`Deleted ${targets.length} item${targets.length===1?'':'s'}`);
+  toast(t('notify.deleted',{n:targets.length,suffix:targets.length===1?'':'s'}));
 }
 function updateWallVertex(cx,cy){
   if(!wallVertDrag)return;
@@ -2510,7 +2507,7 @@ function commitWall(x2,y2){
   wallStart=null;wallHover=null;
   invalidateCoverageCache();
   render();renderList();
-  toast('Wall added — drywall by default');
+  toast(t('notify.wall_added_drywall_by_default'));
 }
 
 // ═══ SELECTION ════════════════════════════════════
@@ -2582,7 +2579,7 @@ function duplicateSelected(){
   snapshot();
   const id='ap'+nid++;
   APS().push({...ap,id,name:ap.name+'-copy',fx:Math.min(1,ap.fx+0.05),fy:Math.min(1,ap.fy+0.05)});
-  sel(id,'ap');render();renderList();calcCoverage();toast('AP duplicated');
+  sel(id,'ap');render();renderList();calcCoverage();toast(t('toast.ap_duplicated'));
 }
 
 // ═══ LOCK ═════════════════════════════════════════
@@ -2783,7 +2780,8 @@ function renderCables(){
       const txt=mk('text');
       txt.setAttribute('x',x);txt.setAttribute('y',y-30);
       txt.setAttribute('class','cable-lbl');txt.style.fill='#6a1b9a';
-      txt.textContent='↑ '+(tgt.sw.name||'')+' · '+(tgt.floor.name||('Floor '+(tgt.floorIdx+1)));
+      if(tgt.floor.name)txt.textContent='↑ '+(tgt.sw.name||'')+' · '+tgt.floor.name;
+      else{txt.setAttribute('data-i18n-vars',JSON.stringify({name:tgt.sw.name||'',n:tgt.floorIdx+1}));localizeText(txt,'map.uplink_floor');localizeDOM(txt);}
       cableLayer.appendChild(txt);
     }
   });
@@ -3047,11 +3045,10 @@ function cycleHeatmapMode(){
   const cur=SETTINGS.heatmapMode||'rssi';
   const i=keys.indexOf(cur);
   SETTINGS.heatmapMode=keys[(i+1)%keys.length];
-  const lbl=(HEATMAP_MODES[SETTINGS.heatmapMode]||HEATMAP_MODES.rssi).label;
   const pill=document.getElementById('heat-mode-pill');
-  if(pill)pill.textContent=lbl;
+  if(pill)localizeText(pill,'heat.metric_'+SETTINGS.heatmapMode);
   render();autosave();
-  toast('Heatmap mode: '+lbl);
+  toast(t('notify.heatmap_mode')+t('heat.metric_'+SETTINGS.heatmapMode));
 }
 function cycleHeatmapBand(){
   const cur=SETTINGS.heatmapBand||'all';
@@ -3059,9 +3056,9 @@ function cycleHeatmapBand(){
   const i=order.indexOf(cur);
   SETTINGS.heatmapBand=order[(i+1)%order.length];
   const pill=document.getElementById('heat-band-pill');
-  if(pill)pill.textContent=({all:'All',['2.4']:'2.4 GHz',['5']:'5 GHz',['6']:'6 GHz'})[SETTINGS.heatmapBand];
+  if(pill)localizeText(pill,({'all':'heat.all','2.4':'heat.band_24','5':'heat.band_5','6':'heat.band_6'})[SETTINGS.heatmapBand]);
   render();autosave();
-  toast('Heatmap band: '+SETTINGS.heatmapBand);
+  toast(t('notify.heatmap_band')+SETTINGS.heatmapBand);
 }
 function _bandMatches(ap,bandFilter){
   if(bandFilter==='all'||!bandFilter)return true;
@@ -3256,7 +3253,7 @@ function renderAnnotations(){
       const lbl=mk('text');
       lbl.setAttribute('x',x);lbl.setAttribute('y',y);
       lbl.setAttribute('class','anno-text');
-      lbl.textContent=a.text||'Note';
+      if(a.text)lbl.textContent=a.text;else localizeText(lbl,'anno.note');
       layer.appendChild(lbl);
     }
   }
@@ -3303,9 +3300,10 @@ function renderSamples(){
     }
     c.setAttribute('data-rssi',String(measured));
     if(delta!==null){
-      const t=mk('title');
-      t.textContent=`Measured ${measured} dBm · Predicted ${Math.round(predicted)} dBm · Δ ${delta>=0?'+':''}${Math.round(delta)} dB`;
-      c.appendChild(t);
+      const title=mk('title');
+      title.setAttribute('data-i18n-vars',JSON.stringify({measured,predicted:Math.round(predicted),delta:(delta>=0?'+':'')+Math.round(delta)}));
+      localizeText(title,'survey.comparison');localizeDOM(title);
+      c.appendChild(title);
     }
     layer.appendChild(c);
   }
@@ -3331,7 +3329,7 @@ function commitAnno(x2,y2){
   const w=mapImg.naturalWidth||1,h=mapImg.naturalHeight||1;
   const fx=annoStart.x/w, fy=annoStart.y/h, fx2=x2/w, fy2=y2/h;
   if(annoSubMode==='text'){
-    const txt=prompt('Label text','');
+    const txt=prompt(t('anno.label_prompt'),'');
     if(txt!==null && txt.trim()){
       snapshot();
       ANNOS().push({id:'an'+(++nid),kind:'text',fx,fy,fx2:fx,fy2:fy,text:txt.trim()});
@@ -3394,7 +3392,7 @@ function importSurveyCsv(input){
     try{
       const text=String(e.target.result||'');
       const lines=text.split(/\r?\n/).filter(l=>l.trim().length);
-      if(!lines.length){toast('CSV is empty');return;}
+      if(!lines.length){toast(t('notify.csv_is_empty'));return;}
       const head=lines[0].toLowerCase().split(',').map(s=>s.trim());
       const hasHeader=head.some(h=>['x','fx','rssi','ssid','bssid','channel','floor'].includes(h));
       const colIdx=(k,fallback)=>{
@@ -3426,7 +3424,7 @@ function importSurveyCsv(input){
           floorName: fl||'',
         });
       }
-      if(!samples.length){toast('No valid samples found in CSV');return;}
+      if(!samples.length){toast(t('notify.no_valid_samples_found_in_csv'));return;}
       snapshot();
       // For now, route all samples to the current floor — a future patch
       // could route by `floorName` when provided.
@@ -3434,7 +3432,7 @@ function importSurveyCsv(input){
       render();
       toast(t('toast.imported_samples',{n:samples.length}));
     }catch(err){
-      toast('Failed to parse CSV: '+(err&&err.message||err));
+      toast(t('notify.failed_to_parse_csv')+(err&&err.message||err));
     }
     if(input)input.value='';
   };
@@ -3460,7 +3458,7 @@ function _bandForAp(ap){
 }
 function autoChannelPlan(){
   const aps=APS();
-  if(!aps.length){toast('No APs to plan');return;}
+  if(!aps.length){toast(t('notify.no_aps_to_plan'));return;}
   snapshot();
   const w=mapImg.naturalWidth||1,h=mapImg.naturalHeight||1;
   // For each AP, score each channel in its band by neighbour overlap penalty.
@@ -3501,7 +3499,7 @@ function autoChannelPlan(){
     if(String(ap.channel)!==String(bestCh)){ap.channel=String(bestCh);changed++;}
   }
   render();renderRP();
-  toast(`Auto channel: ${changed} AP${changed===1?'':'s'} updated`);
+  toast(t('notify.channels',{n:changed,suffix:changed===1?'':'s'}));
 }
 // Reference Tx power that maps to an AP's stored coverage radius `ap.r`.
 const TX_POWER_REF_DBM=20;
@@ -3513,7 +3511,7 @@ function _radiusAtTx(baseR,tx){
 }
 function autoTxPower(){
   const aps=APS();
-  if(!aps.length){toast('No APs to plan');return;}
+  if(!aps.length){toast(t('notify.no_aps_to_plan'));return;}
   snapshot();
   const w=mapImg.naturalWidth||1,h=mapImg.naturalHeight||1;
   // Try each Tx power (from 5 to 23 dBm) and pick the one whose resulting
@@ -3551,7 +3549,7 @@ function autoTxPower(){
   }
   invalidateCoverageCache();
   render();renderRP();calcCoverage();
-  toast('Tx-power tuned for each AP');
+  toast(t('notify.tx_power_tuned_for_each_ap'));
 }
 
 // ═══ BOM + CABLE-SCHEDULE CSV EXPORTS ═════════════
@@ -3651,7 +3649,7 @@ function _cableCsvString(){
 }
 function doCableCsv(){
   const csv=_cableCsvString();
-  if(!csv){toast('No linked devices to export');return;}
+  if(!csv){toast(t('export.no_links'));return;}
   _downloadFile('cable-schedule.csv',csv,'text/csv');
   toast(t('toast.cable_exported'));
 }
@@ -3672,9 +3670,9 @@ function _ipPlanCsvString(){
 }
 function doIpPlanCsv(){
   const csv=_ipPlanCsvString();
-  if(!csv){toast('No device has an IP, VLAN or MAC yet');return;}
+  if(!csv){toast(t('export.no_network_data'));return;}
   _downloadFile('ip-plan.csv',csv,'text/csv');
-  toast('IP plan exported');
+  toast(t('export.ip_done'));
 }
 
 // Port map: one row per switch port (free ports included), plus clients
@@ -3707,9 +3705,9 @@ function _portMapCsvString(){
 }
 function doPortMapCsv(){
   const csv=_portMapCsvString();
-  if(!csv){toast('No switches placed yet');return;}
+  if(!csv){toast(t('export.no_switches'));return;}
   _downloadFile('port-map.csv',csv,'text/csv');
-  toast('Port map exported');
+  toast(t('export.ports_done'));
 }
 
 // Inventory: the as-built record — identity, status and install fields for
@@ -3727,9 +3725,9 @@ function _inventoryCsvString(){
 }
 function doInventoryCsv(){
   const csv=_inventoryCsvString();
-  if(!csv){toast('Nothing placed yet');return;}
+  if(!csv){toast(t('export.no_devices'));return;}
   _downloadFile('inventory.csv',csv,'text/csv');
-  toast('Inventory exported');
+  toast(t('export.inventory_done'));
 }
 
 // ═══ HANDOVER PACK ════════════════════════════════
@@ -3778,7 +3776,7 @@ ${reportNetworkHtml()}
 </body></html>`;
 }
 function doHandoverPack(){
-  if(!allDevices().length){toast('Nothing placed yet');return;}
+  if(!allDevices().length){toast(t('export.no_devices'));return;}
   const files=[{name:'summary.html',data:_handoverSummaryHtml()}];
   for(const [name,csv] of [
     ['inventory.csv',_inventoryCsvString()],
@@ -3791,7 +3789,7 @@ function doHandoverPack(){
   const date=new Date().toISOString().slice(0,10);
   const site=(SETTINGS.siteCode||SETTINGS.company||'plexus').toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,'')||'plexus';
   _downloadFile(`${site}-handover-${date}.zip`,zip,'application/zip');
-  toast(`Handover pack: ${files.length} files zipped`);
+  toast(t('export.handover_done',{n:files.length}));
 }
 
 // ═══ PER-AP INSTALL SHEETS ════════════════════════
@@ -3866,7 +3864,7 @@ ${sections}
 <button class="print-btn" onclick="window.print()">Print / Save as PDF</button>
 </body></html>`;
   if(w){w.document.open();w.document.write(html);w.document.close();toast(t('toast.installs_exported'));}
-  else toast('Allow pop-ups to open the install sheets');
+  else toast(t('export.allow_popups'));
 }
 
 // ═══ REVISIONS + DIFF ═════════════════════════════
@@ -3874,7 +3872,7 @@ function _snapshotForRevision(){
   return JSON.parse(JSON.stringify(FLOORS,_stripCacheReplacer));
 }
 function newRevision(){
-  const name=prompt('Revision name (e.g., "rev B – after client walk")','rev '+String.fromCharCode(65+PROJECT_REVISIONS.length));
+  const name=prompt(t('revisions.name_prompt'),'rev '+String.fromCharCode(65+PROJECT_REVISIONS.length));
   if(!name)return;
   PROJECT_REVISIONS.push({
     id:'rev'+(++nid),
@@ -3882,48 +3880,50 @@ function newRevision(){
     createdAt:new Date().toISOString(),
     snapshot:_snapshotForRevision(),
   });
-  toast('Revision saved: '+name.trim());
+  toast(t('notify.revision_saved')+name.trim());
   autosave();
 }
 function restoreRevision(id){
   const rev=PROJECT_REVISIONS.find(r=>r.id===id);
   if(!rev)return;
-  showModal('Restore revision',`Replace current floors with revision <strong>${esc(rev.name)}</strong>? Current state will be lost (consider saving a fresh revision first).`,()=>{
+  showModal({i18n:'modal.restore_revision'},t('confirm.revision',{name:esc(rev.name)}),()=>{
     snapshot();
     FLOORS=JSON.parse(JSON.stringify(rev.snapshot));
     if(curFloor>=FLOORS.length)curFloor=0;
     syncScaleFromFloor();loadFloorImage();renderFloorTabs();render();renderList();renderRP();calcCoverage();
-    toast('Restored '+rev.name);
+    toast(t('notify.restored')+rev.name);
   });
 }
 function _diffRevisions(a,b){
+  // Escaped display spans update in place when the language changes.
   // Walk floor by floor and report adds/removes/moves of APs+CAMs+SWs+DZs+WALLS.
   const out=[];
   const fLen=Math.max(a.length,b.length);
   for(let i=0;i<fLen;i++){
     const fa=a[i],fb=b[i];
-    if(!fa){out.push(`+ Floor "${fb.name||i}" added`);continue;}
-    if(!fb){out.push(`- Floor "${fa.name||i}" removed`);continue;}
+    if(!fa){out.push(panelText('revisions.floor_added',{name:fb.name||i}));continue;}
+    if(!fb){out.push(panelText('revisions.floor_removed',{name:fa.name||i}));continue;}
     for(const kind of ['APS','CAMS','SWS','DZS','WALLS']){
       const la=fa[kind]||[],lb=fb[kind]||[];
+      const kindLabel=panelText('revisions.kind.'+kind);
       const ids=new Set([...la.map(x=>x.id),...lb.map(x=>x.id)]);
       for(const id of ids){
         const ia=la.find(x=>x.id===id), ib=lb.find(x=>x.id===id);
-        if(ia && !ib)out.push(`- [${fa.name||i}] ${kind.slice(0,-1)} ${ia.name||id} removed`);
-        else if(!ia && ib)out.push(`+ [${fb.name||i}] ${kind.slice(0,-1)} ${ib.name||id} added`);
+        if(ia && !ib)out.push(`- [${esc(fa.name||i)}] ${kindLabel} ${esc(ia.name||id)} ${panelText('revisions.removed')}`);
+        else if(!ia && ib)out.push(`+ [${esc(fb.name||i)}] ${kindLabel} ${esc(ib.name||id)} ${panelText('revisions.added')}`);
         else if(ia && ib){
           // Walls carry endpoint coords (fx1/fy1/fx2/fy2); everything else
           // has a single fx/fy anchor.
           const moved=kind==='WALLS'
             ? (ia.fx1!==ib.fx1||ia.fy1!==ib.fy1||ia.fx2!==ib.fx2||ia.fy2!==ib.fy2)
             : (ia.fx!==ib.fx||ia.fy!==ib.fy);
-          if(moved)out.push(`~ [${fa.name||i}] ${kind.slice(0,-1)} ${ia.name||id} ${kind==='WALLS'?'reshaped':'moved'}`);
+          if(moved)out.push(`~ [${esc(fa.name||i)}] ${kindLabel} ${esc(ia.name||id)} ${panelText(kind==='WALLS'?'revisions.reshaped':'revisions.moved')}`);
           // Field-level changes — the as-designed vs as-built story: identity,
           // wiring and rollout fields, not geometry.
           if(kind!=='WALLS'&&kind!=='DZS'){
             for(const fld of ['name','model','ip','vlan','port','swId','status','serial','channel','txPower']){
               const va=ia[fld]??'',vb=ib[fld]??'';
-              if(String(va)!==String(vb))out.push(`~ [${fa.name||i}] ${kind.slice(0,-1)} ${ia.name||id}: ${fld} ${va===''?'(empty)':va} → ${vb===''?'(empty)':vb}`);
+              if(String(va)!==String(vb))out.push(`~ [${esc(fa.name||i)}] ${kindLabel} ${esc(ia.name||id)}: ${panelText('revisions.field.'+fld)} ${va===''?panelText('revisions.empty_value'):esc(va)} → ${vb===''?panelText('revisions.empty_value'):esc(vb)}`);
             }
           }
         }
@@ -3936,40 +3936,41 @@ function showRevisions(){
   const wrap=document.createElement('div');wrap.className='settings-form';
   if(!PROJECT_REVISIONS.length){
     const e=document.createElement('div');e.className='ep-hint';
-    e.textContent='No revisions yet. Save the current state as the first revision below.';
+    localizeText(e,'revisions.empty');
     wrap.appendChild(e);
   } else {
     const list=document.createElement('div');list.className='rev-list';
     const showDiff=(lines,label)=>{
       const old=wrap.querySelector('.rev-diff');if(old)old.remove();
       const out=document.createElement('pre');out.className='rev-diff';
-      out.textContent=(label?label+'\n\n':'')+(lines.length?lines.join('\n'):'(no differences detected)');
+      out.innerHTML=(label?label+'\n\n':'')+(lines.length?lines.join('\n'):panelText('revisions.no_diff'));
+      localizeDOM(out);
       wrap.appendChild(out);
     };
     for(const rev of PROJECT_REVISIONS){
       const row=document.createElement('div');row.className='rev-row';
       const name=document.createElement('div');name.className='rev-name';
       name.textContent=(rev.baseline?'★ ':'')+rev.name;
-      if(rev.baseline)name.title='Design baseline';
+      if(rev.baseline)name.setAttribute('data-i18n-title','revisions.baseline');name.title=t('revisions.baseline');
       const when=document.createElement('div');when.className='rev-when';when.textContent=new Date(rev.createdAt).toLocaleString(SETTINGS.locale||'en-GB');
       // Mark as the design baseline (one at a time) — the "as-designed" state
       // that later as-built diffs are read against.
       const b=document.createElement('button');b.className='btn';b.textContent=rev.baseline?'★':'☆';
-      b.title=rev.baseline?'Unmark design baseline':'Mark as design baseline';
+      b.setAttribute('data-i18n-title',rev.baseline?'revisions.unmark':'revisions.mark');b.title=t(b.getAttribute('data-i18n-title'));
       b.addEventListener('click',()=>{
         const on=!rev.baseline;
         PROJECT_REVISIONS.forEach(r=>r.baseline=false);
         rev.baseline=on;
         autosave();closeModal();showRevisions();
       });
-      const d=document.createElement('button');d.className='btn';d.textContent='Diff vs now';
-      d.title='What changed between this revision and the current state';
+      const d=document.createElement('button');d.className='btn';localizeText(d,'revisions.diff');
+      d.setAttribute('data-i18n-title','revisions.diff_tip');d.title=t('revisions.diff_tip');
       d.addEventListener('click',()=>{
-        showDiff(_diffRevisions(rev.snapshot,_snapshotForRevision()),`${rev.name} → current state`);
+        showDiff(_diffRevisions(rev.snapshot,_snapshotForRevision()),`${esc(rev.name)} → ${panelText('revisions.current_state')}`);
       });
-      const r=document.createElement('button');r.className='btn';r.textContent='Restore';
+      const r=document.createElement('button');r.className='btn';localizeText(r,'revisions.restore');
       r.addEventListener('click',()=>{closeModal();restoreRevision(rev.id);});
-      const x=document.createElement('button');x.className='btn danger';x.textContent='×';x.title='Delete';
+      const x=document.createElement('button');x.className='btn danger';x.textContent='×';x.setAttribute('data-i18n-title','modal.delete');x.title=t('modal.delete');
       x.addEventListener('click',()=>{
         PROJECT_REVISIONS=PROJECT_REVISIONS.filter(r=>r.id!==rev.id);
         autosave();closeModal();showRevisions();
@@ -3979,24 +3980,25 @@ function showRevisions(){
     }
     wrap.appendChild(list);
     if(PROJECT_REVISIONS.length>=2){
-      const diffBtn=document.createElement('button');diffBtn.className='btn';diffBtn.textContent='Diff last two revisions';
+      const diffBtn=document.createElement('button');diffBtn.className='btn';localizeText(diffBtn,'revisions.diff_last');
       diffBtn.style.marginTop='12px';
       diffBtn.addEventListener('click',()=>{
         const a=PROJECT_REVISIONS[PROJECT_REVISIONS.length-2].snapshot;
         const b=PROJECT_REVISIONS[PROJECT_REVISIONS.length-1].snapshot;
         const lines=_diffRevisions(a,b);
         const out=document.createElement('pre');out.className='rev-diff';
-        out.textContent=lines.length?lines.join('\n'):'(no differences detected)';
+        out.innerHTML=lines.length?lines.join('\n'):panelText('revisions.no_diff');
+        localizeDOM(out);
         wrap.appendChild(out);
       });
       wrap.appendChild(diffBtn);
     }
   }
-  const saveBtn=document.createElement('button');saveBtn.className='btn btn-primary';saveBtn.textContent='Save current state as new revision';
+  const saveBtn=document.createElement('button');saveBtn.className='btn btn-primary';localizeText(saveBtn,'revisions.save');
   saveBtn.style.marginTop='12px';
   saveBtn.addEventListener('click',()=>{closeModal();newRevision();});
   wrap.appendChild(saveBtn);
-  showModalNode('Revisions',wrap,null);
+  showModalNode({i18n:'tb.revisions'},wrap,null);
 }
 
 // ═══ INVENTORY ════════════════════════════════════
@@ -4008,8 +4010,8 @@ function showInventory(){
   wrap.style.cssText='font-family:Rajdhani,sans-serif;font-size:13px';
   const devs=allDevices();
   if(!devs.length){
-    wrap.textContent='Nothing placed yet. Add APs, cameras or switches first.';
-    showModalNode('Inventory',wrap,null);
+    localizeText(wrap,'inventory.empty');
+    showModalNode({i18n:'tb.inventory'},wrap,null);
     return;
   }
   // Rollout progress pills.
@@ -4020,19 +4022,19 @@ function showInventory(){
     const m=DEVICE_STATUS_META[s];
     const pill=document.createElement('span');
     pill.style.cssText='display:flex;align-items:center;gap:5px';
-    pill.innerHTML=`<span style="width:9px;height:9px;border-radius:50%;background:${m.color}"></span>${m.label} <strong>${counts[s]}</strong>`;
+    pill.innerHTML=`<span style="width:9px;height:9px;border-radius:50%;background:${m.color}"></span>${panelText('status.'+s)} <strong>${counts[s]}</strong>`;
     prog.appendChild(pill);
   }
   const done=counts.live+counts.tested;
   const pct=Math.round((done/devs.length)*100);
   const pctEl=document.createElement('span');
   pctEl.style.cssText='margin-left:auto;font-family:"Share Tech Mono",monospace;font-size:11px;opacity:.7';
-  pctEl.textContent=`${pct}% tested/live`;
+  pctEl.setAttribute('data-i18n-vars',JSON.stringify({pct}));localizeText(pctEl,'inventory.progress');
   prog.appendChild(pctEl);
   wrap.appendChild(prog);
   // Search box.
   const search=document.createElement('input');
-  search.className='ep-in';search.type='text';search.placeholder='Filter by name, model, serial, IP, status…';
+  search.className='ep-in';search.type='text';search.setAttribute('data-i18n-placeholder','inventory.search');search.placeholder=t('inventory.search');
   search.style.cssText='width:100%;margin-bottom:8px';
   wrap.appendChild(search);
   // Table.
@@ -4041,8 +4043,8 @@ function showInventory(){
   const tbl=document.createElement('table');
   tbl.style.cssText='width:100%;border-collapse:collapse;font-size:12px';
   tbl.innerHTML=`<thead><tr style="position:sticky;top:0;background:var(--bg,inherit)">${
-    ['Floor','Type','Name','Model','Status','Serial','Asset','IP','Switch·Port']
-      .map(h=>`<th style="text-align:left;font-size:9px;letter-spacing:.12em;text-transform:uppercase;padding:6px 8px;border-bottom:1px solid var(--ink-04)">${h}</th>`).join('')
+    ['inventory.floor','inventory.type','settings.name','inventory.model','inventory.status','inventory.serial','inventory.asset','IP','inventory.port']
+      .map(h=>`<th ${h==='IP'?'':`data-i18n="${h}"`} style="text-align:left;font-size:9px;letter-spacing:.12em;text-transform:uppercase;padding:6px 8px;border-bottom:1px solid var(--ink-04)">${esc(h==='IP'?h:t(h))}</th>`).join('')
   }</tr></thead>`;
   const tbody=document.createElement('tbody');
   tbl.appendChild(tbody);scroller.appendChild(tbl);wrap.appendChild(scroller);
@@ -4052,14 +4054,14 @@ function showInventory(){
     let shown=0;
     for(const entry of devs){
       const {dev,type,floor,floorIdx}=entry;
-      const hay=[dev.name,dev.model,dev.serial,dev.assetTag,dev.firmware,dev.ip,dev.mac,dev.vlan,statusMeta(dev).label,floor.name].join(' ').toLowerCase();
+      const hay=[dev.name,dev.model,dev.serial,dev.assetTag,dev.firmware,dev.ip,dev.mac,dev.vlan,statusMeta(dev).label,t('status.'+(DEVICE_STATUSES.includes(dev.status)?dev.status:'planned')),floor.name].join(' ').toLowerCase();
       if(q&&!hay.includes(q))continue;
       shown++;
       const sw=(floor.SWS||[]).find(s=>s.id===dev.swId);
       const tr=document.createElement('tr');
       tr.style.cssText='cursor:pointer';
       const td=(html,mono)=>{const c=document.createElement('td');c.style.cssText=`padding:5px 8px;border-bottom:1px solid var(--ink-04)${mono?';font-family:\'Share Tech Mono\',monospace;font-size:10px':''}`;c.innerHTML=html;return c;};
-      tr.appendChild(td(esc(floor.name||`Floor ${floorIdx+1}`)));
+      tr.appendChild(td(floor.name?esc(floor.name):panelText('topology.floor',{n:floorIdx+1})));
       tr.appendChild(td(type));
       tr.appendChild(td(`<strong>${esc(dev.name||dev.id)}</strong>`));
       tr.appendChild(td(esc(dev.model||'')));
@@ -4068,7 +4070,7 @@ function showInventory(){
       const stSel=document.createElement('select');
       stSel.className='ep-sel';stSel.style.cssText='font-size:11px;padding:2px 4px';
       for(const s of DEVICE_STATUSES){
-        const o=document.createElement('option');o.value=s;o.textContent=DEVICE_STATUS_META[s].label;
+        const o=document.createElement('option');o.value=s;localizeText(o,'status.'+s);
         if((dev.status||'planned')===s)o.selected=true;
         stSel.appendChild(o);
       }
@@ -4095,7 +4097,7 @@ function showInventory(){
     }
     if(!shown){
       const tr=document.createElement('tr');
-      tr.innerHTML=`<td colspan="9" style="padding:14px;text-align:center;opacity:.6">No matches.</td>`;
+      tr.innerHTML=`<td colspan="9" style="padding:14px;text-align:center;opacity:.6" data-i18n="inventory.no_matches">${esc(t('inventory.no_matches'))}</td>`;
       tbody.appendChild(tr);
     }
   };
@@ -4105,20 +4107,20 @@ function showInventory(){
   const foot=document.createElement('div');
   foot.style.cssText='display:flex;gap:6px;flex-wrap:wrap;margin-top:10px';
   const mkBtn=(label,title,fn)=>{
-    const b=document.createElement('button');b.className='btn';b.textContent=label;b.title=title;
+    const b=document.createElement('button');b.className='btn';localizeText(b,label);b.setAttribute('data-i18n-title',title);b.title=t(title);
     b.addEventListener('click',fn);foot.appendChild(b);
   };
-  mkBtn('IP+ all','Fill every empty IP from its VLAN subnet',()=>{autoAssignIps();closeModal();showInventory();});
-  mkBtn('Auto-rename','Rename all devices to the convention in Settings → Organization',()=>{autoRenameDevices();closeModal();showInventory();});
-  mkBtn('⇣ Inventory CSV','Export this table as CSV',()=>doInventoryCsv());
-  mkBtn('⇣ IP plan CSV','One row per device with IP/VLAN/subnet',()=>doIpPlanCsv());
-  mkBtn('⇣ Port map CSV','One row per switch port',()=>doPortMapCsv());
-  const hb=document.createElement('button');hb.className='btn btn-primary';hb.textContent='⇩ Handover pack';
-  hb.title='Zip of the HTML summary + every CSV deliverable';
+  mkBtn('inventory.ip_all','inventory.ip_tip',()=>{autoAssignIps();closeModal();showInventory();});
+  mkBtn('inventory.rename','inventory.rename_tip',()=>{autoRenameDevices();closeModal();showInventory();});
+  mkBtn('inventory.csv','inventory.csv_tip',()=>doInventoryCsv());
+  mkBtn('inventory.ip_csv','inventory.ip_csv_tip',()=>doIpPlanCsv());
+  mkBtn('inventory.port_csv','inventory.port_csv_tip',()=>doPortMapCsv());
+  const hb=document.createElement('button');hb.className='btn btn-primary';localizeText(hb,'inventory.handover');
+  hb.setAttribute('data-i18n-title','tip.handover');hb.title=t('tip.handover');
   hb.addEventListener('click',()=>doHandoverPack());
   foot.appendChild(hb);
   wrap.appendChild(foot);
-  showModalNode('Inventory & rollout',wrap,null);
+  showModalNode({i18n:'modal.inventory_rollout'},wrap,null);
   document.getElementById('mdl').classList.add('wide-modal');
 }
 
@@ -4180,7 +4182,7 @@ function applyStoredCatalog(){
 function showPluginCatalogDialog(){
   const wrap=document.createElement('div');wrap.className='settings-form';
   const hint=document.createElement('div');hint.className='ep-hint';
-  hint.innerHTML=`Paste a JSON catalog to add custom vendor models. Saved with the project. Schema:<br>
+  hint.innerHTML=`<span data-i18n="catalog.hint">${esc(t('catalog.hint'))}</span><br>
 <code style="font-size:11px;font-family:monospace;background:rgba(0,0,0,.05);padding:8px;display:block;white-space:pre;margin-top:6px">{"aps":[{"label":"My Vendor","models":["X1"],"range":{"X1":30},"poe":{"X1":15}}],
  "cams":[{"label":"My CCTV","models":["CamA"],"specs":{"CamA":{"fov":90,"range":30,"res":"4K","poeW":8}}}],
  "switches":[{"label":"My SW","models":["SW1"],"ports":{"SW1":24},"poe":{"SW1":380},"class":{"SW1":"bt"}}]}</code>`;
@@ -4189,17 +4191,17 @@ function showPluginCatalogDialog(){
   ta.style.width='100%';ta.style.height='180px';ta.style.fontFamily='monospace';ta.style.fontSize='12px';
   ta.placeholder='{"aps":[...]}';
   wrap.appendChild(ta);
-  showModalNode('Custom vendor catalog',wrap,()=>{
+  showModalNode({i18n:'modal.catalog'},wrap,()=>{
     try{
       const json=JSON.parse(ta.value||'{}');
       if(_mergeCustomCatalog(json)){
         _accumulateCatalog(json);
         autosave();
         renderRP();   // refresh an open device panel so new models show in dropdowns
-        toast('Catalog merged & saved');
-      }else toast('Nothing to merge');
+        toast(t('catalog.merged'));
+      }else toast(t('catalog.no_changes'));
     }catch(err){
-      toast('Invalid JSON: '+(err&&err.message||err));
+      toast(t('catalog.invalid_json')+(err&&err.message||err));
     }
   });
 }
@@ -4335,34 +4337,35 @@ function calibrateScale(){
   if(rulerStart&&rulerEnd){promptCalibration();return;}
   calibratePending=true;
   setMode('ruler');
-  toast('Draw a line over a known dimension to set the scale');
+  toast(t('notify.draw_a_line_over_a_known_dimension_to_set_the_scale'));
 }
 // Ask for the line's real length, then derive metres-per-100px from its pixels.
 function promptCalibration(){
   if(!(rulerStart&&rulerEnd))return;
   const px=Math.hypot(rulerEnd.x-rulerStart.x,rulerEnd.y-rulerStart.y);
-  if(px<2){toast('Line too short — draw a longer one');return;}
+  if(px<2){toast(t('notify.line_too_short_draw_a_longer_one'));return;}
   const wrap=document.createElement('div');
   wrap.style.cssText='font-family:Rajdhani,sans-serif;font-size:13px';
   const p=document.createElement('div');
-  p.textContent=`This line is ${px.toFixed(0)} px. Enter its real-world length:`;
+  p.setAttribute('data-i18n-vars',JSON.stringify({px:px.toFixed(0)}));
+  localizeText(p,'calibrate.line_length');
   p.style.marginBottom='8px';
   const row=document.createElement('div');row.style.cssText='display:flex;gap:6px;align-items:center';
   const inp=document.createElement('input');
   inp.type='number';inp.min='0.1';inp.step='0.1';inp.className='ep-in';
   inp.value=(px*(scaleM/100)).toFixed(1);inp.style.width='130px';
-  const unit=document.createElement('span');unit.textContent='metres';
+  const unit=document.createElement('span');localizeText(unit,'calibrate.metres');
   row.append(inp,unit);wrap.append(p,row);
-  showModalNode('Calibrate scale',wrap,()=>{
+  showModalNode({i18n:'modal.calibrate'},wrap,()=>{
     const realM=parseFloat(inp.value);
-    if(!(realM>0)){toast('Enter a positive length');return;}
+    if(!(realM>0)){toast(t('notify.enter_a_positive_length'));return;}
     snapshot();
     const newScale=realM/px*100;            // metres per 100 px
     setScaleM(newScale);
     const el=document.getElementById('scale-m');if(el)el.value=Math.round(newScale*100)/100;
     SETTINGS.archScale='';                   // now a custom, measured scale
     updateScaleBar();calcCoverage();render();renderList();renderRP();
-    toast(`Scale set: ${newScale.toFixed(2)} m / 100 px`);
+    toast(t('notify.scale',{scale:newScale.toFixed(2)}));
   });
   setTimeout(()=>{inp.focus();inp.select();},50);
 }
@@ -4407,19 +4410,23 @@ function _selectedDevice(){
 // project file only — stripped from Share links (see shareLink) and never
 // printed in reports. Shared markup so every device panel looks the same.
 const CRED_PROTOS=['https','http','ssh','telnet'];
+// Escaped display-only spans retain their parameters for live language switching.
+function panelText(key,vars){
+  return `<span data-i18n="${key}" data-i18n-vars="${esc(JSON.stringify(vars||{}))}">${esc(t(key,vars))}</span>`;
+}
 function credsBlock(dev){
   const c=dev.creds||{};
   const proto=c.proto||'https';
   const protoOpts=CRED_PROTOS.map(p=>`<option value="${p}"${proto===p?' selected':''}>${p.toUpperCase()}</option>`).join('');
   return `
-    <div class="ep-section">Credentials</div>
-    <div class="ep-row"><label class="ep-lbl">Protocol</label><select class="ep-sel" id="cred-proto" data-input-action="upd-creds">${protoOpts}</select></div>
-    <div class="ep-row"><label class="ep-lbl">Host / URL</label><input class="ep-in ep-mono" id="cred-host" value="${esc(c.host||'')}" data-input-action="upd-creds" placeholder="defaults to IP (${esc(dev.ip||'—')})"/></div>
-    <div class="ep-row"><label class="ep-lbl">Port</label><input class="ep-in ep-mono" id="cred-port" value="${esc(c.port||'')}" data-input-action="upd-creds" placeholder="443"/></div>
-    <div class="ep-row"><label class="ep-lbl">Username</label><input class="ep-in" id="cred-user" value="${esc(c.user||'')}" data-input-action="upd-creds" autocomplete="off"/></div>
-    <div class="ep-row"><label class="ep-lbl">Password</label><input class="ep-in ep-mono" id="cred-pass" type="password" value="${esc(c.pass||'')}" data-input-action="upd-creds" autocomplete="new-password"/><button class="btn" style="flex:0 0 auto;padding:4px 8px" data-action="toggle-pass" title="Show / hide password">👁</button></div>
-    <div class="ep-row"><a href="#" data-action="open-mgmt" style="font-size:11px">↗ Open management UI</a></div>
-    <div class="ep-row" style="font-size:10px;opacity:.55">Saved in the project file only — excluded from Share links and PDF/HTML reports.</div>`;
+    <div class="ep-section" data-i18n="panel.credentials">Credentials</div>
+    <div class="ep-row"><label class="ep-lbl" data-i18n="panel.protocol">Protocol</label><select class="ep-sel" id="cred-proto" data-input-action="upd-creds">${protoOpts}</select></div>
+    <div class="ep-row"><label class="ep-lbl" data-i18n="panel.host">Host / URL</label><input class="ep-in ep-mono" id="cred-host" value="${esc(c.host||'')}" data-input-action="upd-creds" data-i18n-placeholder="panel.host_default" data-i18n-vars="${esc(JSON.stringify({ip:dev.ip||'—'}))}"/></div>
+    <div class="ep-row"><label class="ep-lbl" data-i18n="panel.port">Port</label><input class="ep-in ep-mono" id="cred-port" value="${esc(c.port||'')}" data-input-action="upd-creds" placeholder="443"/></div>
+    <div class="ep-row"><label class="ep-lbl" data-i18n="unifi.username">Username</label><input class="ep-in" id="cred-user" value="${esc(c.user||'')}" data-input-action="upd-creds" autocomplete="off"/></div>
+    <div class="ep-row"><label class="ep-lbl" data-i18n="unifi.password">Password</label><input class="ep-in ep-mono" id="cred-pass" type="password" value="${esc(c.pass||'')}" data-input-action="upd-creds" autocomplete="new-password"/><button class="btn" style="flex:0 0 auto;padding:4px 8px" data-action="toggle-pass" title="Show / hide password" data-i18n-title="panel.password_tip">👁</button></div>
+    <div class="ep-row"><a href="#" data-action="open-mgmt" style="font-size:11px" data-i18n="panel.management">↗ Open management UI</a></div>
+    <div class="ep-row" style="font-size:10px;opacity:.55" data-i18n="panel.credentials_hint">Saved in the project file only — excluded from Share links and PDF/HTML reports.</div>`;
 }
 function updCreds(){
   const d=_selectedDevice();if(!d)return;
@@ -4443,8 +4450,8 @@ function openMgmt(){
   const d=_selectedDevice();
   const host=(document.getElementById('cred-host')?.value||'').trim()||((d&&d.ip)||'').trim();
   const port=(document.getElementById('cred-port')?.value||'').trim();
-  if(!host){toast('No host or IP set');return;}
-  if(proto!=='http'&&proto!=='https'){toast('Open supports HTTP/HTTPS only — use an SSH client for '+proto.toUpperCase());return;}
+  if(!host){toast(t('notify.no_host_or_ip_set'));return;}
+  if(proto!=='http'&&proto!=='https'){toast(t('notify.open_supports_http_https_only_use_an_ssh_client_for')+proto.toUpperCase());return;}
   window.open(`${proto}://${host}${port?':'+port:''}`,'_blank','noopener');
 }
 
@@ -4502,15 +4509,15 @@ function deviceImageBlock(item,type){
   const isUpload=!!item.imgId||/^data:/.test(item.imageUrl||'');
   const hasOverride=!!(item.imgId||item.imageUrl);
   const urlVal=/^data:/.test(item.imageUrl||'')?'':esc(item.imageUrl||'');
-  const urlPh=isUpload?'Uploaded image — Clear to remove':'https://… (overrides model image)';
+  const urlPh=isUpload?'panel.image_uploaded':'panel.image_override';
   return `
-    <div class="ep-device-img"><img id="ep-img" src="${esc(src)}" data-ph="${esc(ph)}" alt="${esc(item.model||'device')}"/></div>
+    <div class="ep-device-img"><img id="ep-img" src="${esc(src)}" data-ph="${esc(ph)}" alt="${esc(item.model||'device')}"${item.model?'':' data-i18n-alt="panel.device"'}/></div>
     <div class="ep-img-actions">
-      <button class="btn ep-img-btn" data-action="upload-device-img">↑ Upload image</button>
-      <button class="btn ep-img-btn"${hasOverride?'':' disabled'} data-action="clear-device-img">✕ Clear</button>
+      <button class="btn ep-img-btn" data-action="upload-device-img" data-i18n="panel.image_upload">↑ Upload image</button>
+      <button class="btn ep-img-btn"${hasOverride?'':' disabled'} data-action="clear-device-img" data-i18n="panel.image_clear">✕ Clear</button>
       <input type="file" id="ep-img-file" accept="image/*" hidden data-change-action="device-img-file"/>
     </div>
-    <div class="ep-row"><label class="ep-lbl">Image URL</label><input class="ep-in ep-mono" id="ep-img-url" value="${urlVal}" data-input-action="upd-img" placeholder="${urlPh}"/></div>`;
+    <div class="ep-row"><label class="ep-lbl" data-i18n="panel.image_url">Image URL</label><input class="ep-in ep-mono" id="ep-img-url" value="${urlVal}" data-input-action="upd-img" data-i18n-placeholder="${urlPh}"/></div>`;
 }
 
 // Attach the placeholder fallback after a panel sets its innerHTML. Called at
@@ -4649,7 +4656,7 @@ async function _rehydrateImages(){
 
 function renderRP(){
   const rph=document.getElementById('rp-head');
-  if(!selId){rph.textContent='Properties';rpBody.innerHTML='<div class="rp-empty"><div class="rp-empty-icon">◎</div><div class="rp-empty-txt">Select an item<br>to edit properties</div></div>';return;}
+  if(!selId){localizeText(rph,'sidebar.properties');rpBody.innerHTML='<div class="rp-empty"><div class="rp-empty-icon">◎</div><div class="rp-empty-txt" data-i18n="sidebar.select">'+esc(t('sidebar.select'))+'</div></div>';return;}
   if(selType==='ap')renderAPPanel();
   else if(selType==='dz')renderDZPanel();
   else if(selType==='sw')renderSWPanel();
@@ -4674,70 +4681,71 @@ function totalStorageGb(){
 }
 function renderCAMPanel(){
   const c=CAMS().find(x=>x.id===selId);if(!c)return;
-  document.getElementById('rp-head').textContent='Edit Camera';
+  localizeText(document.getElementById('rp-head'),'sidebar.edit_camera');
   const mOpts=buildGroupedOptions(CAM_MODEL_GROUPS,c.model||'G4 Pro');
   const realR=Math.round((c.range||80)*(scaleM/100));
   const swOptions=SWS().map(sw=>`<option value="${esc(sw.id)}"${sw.id===c.swId?' selected':''}>${esc(sw.name)} · ${esc(sw.model||'')}</option>`).join('');
   rpBody.innerHTML=`
     ${deviceImageBlock(c,'cam')}
-    <div class="ep-section">Identity</div>
-    <div class="ep-row"><label class="ep-lbl">Name</label><input class="ep-in" id="cam-name" value="${esc(c.name)}" data-input-action="upd-cam"/></div>
-    <div class="ep-row"><label class="ep-lbl">Model</label><select class="ep-sel" id="cam-model" data-input-action="upd-cam">${mOpts}</select></div>
-    <div class="ep-row"><label class="ep-lbl">Resolution</label>
+    <div class="ep-section" data-i18n="panel.identity">Identity</div>
+    <div class="ep-row"><label class="ep-lbl" data-i18n="settings.name">Name</label><input class="ep-in" id="cam-name" value="${esc(c.name)}" data-input-action="upd-cam"/></div>
+    <div class="ep-row"><label class="ep-lbl" data-i18n="inventory.model">Model</label><select class="ep-sel" id="cam-model" data-input-action="upd-cam">${mOpts}</select></div>
+    <div class="ep-row"><label class="ep-lbl" data-i18n="panel.resolution">Resolution</label>
       <select class="ep-sel" id="cam-res" data-input-action="upd-cam">
         ${['8MP','4K','5MP','4MP','2MP','12MP','1080p','720p'].map(r=>`<option${c.resolution===r?' selected':''}>${r}</option>`).join('')}
       </select>
     </div>
-    <div class="ep-section">Lens</div>
+    <div class="ep-section" data-i18n="panel.lens">Lens</div>
     <div class="ep-row ep-slider-row">
-      <label class="ep-lbl">Field of View</label>
+      <label class="ep-lbl" data-i18n="panel.fov">Field of View</label>
       <input class="ep-rng" id="cam-fov" type="range" min="10" max="360" value="${Math.round(c.fov||80)}" data-input-action="upd-cam-fov"/>
       <span class="ep-rng-val" id="cam-fov-v">${Math.round(c.fov||80)}°</span>
     </div>
     <div class="ep-row ep-slider-row">
-      <label class="ep-lbl">View Range</label>
+      <label class="ep-lbl" data-i18n="panel.range">View Range</label>
       <input class="ep-rng" id="cam-range" type="range" min="20" max="400" value="${Math.round(c.range||80)}" data-input-action="upd-cam-range"/>
       <span class="ep-rng-val" id="cam-range-v">${realR}m</span>
     </div>
     <div class="ep-row ep-slider-row">
-      <label class="ep-lbl">Heading</label>
+      <label class="ep-lbl" data-i18n="panel.heading">Heading</label>
       <input class="ep-rng" id="cam-heading" type="range" min="0" max="359" value="${Math.round(c.heading||0)}" data-input-action="upd-cam-heading"/>
       <span class="ep-rng-val" id="cam-heading-v">${Math.round(c.heading||0)}°</span>
     </div>
     <div class="ep-section">DORI (IEC 62676-4)</div>
     <div class="ep-row" style="font-family:'Share Tech Mono';font-size:11px;line-height:1.7;display:block">
       ${doriDistancesM(c.resolution||'4K',Math.max(10,Math.min(360,c.fov||80))).map(b=>
-        `<span style="color:${b.color}">●</span> ${esc(b.label)} (${b.ppm} px/m) ≤ ${b.m>=100?Math.round(b.m):b.m.toFixed(1)} m<br>`).join('')}
+        `<span style="color:${b.color}">●</span> ${panelText('panel.dori.'+b.key)} (${b.ppm} px/m) ≤ ${b.m>=100?Math.round(b.m):b.m.toFixed(1)} m<br>`).join('')}
     </div>
-    <div class="ep-section">Recording</div>
-    <div class="ep-row"><label class="ep-lbl">Bitrate (Mbps)</label><input class="ep-in ep-mono" id="cam-bitrate" type="number" min="0" step="0.5" value="${c.bitrateMbps||''}" data-input-action="upd-cam" placeholder="auto: ${cameraBitrateMbps(c.resolution||'4K',SETTINGS.storageCodec)}"/></div>
-    <div class="ep-row"><label class="ep-lbl">Storage</label><span class="ep-rng-val" id="cam-storage-v">${_camStorageLabel(c)}</span></div>
-    <div class="ep-section">Color</div>
+    <div class="ep-section" data-i18n="panel.recording">Recording</div>
+    <div class="ep-row"><label class="ep-lbl" data-i18n="panel.bitrate">Bitrate (Mbps)</label><input class="ep-in ep-mono" id="cam-bitrate" type="number" min="0" step="0.5" value="${c.bitrateMbps||''}" data-input-action="upd-cam" data-i18n-placeholder="panel.auto_bitrate" data-i18n-vars="${esc(JSON.stringify({rate:cameraBitrateMbps(c.resolution||'4K',SETTINGS.storageCodec)}))}"/></div>
+    <div class="ep-row"><label class="ep-lbl" data-i18n="panel.storage">Storage</label><span class="ep-rng-val" id="cam-storage-v">${_camStorageLabel(c)}</span></div>
+    <div class="ep-section" data-i18n="panel.color">Color</div>
     <div class="color-swatches">
       ${AP_COLORS.map(col=>{
         const isSel=(c.color||'')===col.value;
-        return `<button class="color-swatch${col.value?'':' color-default'}${isSel?' on':''}" ${col.value?`style="background:${col.value}"`:''} data-action="set-cam-color" data-arg="${esc(col.value)}" title="${esc(col.label)}" aria-label="${esc(col.label)}"></button>`;
+        return `<button class="color-swatch${col.value?'':' color-default'}${isSel?' on':''}" ${col.value?`style="background:${col.value}"`:''} data-action="set-cam-color" data-arg="${esc(col.value)}" data-i18n-title="panel.color.${col.label.toLowerCase()}" data-i18n-aria-label="panel.color.${col.label.toLowerCase()}" title="${esc(col.label)}" aria-label="${esc(col.label)}"></button>`;
       }).join('')}
     </div>
-    <div class="ep-section">Network / PoE</div>
-    <div class="ep-row"><label class="ep-lbl">IP Address</label><input class="ep-in ep-mono" id="cam-ip" value="${esc(c.ip||'')}" data-input-action="upd-cam" placeholder="192.168.1.x"/><button class="btn" style="flex:0 0 auto;padding:4px 8px" data-action="suggest-ip-cam" title="Suggest next free IP in this device's VLAN subnet">IP+</button></div>
-    <div class="ep-row"><label class="ep-lbl">MAC Address</label><input class="ep-in ep-mono" id="cam-mac" value="${esc(c.mac||'')}" data-input-action="upd-cam" placeholder="aa:bb:cc:dd:ee:ff"/></div>
-    <div class="ep-row"><label class="ep-lbl">Switch</label>
+    <div class="ep-section" data-i18n="panel.network_poe">Network / PoE</div>
+    <div class="ep-row"><label class="ep-lbl" data-i18n="panel.ip">IP Address</label><input class="ep-in ep-mono" id="cam-ip" value="${esc(c.ip||'')}" data-input-action="upd-cam" placeholder="192.168.1.x"/><button class="btn" style="flex:0 0 auto;padding:4px 8px" data-action="suggest-ip-cam" title="Suggest next free IP in this device's VLAN subnet" data-i18n-title="panel.suggest_ip">IP+</button></div>
+    <div class="ep-row"><label class="ep-lbl" data-i18n="panel.mac">MAC Address</label><input class="ep-in ep-mono" id="cam-mac" value="${esc(c.mac||'')}" data-input-action="upd-cam" placeholder="aa:bb:cc:dd:ee:ff"/></div>
+    <div class="ep-row"><label class="ep-lbl" data-i18n="legend.switch">Switch</label>
       <select class="ep-sel" id="cam-sw" data-input-action="upd-cam">
-        <option value=""${!c.swId?' selected':''}>— None —</option>${swOptions}
+        <option value=""${!c.swId?' selected':''} data-i18n="panel.none">— None —</option>${swOptions}
       </select>
     </div>
-    <div class="ep-row"><label class="ep-lbl">Switch Port</label>${c.swId
+    <div class="ep-row"><label class="ep-lbl" data-i18n="panel.switch_port">Switch Port</label>${c.swId
       ? portControl(devSwitchPorts(c),c.port,'id="cam-port" data-input-action="upd-cam"')
-      : `<input class="ep-in" id="cam-port" value="${esc(c.port||'')}" data-input-action="upd-cam" placeholder="Assign a switch first" disabled/>`}</div>
+      : `<input class="ep-in" id="cam-port" value="${esc(c.port||'')}" data-input-action="upd-cam" placeholder="Assign a switch first" data-i18n-placeholder="panel.assign_switch" disabled/>`}</div>
     <div class="ep-row"><label class="ep-lbl">VLAN</label><input class="ep-in" id="cam-vlan" list="vlan-list" value="${esc(c.vlan||'')}" data-input-action="upd-cam" placeholder="20"/>${vlanDatalist()}</div>
     ${inventoryBlock(c,'cam','upd-cam')}
-    <div class="ep-section">Options</div>
-    <label class="ep-check"><input type="checkbox" ${c.locked?'checked':''} data-change-action="toggle-lock"/><span>Lock position</span></label>
+    <div class="ep-section" data-i18n="panel.options">Options</div>
+    <label class="ep-check"><input type="checkbox" ${c.locked?'checked':''} data-change-action="toggle-lock"/><span data-i18n="panel.lock">Lock position</span></label>
     ${credsBlock(c)}
-    <div class="ep-section">Notes</div>
-    <div class="ep-row"><textarea class="ep-txt" id="cam-notes" rows="3" data-input-action="upd-cam" placeholder="Mount type, lens info, install notes…">${esc(c.notes||'')}</textarea></div>
-    <button class="btn ep-del" data-action="ask-del">✕ Delete Camera</button>`;
+    <div class="ep-section" data-i18n="panel.notes">Notes</div>
+    <div class="ep-row"><textarea class="ep-txt" id="cam-notes" rows="3" data-input-action="upd-cam" placeholder="Mount type, lens info, install notes…" data-i18n-placeholder="panel.camera_notes">${esc(c.notes||'')}</textarea></div>
+    <button class="btn ep-del" data-action="ask-del" data-i18n="panel.delete_camera">✕ Delete Camera</button>`;
+  localizeDOM(rpBody);
   _wireDeviceImg();
 }
 function updCam(){
@@ -4777,32 +4785,33 @@ function setCamColor(col){const c=CAMS().find(x=>x.id===selId);if(!c)return;snap
 
 function renderWallPanel(){
   const w=WALLS().find(x=>x.id===selId);if(!w)return;
-  document.getElementById('rp-head').textContent='Edit Wall';
+  localizeText(document.getElementById('rp-head'),'sidebar.edit_wall');
   const mat=WALL_MATERIALS[w.material]||WALL_MATERIALS.drywall;
   const px=_wallPx(w);
   const lengthPx=Math.hypot(px.x2-px.x1,px.y2-px.y1);
   const lengthM=(lengthPx*(scaleM/100)).toFixed(1);
   const opts=WALL_MATERIAL_KEYS.map(k=>{
     const m=WALL_MATERIALS[k];
-    return `<option value="${k}"${k===w.material?' selected':''}>${esc(m.label)} · ${m.loss} dB</option>`;
+    return `<option value="${k}"${k===w.material?' selected':''} data-i18n="wall.material.${k}" data-i18n-vars="${esc(JSON.stringify({loss:m.loss}))}">${esc(m.label)} · ${m.loss} dB</option>`;
   }).join('');
   rpBody.innerHTML=`
-    <div class="ep-section">Material</div>
+    <div class="ep-section" data-i18n="wall.material">Material</div>
     <div class="ep-row">
       <select class="ep-sel" id="wall-mat" data-change-action="upd-wall">${opts}</select>
     </div>
-    <div class="ep-section">Info</div>
+    <div class="ep-section" data-i18n="wall.info">Info</div>
     <div class="ep-row">
-      <div class="ep-lbl">Length</div>
+      <div class="ep-lbl" data-i18n="wall.length">Length</div>
       <div class="ep-readout">${lengthM} m</div>
     </div>
     <div class="ep-row">
-      <div class="ep-lbl">Signal Loss</div>
+      <div class="ep-lbl" data-i18n="wall.loss">Signal Loss</div>
       <div class="ep-readout">${mat.loss} dB</div>
     </div>
-    <div class="ep-section">Notes</div>
-    <div class="ep-row"><textarea class="ep-txt" id="wall-notes" rows="3" data-input-action="upd-wall-notes" placeholder="Construction detail, partial-height, glazing…">${esc(w.notes||'')}</textarea></div>
-    <button class="btn ep-del" data-action="ask-del">✕ Delete Wall</button>`;
+    <div class="ep-section" data-i18n="panel.notes">Notes</div>
+    <div class="ep-row"><textarea class="ep-txt" id="wall-notes" rows="3" data-input-action="upd-wall-notes" placeholder="Construction detail, partial-height, glazing…" data-i18n-placeholder="wall.notes_hint">${esc(w.notes||'')}</textarea></div>
+    <button class="btn ep-del" data-action="ask-del">✕ <span data-i18n="wall.delete">Delete Wall</span></button>`;
+  localizeDOM(rpBody);
 }
 
 function updWall(){
@@ -4816,108 +4825,110 @@ function updWall(){
 
 function renderAPPanel(){
   const ap=APS().find(a=>a.id===selId);if(!ap)return;
-  document.getElementById('rp-head').textContent='Edit AP';
+  localizeText(document.getElementById('rp-head'),'sidebar.edit_ap');
   const mOpts=buildGroupedOptions(AP_MODEL_GROUPS,ap.model||'U6 Pro');
   const realR=Math.round(ap.r*(scaleM/100));
   rpBody.innerHTML=`
     ${deviceImageBlock(ap,'ap')}
-    <div class="ep-section">Identity</div>
-    <div class="ep-row"><label class="ep-lbl">Name</label><input class="ep-in" id="ep-name" value="${ap.name}" data-input-action="upd-ap"/></div>
-    <div class="ep-row"><label class="ep-lbl">AP Model</label><select class="ep-sel" id="ep-model" data-input-action="upd-ap">${mOpts}</select></div>
-    <div class="ep-row"><label class="ep-lbl">Frequency</label>
+    <div class="ep-section" data-i18n="panel.identity">Identity</div>
+    <div class="ep-row"><label class="ep-lbl" data-i18n="settings.name">Name</label><input class="ep-in" id="ep-name" value="${ap.name}" data-input-action="upd-ap"/></div>
+    <div class="ep-row"><label class="ep-lbl" data-i18n="panel.ap_model">AP Model</label><select class="ep-sel" id="ep-model" data-input-action="upd-ap">${mOpts}</select></div>
+    <div class="ep-row"><label class="ep-lbl" data-i18n="panel.frequency">Frequency</label>
       <select class="ep-sel" id="ep-freq" data-input-action="upd-ap">
         <option ${ap.freq==='2.4 / 5 GHz'?'selected':''}>2.4 / 5 GHz</option>
-        <option ${ap.freq==='5 GHz only'?'selected':''}>5 GHz only</option>
-        <option ${ap.freq==='2.4 GHz only'?'selected':''}>2.4 GHz only</option>
+        <option value="5 GHz only" data-i18n="panel.freq_5" ${ap.freq==='5 GHz only'?'selected':''}>5 GHz only</option>
+        <option value="2.4 GHz only" data-i18n="panel.freq_24" ${ap.freq==='2.4 GHz only'?'selected':''}>2.4 GHz only</option>
         <option ${ap.freq==='6 GHz (WiFi 6E)'?'selected':''}>6 GHz (WiFi 6E)</option>
       </select></div>
-    <div class="ep-section">Signal</div>
+    <div class="ep-section" data-i18n="panel.signal">Signal</div>
     <div class="sig-chips">
-      <div class="sig-chip ${ap.sig==='strong'?'on':''}" data-action="set-sig" data-arg="strong">Strong</div>
-      <div class="sig-chip ${ap.sig==='medium'?'on':''}" data-action="set-sig" data-arg="medium">Medium</div>
-      <div class="sig-chip ${ap.sig==='weak'?'on':''}" data-action="set-sig" data-arg="weak">Weak</div>
+      <div class="sig-chip ${ap.sig==='strong'?'on':''}" data-action="set-sig" data-arg="strong" data-i18n="panel.strong">Strong</div>
+      <div class="sig-chip ${ap.sig==='medium'?'on':''}" data-action="set-sig" data-arg="medium" data-i18n="panel.medium">Medium</div>
+      <div class="sig-chip ${ap.sig==='weak'?'on':''}" data-action="set-sig" data-arg="weak" data-i18n="panel.weak">Weak</div>
     </div>
-    <div class="ep-section">Color</div>
+    <div class="ep-section" data-i18n="panel.color">Color</div>
     <div class="color-swatches">
       ${AP_COLORS.map(c=>{
         const isSel=(ap.color||'')===c.value;
         const swatchStyle=c.value?`style="background:${c.value}"`:'class-default';
-        return `<button class="color-swatch${c.value?'':' color-default'}${isSel?' on':''}" ${c.value?`style="background:${c.value}"`:''} data-action="set-color" data-arg="${esc(c.value)}" title="${esc(c.label)}" aria-label="${esc(c.label)}"></button>`;
+        return `<button class="color-swatch${c.value?'':' color-default'}${isSel?' on':''}" ${c.value?`style="background:${c.value}"`:''} data-action="set-color" data-arg="${esc(c.value)}" data-i18n-title="panel.color.${c.label.toLowerCase()}" data-i18n-aria-label="panel.color.${c.label.toLowerCase()}" title="${esc(c.label)}" aria-label="${esc(c.label)}"></button>`;
       }).join('')}
     </div>
-    <div class="ep-section">Coverage Range</div>
+    <div class="ep-section" data-i18n="panel.coverage_range">Coverage Range</div>
     <div class="ep-row ep-slider-row">
       <input class="ep-rng" id="ep-r" type="range" min="15" max="500" value="${Math.round(ap.r)}" data-input-action="upd-ap-r"/>
       <span class="ep-rng-val" id="ep-rv">${realR}m</span>
     </div>
-    <div class="ep-section">Antenna Pattern</div>
-    <div class="ep-row"><label class="ep-lbl">Pattern</label>
+    <div class="ep-section" data-i18n="panel.antenna">Antenna Pattern</div>
+    <div class="ep-row"><label class="ep-lbl" data-i18n="panel.pattern">Pattern</label>
       <select class="ep-sel" id="ep-pattern" data-input-action="upd-ap">
-        ${AP_PATTERN_KEYS.map(k=>`<option value="${k}"${(ap.pattern||'omni')===k?' selected':''}>${esc(AP_PATTERNS[k].label)}</option>`).join('')}
+        ${AP_PATTERN_KEYS.map(k=>`<option value="${k}"${(ap.pattern||'omni')===k?' selected':''} data-i18n="panel.pattern.${k}">${esc(AP_PATTERNS[k].label)}</option>`).join('')}
       </select>
     </div>
     <div class="ep-row ep-slider-row" id="ep-heading-row" style="${(ap.pattern&&ap.pattern!=='omni'&&ap.pattern!=='ceiling')?'':'display:none'}">
-      <label class="ep-lbl">Heading</label>
+      <label class="ep-lbl" data-i18n="panel.heading">Heading</label>
       <input class="ep-rng" id="ep-heading" type="range" min="0" max="359" value="${Math.round(ap.heading||0)}" data-input-action="upd-ap-heading"/>
       <span class="ep-rng-val" id="ep-heading-v">${Math.round(ap.heading||0)}°</span>
     </div>
-    <div class="ep-section">Radio</div>
-    <div class="ep-row"><label class="ep-lbl">Channel</label><input class="ep-in ep-mono" id="ep-channel" value="${esc(ap.channel||'auto')}" data-input-action="upd-ap" placeholder="auto · 6 · 36 · 149 …"/></div>
-    <div class="ep-row"><label class="ep-lbl">Width (MHz)</label>
+    <div class="ep-section" data-i18n="panel.radio">Radio</div>
+    <div class="ep-row"><label class="ep-lbl" data-i18n="panel.channel">Channel</label><input class="ep-in ep-mono" id="ep-channel" value="${esc(ap.channel||'auto')}" data-input-action="upd-ap" placeholder="auto · 6 · 36 · 149 …"/></div>
+    <div class="ep-row"><label class="ep-lbl" data-i18n="panel.width">Width (MHz)</label>
       <select class="ep-sel" id="ep-chanwidth" data-input-action="upd-ap">
         ${CHANNEL_WIDTHS.map(cw=>`<option value="${cw}"${(ap.chanWidth||20)===cw?' selected':''}>${cw} MHz${cw===320?' (WiFi 7)':''}</option>`).join('')}
       </select></div>
-    <div class="ep-row"><label class="ep-lbl">TX Power</label><input class="ep-in ep-mono" id="ep-txpower" value="${esc(ap.txPower||'auto')}" data-input-action="upd-ap" placeholder="auto · low · medium · high · 20 dBm"/></div>
-    <div class="ep-section">Capacity</div>
-    <div class="ep-row"><label class="ep-lbl">Clients</label><input class="ep-in ep-mono" id="ep-clients" type="number" min="0" max="500" value="${ap.capacityClients??25}" data-input-action="upd-ap" title="Expected concurrent clients on this AP"/></div>
-    <div class="ep-row"><label class="ep-lbl">Airtime est.</label><span class="ep-rng-val" id="ep-airtime-v">${_airtimeLabel(ap)}</span></div>
-    <div class="ep-section">Network Info</div>
-    <div class="ep-row"><label class="ep-lbl">IP Address</label><input class="ep-in" id="ep-ip" value="${esc(ap.ip||'')}" data-input-action="upd-ap" placeholder="192.168.1.x"/><button class="btn" style="flex:0 0 auto;padding:4px 8px" data-action="suggest-ip-ap" title="Suggest next free IP in this device's VLAN subnet">IP+</button></div>
-    <div class="ep-row"><label class="ep-lbl">MAC Address</label><input class="ep-in ep-mono" id="ep-mac" value="${ap.mac||''}" data-input-action="upd-ap" placeholder="aa:bb:cc:dd:ee:ff"/></div>
-    <div class="ep-row"><label class="ep-lbl">Switch</label>
+    <div class="ep-row"><label class="ep-lbl" data-i18n="panel.tx_power">TX Power</label><input class="ep-in ep-mono" id="ep-txpower" value="${esc(ap.txPower||'auto')}" data-input-action="upd-ap" placeholder="auto · low · medium · high · 20 dBm"/></div>
+    <div class="ep-section" data-i18n="panel.capacity">Capacity</div>
+    <div class="ep-row"><label class="ep-lbl" data-i18n="panel.clients">Clients</label><input class="ep-in ep-mono" id="ep-clients" type="number" min="0" max="500" value="${ap.capacityClients??25}" data-input-action="upd-ap" title="Expected concurrent clients on this AP" data-i18n-title="panel.clients_tip"/></div>
+    <div class="ep-row"><label class="ep-lbl" data-i18n="panel.airtime">Airtime est.</label><span class="ep-rng-val" id="ep-airtime-v">${_airtimeLabel(ap)}</span></div>
+    <div class="ep-section" data-i18n="panel.network">Network Info</div>
+    <div class="ep-row"><label class="ep-lbl" data-i18n="panel.ip">IP Address</label><input class="ep-in" id="ep-ip" value="${esc(ap.ip||'')}" data-input-action="upd-ap" placeholder="192.168.1.x"/><button class="btn" style="flex:0 0 auto;padding:4px 8px" data-action="suggest-ip-ap" title="Suggest next free IP in this device's VLAN subnet" data-i18n-title="panel.suggest_ip">IP+</button></div>
+    <div class="ep-row"><label class="ep-lbl" data-i18n="panel.mac">MAC Address</label><input class="ep-in ep-mono" id="ep-mac" value="${ap.mac||''}" data-input-action="upd-ap" placeholder="aa:bb:cc:dd:ee:ff"/></div>
+    <div class="ep-row"><label class="ep-lbl" data-i18n="legend.switch">Switch</label>
       <select class="ep-sel" id="ep-sw" data-input-action="upd-ap">
-        <option value=""${!ap.swId?' selected':''}>— None —</option>
+        <option value=""${!ap.swId?' selected':''} data-i18n="panel.none">— None —</option>
         ${SWS().map(sw=>`<option value="${esc(sw.id)}"${sw.id===ap.swId?' selected':''}>${esc(sw.name)} · ${esc(sw.model||'')}</option>`).join('')}
       </select>
     </div>
-    <div class="ep-row"><label class="ep-lbl">Switch Port</label>${ap.swId
+    <div class="ep-row"><label class="ep-lbl" data-i18n="panel.switch_port">Switch Port</label>${ap.swId
       ? portControl(devSwitchPorts(ap),ap.port,'id="ep-port" data-input-action="upd-ap"')
-      : `<input class="ep-in" id="ep-port" value="${esc(ap.port||'')}" data-input-action="upd-ap" placeholder="Assign a switch first" disabled/>`}</div>
+      : `<input class="ep-in" id="ep-port" value="${esc(ap.port||'')}" data-input-action="upd-ap" placeholder="Assign a switch first" data-i18n-placeholder="panel.assign_switch" disabled/>`}</div>
     <div class="ep-row"><label class="ep-lbl">VLAN</label><input class="ep-in" id="ep-vlan" list="vlan-list" value="${esc(ap.vlan||'')}" data-input-action="upd-ap" placeholder="10"/>${vlanDatalist()}</div>
     ${inventoryBlock(ap,'ep','upd-ap')}
-    <div class="ep-section">Options</div>
-    <label class="ep-check"><input type="checkbox" ${ap.locked?'checked':''} data-change-action="toggle-lock"/><span>Lock position</span></label>
+    <div class="ep-section" data-i18n="panel.options">Options</div>
+    <label class="ep-check"><input type="checkbox" ${ap.locked?'checked':''} data-change-action="toggle-lock"/><span data-i18n="panel.lock">Lock position</span></label>
     <div class="ep-btn-row">
-      <button class="btn" data-action="duplicate">⧉ Duplicate</button>
+      <button class="btn" data-action="duplicate">⧉ <span data-i18n="help.duplicate">Duplicate</span></button>
     </div>
     ${credsBlock(ap)}
-    <div class="ep-section">Notes</div>
-    <div class="ep-row"><textarea class="ep-txt" id="ep-notes" rows="4" data-input-action="upd-ap" placeholder="Cable run, switch port, install notes...">${ap.notes||''}</textarea></div>
-    <button class="btn ep-del" data-action="ask-del">✕ Delete AP</button>`;
+    <div class="ep-section" data-i18n="panel.notes">Notes</div>
+    <div class="ep-row"><textarea class="ep-txt" id="ep-notes" rows="4" data-input-action="upd-ap" placeholder="Cable run, switch port, install notes..." data-i18n-placeholder="panel.ap_notes">${ap.notes||''}</textarea></div>
+    <button class="btn ep-del" data-action="ask-del" data-i18n="panel.delete_ap">✕ Delete AP</button>`;
+  localizeDOM(rpBody);
   _wireDeviceImg();
 }
 
 function renderDZPanel(){
   const dz=DZS().find(a=>a.id===selId);if(!dz)return;
-  document.getElementById('rp-head').textContent='Edit Dead Zone';
+  localizeText(document.getElementById('rp-head'),'sidebar.edit_dz');
   const realR=Math.round(dz.r*(scaleM/100));
   rpBody.innerHTML=`
-    <div class="ep-section">Label</div>
+    <div class="ep-section" data-i18n="dz.label">Label</div>
     <div class="ep-row"><input class="ep-in" id="dz-lbl" value="${dz.label}" data-input-action="upd-dz"/></div>
-    <div class="ep-section">Radius</div>
+    <div class="ep-section" data-i18n="dz.radius">Radius</div>
     <div class="ep-row ep-slider-row">
       <input class="ep-rng" id="dz-r" type="range" min="10" max="300" value="${Math.round(dz.r)}" data-input-action="upd-dz-r"/>
       <span class="ep-rng-val" id="dz-rv">${realR}m</span>
     </div>
-    <label class="ep-check"><input type="checkbox" ${dz.locked?'checked':''} data-change-action="toggle-lock"/><span>Lock position</span></label>
-    <div class="ep-section">Notes</div>
-    <div class="ep-row"><textarea class="ep-txt" id="dz-notes" rows="3" data-input-action="upd-dz" placeholder="Why this area is a dead zone, remediation plan…">${esc(dz.notes||'')}</textarea></div>
-    <button class="btn ep-del" data-action="ask-del">✕ Delete</button>`;
+    <label class="ep-check"><input type="checkbox" ${dz.locked?'checked':''} data-change-action="toggle-lock"/><span data-i18n="panel.lock">Lock position</span></label>
+    <div class="ep-section" data-i18n="panel.notes">Notes</div>
+    <div class="ep-row"><textarea class="ep-txt" id="dz-notes" rows="3" data-input-action="upd-dz" placeholder="Why this area is a dead zone, remediation plan…" data-i18n-placeholder="dz.notes_hint">${esc(dz.notes||'')}</textarea></div>
+    <button class="btn ep-del" data-action="ask-del">✕ <span data-i18n="modal.delete">Delete</span></button>`;
+  localizeDOM(rpBody);
 }
 
 function renderSWPanel(){
   const sw=SWS().find(a=>a.id===selId);if(!sw)return;
-  document.getElementById('rp-head').textContent='Edit Switch/Router';
+  localizeText(document.getElementById('rp-head'),'sidebar.edit_switch');
   const mOpts=buildGroupedOptions(SW_MODEL_GROUPS,sw.model||'USW-24-PoE');
   // If the stored model isn't in our known list, treat it as a custom override
   const isCustom=!SW_MODELS.includes(sw.model||'');
@@ -4928,45 +4939,46 @@ function renderSWPanel(){
   const uplinkOpts=FLOORS.map((f,i)=>{
     const opts=(f.SWS||[]).filter(s=>s.id!==sw.id)
       .map(s=>`<option value="${esc(s.id)}"${s.id===sw.uplinkId?' selected':''}>${esc(s.name)} · ${esc(s.model||'')}</option>`).join('');
-    return opts?`<optgroup label="${esc(f.name||('Floor '+(i+1)))}">${opts}</optgroup>`:'';
+    return opts?`<optgroup ${f.name?`label="${esc(f.name)}"`:`data-i18n-label="topology.floor" data-i18n-vars="${esc(JSON.stringify({n:i+1}))}" label="${esc(t('topology.floor',{n:i+1}))}"`}>${opts}</optgroup>`:'';
   }).join('');
   const statusColor=a.overBudget||a.overPorts||a.classFails.length?'#c0382b':'#1e7d3c';
   const portTxt=a.ports!=null?`${a.used}/${a.ports}`:`${a.used}`;
-  const statusLine=`${a.draw.toFixed(0)} W${a.budget>0?` / ${a.budget} W${a.headroom!=null?` (${a.headroom}% free)`:''}`:''} · ${portTxt} ports${a.swCls?` · ${a.swCls.toUpperCase()}`:' · no PoE'}`;
+  const statusLine=`${a.draw.toFixed(0)} W${a.budget>0?` / ${esc(a.budget)} W${a.headroom!=null?` (${panelText('panel.free',{n:a.headroom})})`:''}`:''} · ${esc(portTxt)} ports${a.swCls?` · ${esc(a.swCls.toUpperCase())}`:' · '+panelText('panel.no_poe')}`;
   rpBody.innerHTML=`
     ${deviceImageBlock(sw,'sw')}
-    <div class="ep-section">Identity</div>
-    <div class="ep-row"><label class="ep-lbl">Name</label><input class="ep-in" id="sw-name" value="${esc(sw.name)}" data-input-action="upd-sw"/></div>
-    <div class="ep-row"><label class="ep-lbl">Model</label><select class="ep-sel" id="sw-model" data-input-action="upd-sw">${mOpts}</select></div>
+    <div class="ep-section" data-i18n="panel.identity">Identity</div>
+    <div class="ep-row"><label class="ep-lbl" data-i18n="settings.name">Name</label><input class="ep-in" id="sw-name" value="${esc(sw.name)}" data-input-action="upd-sw"/></div>
+    <div class="ep-row"><label class="ep-lbl" data-i18n="inventory.model">Model</label><select class="ep-sel" id="sw-model" data-input-action="upd-sw">${mOpts}</select></div>
     <div class="ep-row" id="sw-custom-row" style="${isCustom?'':'display:none'}">
-      <label class="ep-lbl">Custom Model Name</label>
-      <input class="ep-in" id="sw-model-custom" value="${isCustom?esc(sw.model||''):''}" data-input-action="upd-sw" placeholder="Enter model name"/>
+      <label class="ep-lbl" data-i18n="panel.custom_model">Custom Model Name</label>
+      <input class="ep-in" id="sw-model-custom" value="${isCustom?esc(sw.model||''):''}" data-input-action="upd-sw" placeholder="Enter model name" data-i18n-placeholder="panel.enter_model"/>
     </div>
-    <div class="ep-row"><label class="ep-lbl">IP Address</label><input class="ep-in ep-mono" id="sw-ip" value="${esc(sw.ip||'')}" data-input-action="upd-sw" placeholder="192.168.1.1"/></div>
-    <div class="ep-row"><label class="ep-lbl">MAC Address</label><input class="ep-in ep-mono" id="sw-mac" value="${esc(sw.mac||'')}" data-input-action="upd-sw" placeholder="aa:bb:cc:dd:ee:ff"/></div>
-    <div class="ep-row"><label class="ep-lbl">PoE Budget (W)</label><input class="ep-in ep-mono" id="sw-poe" type="number" min="0" value="${sw.poeBudget||0}" data-input-action="upd-sw" placeholder="0 for non-PoE"/></div>
-    <div class="ep-row"><label class="ep-lbl">Port Count</label><input class="ep-in ep-mono" id="sw-ports" type="number" min="0" value="${sw.ports||''}" data-input-action="upd-sw" placeholder="${derivedPorts!=null?derivedPorts:'auto'}"/></div>
-    <div class="ep-row"><label class="ep-lbl">Uplink To</label>
+    <div class="ep-row"><label class="ep-lbl" data-i18n="panel.ip">IP Address</label><input class="ep-in ep-mono" id="sw-ip" value="${esc(sw.ip||'')}" data-input-action="upd-sw" placeholder="192.168.1.1"/></div>
+    <div class="ep-row"><label class="ep-lbl" data-i18n="panel.mac">MAC Address</label><input class="ep-in ep-mono" id="sw-mac" value="${esc(sw.mac||'')}" data-input-action="upd-sw" placeholder="aa:bb:cc:dd:ee:ff"/></div>
+    <div class="ep-row"><label class="ep-lbl" data-i18n="panel.budget">PoE Budget (W)</label><input class="ep-in ep-mono" id="sw-poe" type="number" min="0" value="${sw.poeBudget||0}" data-input-action="upd-sw" placeholder="0 for non-PoE" data-i18n-placeholder="panel.non_poe"/></div>
+    <div class="ep-row"><label class="ep-lbl" data-i18n="panel.ports">Port Count</label><input class="ep-in ep-mono" id="sw-ports" type="number" min="0" value="${sw.ports||''}" data-input-action="upd-sw" placeholder="${derivedPorts!=null?derivedPorts:'auto'}"/></div>
+    <div class="ep-row"><label class="ep-lbl" data-i18n="panel.uplink">Uplink To</label>
       <select class="ep-sel" id="sw-uplink" data-input-action="upd-sw">
-        <option value=""${!sw.uplinkId?' selected':''}>— None (root) —</option>${uplinkOpts}
+        <option value=""${!sw.uplinkId?' selected':''} data-i18n="panel.root">— None (root) —</option>${uplinkOpts}
       </select>
     </div>
-    <div class="ep-row" style="font-family:'Share Tech Mono';font-size:11px;color:${statusColor};opacity:.9">${esc(statusLine)}</div>
-    <div class="ep-section">Connected Devices (${a.used})</div>
+    <div class="ep-row" style="font-family:'Share Tech Mono';font-size:11px;color:${statusColor};opacity:.9">${statusLine}</div>
+    <div class="ep-section">${panelText('panel.connected',{n:a.used})}</div>
     ${a.clients.length
       ? a.clients.map(c=>`<div class="ep-row"><label class="ep-lbl">${c.type==='AP'?'●':'◉'} ${esc(c.name)}</label>${portControl(a.ports,c.port,`data-input-action="upd-sw-port" data-dev-id="${esc(c.dev.id)}" data-dev-type="${c.type==='AP'?'ap':'cam'}"`)}</div>`).join('')
-      : `<div class="ep-row" style="opacity:.6;font-size:11px">None assigned. Set this switch on an AP/camera, or use ⚯ Auto-cable.</div>`}
-    <div class="ep-section">Icon Size</div>
+      : `<div class="ep-row" style="opacity:.6;font-size:11px" data-i18n="panel.no_assigned">None assigned. Set this switch on an AP/camera, or use ⚯ Auto-cable.</div>`}
+    <div class="ep-section" data-i18n="panel.icon_size">Icon Size</div>
     <div class="ep-row ep-slider-row">
       <input class="ep-rng" id="sw-size" type="range" min="10" max="80" value="${sw.size||22}" data-input-action="upd-sw-size"/>
       <span class="ep-rng-val" id="sw-size-v">${sw.size||22}px</span>
     </div>
     ${inventoryBlock(sw,'sw','upd-sw')}
     ${credsBlock(sw)}
-    <div class="ep-section">Notes</div>
-    <div class="ep-row"><textarea class="ep-txt" id="sw-notes" rows="3" data-input-action="upd-sw" placeholder="Location, uplink, config notes...">${sw.notes||''}</textarea></div>
-    <label class="ep-check"><input type="checkbox" ${sw.locked?'checked':''} data-change-action="toggle-lock"/><span>Lock position</span></label>
-    <button class="btn ep-del" data-action="ask-del">✕ Delete</button>`;
+    <div class="ep-section" data-i18n="panel.notes">Notes</div>
+    <div class="ep-row"><textarea class="ep-txt" id="sw-notes" rows="3" data-input-action="upd-sw" placeholder="Location, uplink, config notes..." data-i18n-placeholder="panel.switch_notes">${sw.notes||''}</textarea></div>
+    <label class="ep-check"><input type="checkbox" ${sw.locked?'checked':''} data-change-action="toggle-lock"/><span data-i18n="panel.lock">Lock position</span></label>
+    <button class="btn ep-del" data-action="ask-del">✕ <span data-i18n="modal.delete">Delete</span></button>`;
+  localizeDOM(rpBody);
   _wireDeviceImg();
 }
 
@@ -4991,7 +5003,7 @@ function updAP(){
   const pwEl=document.getElementById('ep-txpower');if(pwEl)ap.txPower=pwEl.value;
   const clEl=document.getElementById('ep-clients');
   if(clEl){const n=parseInt(clEl.value,10);if(Number.isFinite(n)&&n>=0)ap.capacityClients=n;}
-  const atEl=document.getElementById('ep-airtime-v');if(atEl)atEl.textContent=_airtimeLabel(ap);
+  const atEl=document.getElementById('ep-airtime-v');if(atEl)atEl.innerHTML=_airtimeLabel(ap);
   ap.ip=document.getElementById('ep-ip').value;
   ap.mac=document.getElementById('ep-mac').value;
   const prevSwId=ap.swId;
@@ -5082,13 +5094,13 @@ function renderList(){
   const cnts=document.getElementById('sb-counters');
   if(cnts){
     cnts.innerHTML=`
-      <span class="cnt-pill" title="Access Points"><span class="cnt-icon">●</span><span class="cnt-num">${apN}</span><span class="cnt-lbl">APs</span></span>
-      <span class="cnt-pill" title="Switches / Routers"><span class="cnt-icon">⊞</span><span class="cnt-num">${swN}</span><span class="cnt-lbl">SW</span></span>
-      <span class="cnt-pill" title="Cameras"><span class="cnt-icon">◉</span><span class="cnt-num">${cmN}</span><span class="cnt-lbl">CAM</span></span>
-      <span class="cnt-pill" title="Dead Zones"><span class="cnt-icon">⚠</span><span class="cnt-num">${dzN}</span><span class="cnt-lbl">DZ</span></span>
-      <span class="cnt-pill" title="Walls"><span class="cnt-icon">▌</span><span class="cnt-num">${wN}</span><span class="cnt-lbl">W</span></span>`;
+      <span class="cnt-pill" data-i18n-title="report.aps" title="${esc(t('report.aps'))}"><span class="cnt-icon">●</span><span class="cnt-num">${apN}</span><span class="cnt-lbl">APs</span></span>
+      <span class="cnt-pill" data-i18n-title="sidebar.switches" title="${esc(t('sidebar.switches'))}"><span class="cnt-icon">⊞</span><span class="cnt-num">${swN}</span><span class="cnt-lbl">SW</span></span>
+      <span class="cnt-pill" data-i18n-title="report.cameras" title="${esc(t('report.cameras'))}"><span class="cnt-icon">◉</span><span class="cnt-num">${cmN}</span><span class="cnt-lbl">CAM</span></span>
+      <span class="cnt-pill" data-i18n-title="report.dead_zones" title="${esc(t('report.dead_zones'))}"><span class="cnt-icon">⚠</span><span class="cnt-num">${dzN}</span><span class="cnt-lbl">DZ</span></span>
+      <span class="cnt-pill" data-i18n-title="sidebar.walls" title="${esc(t('sidebar.walls'))}"><span class="cnt-icon">▌</span><span class="cnt-num">${wN}</span><span class="cnt-lbl">W</span></span>`;
   }
-  if(!total){leftList.innerHTML='<div class="empty-msg">Nothing yet.<br>Click map to place items.</div>';return;}
+  if(!total){leftList.innerHTML='<div class="empty-msg" data-i18n="sidebar.empty">'+esc(t('sidebar.empty'))+'</div>';return;}
 
   // Search filter — case-insensitive, matches against multiple fields per item.
   // Empty query returns true for everything, so the no-search case is no-op fast.
@@ -5103,7 +5115,7 @@ function renderList(){
   const filteredSWs=SWS().filter(sw=>stOk(sw)&&matches(sw.name,sw.model,sw.ip,sw.mac,sw.serial,sw.assetTag,sw.notes));
   const filteredCAMs=CAMS().filter(c=>stOk(c)&&matches(c.name,c.model,c.ip,c.mac,c.serial,c.assetTag,c.notes));
   const filteredDZs=DZS().filter(dz=>matches(dz.label));
-  const filteredWalls=WALLS().filter(w=>matches((WALL_MATERIALS[w.material]||{}).label));
+  const filteredWalls=WALLS().filter(w=>matches((WALL_MATERIALS[w.material]||{}).label,t('sidebar.wall.'+(WALL_MATERIALS[w.material]?w.material:'drywall'))));
   const matchTotal=filteredAPs.length+filteredSWs.length+filteredCAMs.length+filteredDZs.length+filteredWalls.length;
 
   // No matches when there IS a query → friendly "no results" instead of empty space
@@ -5113,35 +5125,35 @@ function renderList(){
   }
 
   if(filteredAPs.length){
-    const h=document.createElement('div');h.className='sec-lbl';h.textContent='Access Points';leftList.appendChild(h);
+    const h=document.createElement('div');h.className='sec-lbl';localizeText(h,'report.aps');leftList.appendChild(h);
     filteredAPs.forEach(ap=>{
       const d=document.createElement('div');d.className='list-item'+(ap.id===selId?' active':'')+(ap.locked?' locked':'');
       const sigDots={strong:'●●●',medium:'●●○',weak:'●○○'}[ap.sig||'strong'];
       const sigClass={strong:'sig-s',medium:'sig-m',weak:'sig-w'}[ap.sig||'strong'];
       const dotStyle=ap.color?` style="background:${esc(ap.color)}"`:'';
-      d.innerHTML=`<div class="li-dot"${dotStyle}></div><div class="li-info"><div class="li-name">${esc(ap.name)}<span class="li-status" style="background:${statusMeta(ap).color}" title="${esc(statusMeta(ap).label)}"></span></div><div class="li-sub">${esc(ap.model||'U6 Pro')}</div></div><span class="li-sig ${sigClass}">${sigDots}</span>${ap.locked?'<span class="li-lock">🔒</span>':''}<button class="li-del" data-action="quick-del" data-id="${ap.id}" data-type="ap">✕</button>`;
+      d.innerHTML=`<div class="li-dot"${dotStyle}></div><div class="li-info"><div class="li-name">${esc(ap.name)}<span class="li-status" style="background:${statusMeta(ap).color}" data-i18n-title="status.${DEVICE_STATUSES.includes(ap.status)?ap.status:'planned'}" title="${esc(t('status.'+(DEVICE_STATUSES.includes(ap.status)?ap.status:'planned')))}"></span></div><div class="li-sub">${esc(ap.model||'U6 Pro')}</div></div><span class="li-sig ${sigClass}">${sigDots}</span>${ap.locked?'<span class="li-lock">🔒</span>':''}<button class="li-del" data-action="quick-del" data-id="${ap.id}" data-type="ap">✕</button>`;
       d.addEventListener('click',e=>{if(e.target.closest('.li-del'))return;sel(ap.id,'ap',{zoom:true});setMode('sel');});leftList.appendChild(d);
     });
   }
   if(filteredSWs.length){
-    const h=document.createElement('div');h.className='sec-lbl';h.textContent='Switches/Routers';leftList.appendChild(h);
+    const h=document.createElement('div');h.className='sec-lbl';localizeText(h,'sidebar.switches');leftList.appendChild(h);
     filteredSWs.forEach(sw=>{
       const d=document.createElement('div');d.className='list-item sw-item'+(sw.id===selId?' active':'');
-      d.innerHTML=`<span style="font-size:12px">⊞</span><div class="li-info"><div class="li-name">${esc(sw.name)}<span class="li-status" style="background:${statusMeta(sw).color}" title="${esc(statusMeta(sw).label)}"></span></div><div class="li-sub">${esc(sw.model||'')}</div></div><button class="li-del" data-action="quick-del" data-id="${sw.id}" data-type="sw">✕</button>`;
+      d.innerHTML=`<span style="font-size:12px">⊞</span><div class="li-info"><div class="li-name">${esc(sw.name)}<span class="li-status" style="background:${statusMeta(sw).color}" data-i18n-title="status.${DEVICE_STATUSES.includes(sw.status)?sw.status:'planned'}" title="${esc(t('status.'+(DEVICE_STATUSES.includes(sw.status)?sw.status:'planned')))}"></span></div><div class="li-sub">${esc(sw.model||'')}</div></div><button class="li-del" data-action="quick-del" data-id="${sw.id}" data-type="sw">✕</button>`;
       d.addEventListener('click',e=>{if(e.target.closest('.li-del'))return;sel(sw.id,'sw',{zoom:true});setMode('sel');});leftList.appendChild(d);
     });
   }
   if(filteredCAMs.length){
-    const h=document.createElement('div');h.className='sec-lbl';h.textContent='Cameras';leftList.appendChild(h);
+    const h=document.createElement('div');h.className='sec-lbl';localizeText(h,'report.cameras');leftList.appendChild(h);
     filteredCAMs.forEach(c=>{
       const d=document.createElement('div');d.className='list-item cam-item'+(c.id===selId?' active':'')+(c.locked?' locked':'');
       const dotStyle=c.color?` style="background:${esc(c.color)}"`:'';
-      d.innerHTML=`<div class="li-dot"${dotStyle}></div><div class="li-info"><div class="li-name">${esc(c.name)}<span class="li-status" style="background:${statusMeta(c).color}" title="${esc(statusMeta(c).label)}"></span></div><div class="li-sub">${esc(c.model||'')} · ${esc(c.resolution||'')}</div></div>${c.locked?'<span class="li-lock">🔒</span>':''}<button class="li-del" data-action="quick-del" data-id="${c.id}" data-type="cam">✕</button>`;
+      d.innerHTML=`<div class="li-dot"${dotStyle}></div><div class="li-info"><div class="li-name">${esc(c.name)}<span class="li-status" style="background:${statusMeta(c).color}" data-i18n-title="status.${DEVICE_STATUSES.includes(c.status)?c.status:'planned'}" title="${esc(t('status.'+(DEVICE_STATUSES.includes(c.status)?c.status:'planned')))}"></span></div><div class="li-sub">${esc(c.model||'')} · ${esc(c.resolution||'')}</div></div>${c.locked?'<span class="li-lock">🔒</span>':''}<button class="li-del" data-action="quick-del" data-id="${c.id}" data-type="cam">✕</button>`;
       d.addEventListener('click',e=>{if(e.target.closest('.li-del'))return;sel(c.id,'cam',{zoom:true});setMode('sel');});leftList.appendChild(d);
     });
   }
   if(filteredDZs.length){
-    const h=document.createElement('div');h.className='sec-lbl';h.textContent='Dead Zones';leftList.appendChild(h);
+    const h=document.createElement('div');h.className='sec-lbl';localizeText(h,'report.dead_zones');leftList.appendChild(h);
     filteredDZs.forEach(dz=>{
       const d=document.createElement('div');d.className='list-item dz-item'+(dz.id===selId?' active':'');
       d.innerHTML=`<span style="font-size:12px">⚠</span><span class="li-name">${esc(dz.label)}</span><button class="li-del" data-action="quick-del" data-id="${dz.id}" data-type="dz">✕</button>`;
@@ -5149,7 +5161,7 @@ function renderList(){
     });
   }
   if(filteredWalls.length){
-    const h=document.createElement('div');h.className='sec-lbl';h.textContent=`Walls (${filteredWalls.length}${q?' / '+wN:''})`;leftList.appendChild(h);
+    const h=document.createElement('div');h.className='sec-lbl';h.innerHTML=`<span data-i18n="sidebar.walls">${esc(t('sidebar.walls'))}</span> (${filteredWalls.length}${q?' / '+wN:''})`;leftList.appendChild(h);
     filteredWalls.forEach(w=>{
       // Use original WALLS() index for display (W-1, W-2, etc.) so numbers match the master list
       const i=WALLS().indexOf(w);
@@ -5158,7 +5170,7 @@ function renderList(){
       const lenM=(Math.hypot(wpx.x2-wpx.x1,wpx.y2-wpx.y1)*(scaleM/100)).toFixed(1);
       const d=document.createElement('div');
       d.className='list-item'+(w.id===selId?' active':'');
-      d.innerHTML=`<span style="font-size:12px">▌</span><div class="li-info"><div class="li-name">Wall ${i+1}</div><div class="li-sub">${esc(mat.label)} · ${lenM} m</div></div><button class="li-del" data-action="quick-del" data-id="${w.id}" data-type="wall">✕</button>`;
+      d.innerHTML=`<span style="font-size:12px">▌</span><div class="li-info"><div class="li-name">${panelText('sidebar.wall_number',{n:i+1})}</div><div class="li-sub">${panelText('sidebar.wall.'+(WALL_MATERIALS[w.material]?w.material:'drywall'))} · ${lenM} m</div></div><button class="li-del" data-action="quick-del" data-id="${w.id}" data-type="wall">✕</button>`;
       d.addEventListener('click',e=>{if(e.target.closest('.li-del'))return;sel(w.id,'wall',{zoom:true});setMode('sel');});
       leftList.appendChild(d);
     });
@@ -5169,11 +5181,11 @@ function renderList(){
 function askDel(){
   if(selId==null)return;
   const target={id:selId,type:selType};
-  showModalText('Delete Item','Remove this item from the map?',()=>doDelete(target));
+  showModalText({i18n:'modal.delete_item'},{i18n:'modal.delete_map'},()=>doDelete(target));
 }
 function qDel(id,type){
   const target={id,type};
-  showModalText('Delete Item','Remove this item?',()=>doDelete(target));
+  showModalText({i18n:'modal.delete_item'},{i18n:'modal.remove'},()=>doDelete(target));
 }
 function doDelete(target){
   if(!target)return;
@@ -5187,7 +5199,7 @@ function doDelete(target){
   if(selId===id){selId=null;selType=null;}
   // Wall removal changes coverage shapes everywhere
   if(type==='wall'||type==='ap')invalidateCoverageCache();
-  render();renderList();renderRP();calcCoverage();toast('Deleted');
+  render();renderList();renderRP();calcCoverage();toast(t('toast.deleted'));
 }
 let modalCancelCB=null;
 // Element focused before the modal opened — focus returns here on close so
@@ -5197,7 +5209,10 @@ let _modalReturnFocus=null;
 // DOM node; callers wanting to pass plain text should use showModalText.
 function _showModalEl(title,bodyEl,okCB,cancelCB){
   _modalReturnFocus=document.activeElement;
-  document.getElementById('mdl-title').textContent=title;
+  const titleEl=document.getElementById('mdl-title');
+  titleEl.removeAttribute('data-i18n');
+  if(title && typeof title==='object' && title.i18n)localizeText(titleEl,title.i18n);
+  else titleEl.textContent=title;
   const body=document.getElementById('mdl-body');
   body.replaceChildren(bodyEl);
   modalCB=okCB||null;modalCancelCB=cancelCB||null;
@@ -5205,7 +5220,8 @@ function _showModalEl(title,bodyEl,okCB,cancelCB){
   const ok=document.getElementById('mdl-ok');
   if(ok){ok.style.display=okCB?'':'none';}
   const cancel=document.querySelector('#mdl .mdl-actions .btn:not(#mdl-ok)');
-  if(cancel)cancel.textContent=okCB?'Cancel':'Close';
+  if(cancel)localizeText(cancel,okCB?'modal.cancel':'modal.close');
+  localizeDOM(body);
   document.getElementById('mbg').classList.add('vis');
   // Move focus into the dialog so screen readers announce it and Tab is trapped.
   const mdl=document.getElementById('mdl');
@@ -5233,6 +5249,11 @@ document.addEventListener('keydown',e=>{
 // Plain-text body (auto-escaped). Newlines become <br>.
 function showModalText(title,text,okCB,cancelCB){
   const div=document.createElement('div');
+  if(text && typeof text==='object' && text.i18n){
+    localizeText(div,text.i18n);
+    _showModalEl(title,div,okCB,cancelCB);
+    return;
+  }
   String(text||'').split(/\n/).forEach((line,i,arr)=>{
     div.appendChild(document.createTextNode(line));
     if(i<arr.length-1)div.appendChild(document.createElement('br'));
@@ -5273,7 +5294,7 @@ function showContextMenu(clientX,clientY,items){
   const m=document.getElementById('ctx-menu');
   m.innerHTML=items.map((it,i)=>{
     if(it==='-')return '<div class="ctx-sep"></div>';
-    return `<div class="ctx-item${it.disabled?' disabled':''}${it.danger?' danger':''}" data-ctx-idx="${i}">${esc(it.label)}${it.key?`<span class="ctx-key">${esc(it.key)}</span>`:''}</div>`;
+    return `<div class="ctx-item${it.disabled?' disabled':''}${it.danger?' danger':''}" data-ctx-idx="${i}">${panelText(it.labelKey)}${it.key?`<span class="ctx-key">${esc(it.key)}</span>`:''}</div>`;
   }).join('');
   m.classList.add('vis');
   // Position: keep menu on-screen
@@ -5319,13 +5340,13 @@ function openItemContextMenu(type,id,clientX,clientY){
   // Select the item so Edit + Delete use the right target
   sel(id,type);
   const items=[];
-  items.push({label:'Edit properties',key:'', action:()=>{sel(id,type);setMode('sel');}});
+  items.push({labelKey:'context.edit',key:'', action:()=>{sel(id,type);setMode('sel');}});
   if(type==='ap'){
-    items.push({label:'Duplicate',key:'Ctrl+D',action:()=>duplicateSelected()});
+    items.push({labelKey:'help.duplicate',key:'Ctrl+D',action:()=>duplicateSelected()});
   }
-  items.push({label:item.locked?'Unlock':'Lock',key:'Ctrl+L',action:()=>toggleLock()});
+  items.push({labelKey:item.locked?'context.unlock':'context.lock',key:'Ctrl+L',action:()=>toggleLock()});
   items.push('-');
-  items.push({label:'Delete',key:'Del',danger:true,action:()=>{qDel(id,type);}});
+  items.push({labelKey:'modal.delete',key:'Del',danger:true,action:()=>{qDel(id,type);}});
   showContextMenu(clientX,clientY,items);
 }
 // Right-click on the empty map shouldn't show a browser context menu (we use it for panning).
@@ -5339,12 +5360,14 @@ function updateCnt(){document.getElementById('ap-cnt').textContent=APS().length;
 function togglePresent(){
   pres=!pres;
   document.getElementById('btn-pres').classList.toggle('active',pres);
-  document.getElementById('btn-pres').textContent=pres?'■ Exit':'▶ Present';
+  const button=document.getElementById('btn-pres');
+  button.replaceChildren(document.createTextNode(pres?'■ ':'▶ '),document.createElement('span'));
+  localizeText(button.lastElementChild,pres?'tb.exit':'tb.present');
   ['hint-bar','left-sb','right-sb'].forEach(id=>{const el=document.getElementById(id);if(el)el.style.display=pres?'none':'';});
   // Hide the meta + tools rows, but keep the floor-row so users can still flip floors.
   document.querySelectorAll('.topbar-meta, .topbar-tools').forEach(el=>{el.style.display=pres?'none':'';});
   document.querySelector('.topbar.floor-row').classList.toggle('present-slim',pres);
-  setTimeout(fitZoom,50);toast(pres?'Presentation mode — Esc to exit':'Editor mode');
+  setTimeout(fitZoom,50);toast(pres?t('notify.presentation_mode_esc_to_exit'):t('notify.editor_mode'));
 }
 
 // ═══ TOAST ════════════════════════════════════════
@@ -5506,14 +5529,14 @@ html,body{background:#efece5;min-height:100vh;display:flex;flex-direction:column
 ${APS().length?`<table class="at"><thead><tr><th>#</th><th>Name</th><th>Model</th><th>Freq</th><th>Ch</th><th>TX</th><th>Signal</th><th>IP</th><th>MAC</th><th>Port</th><th>VLAN</th><th>Notes</th></tr></thead><tbody>${APS().map((ap,i)=>`<tr><td>${i+1}</td><td>${apImg.has(ap)?`<img class="thumb" src="${apImg.get(ap)}" alt=""/>`:''}${ap.name}</td><td>${ap.model||''}</td><td>${ap.freq}</td><td style="font-family:'Share Tech Mono',monospace;font-size:10px">${ap.channel||'auto'}</td><td style="font-family:'Share Tech Mono',monospace;font-size:10px">${ap.txPower||'auto'}</td><td class="${{strong:'ss',medium:'sm',weak:'sw'}[ap.sig]}">${{strong:'● Strong',medium:'● Medium',weak:'● Weak'}[ap.sig]}</td><td style="font-family:'Share Tech Mono',monospace;font-size:10px">${ap.ip||'—'}</td><td style="font-family:'Share Tech Mono',monospace;font-size:10px">${ap.mac||'—'}</td><td>${ap.port||'—'}</td><td>${ap.vlan||'—'}</td><td style="font-size:10px;color:rgba(0,0,0,.55)">${esc(ap.comment||ap.notes||'—')}</td></tr>`).join('')}</tbody></table>`:''}
 ${SETTINGS.footerLine?`<footer class="ft">${esc(SETTINGS.footerLine)}</footer>`:''}
 </body></html>`;
-  const blob=new Blob([html],{type:'text/html'});const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=(name||'wifi').replace(/\s+/g,'_')+'_coverage.html';a.click();toast('Exported!');
+  const blob=new Blob([html],{type:'text/html'});const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=(name||'wifi').replace(/\s+/g,'_')+'_coverage.html';a.click();toast(t('toast.exported'));
 }
 
 // ═══ PDF ══════════════════════════════════════════
 async function doPDF(){
   // Resolve each floor's image (from IDB) and load it into a temporary
   // HTMLImageElement so we know its natural dimensions for the overlay SVG.
-  toast('Building PDF…');
+  toast(t('export.building_pdf'));
   const floorRecords=[];
   for(const f of FLOORS){
     const src=await resolveFloorImage(f).catch(()=>f.img||'');
@@ -5643,7 +5666,7 @@ ${SETTINGS.footerLine?`<div class="footer-line">${esc(SETTINGS.footerLine)}</div
 <button class="print-btn" onclick="window.print()">Print / Save as PDF</button>
 </body></html>`);
   w.document.close();
-  toast('PDF preview opened — use Print to save as PDF');
+  toast(t('export.pdf_preview'));
 }
 
 // ═══ INIT ═════════════════════════════════════════
@@ -5682,7 +5705,7 @@ function autosave(){
     const isQuota=err&&(err.name==='QuotaExceededError'||err.code===22||err.code===1014);
     if(isQuota&&!_autosaveQuotaWarned){
       _autosaveQuotaWarned=true;
-      toast('Autosave full — use Save to keep your work');
+      toast(t('notify.autosave_full_use_save_to_keep_your_work'));
     }
   }
 }
@@ -5694,15 +5717,15 @@ function tryRestoreAutosave(){
     // Only offer to restore if there's actually content
     const hasContent=(data.floors||[]).some(f=>(f.APS&&f.APS.length)||(f.DZS&&f.DZS.length)||(f.SWS&&f.SWS.length)||f.img||f.imgId);
     if(!hasContent){localStorage.removeItem(AUTOSAVE_KEY);return false;}
-    const when=data.savedAt?new Date(data.savedAt).toLocaleString():'previous session';
-    showModalText('Restore Previous Session?',`A saved session from ${when} was found.\n\nRestore it, or start fresh?`,
+    const when=data.savedAt?new Date(data.savedAt).toLocaleString():t('confirm.previous_session');
+    showModalText({i18n:'modal.restore_session'},t('confirm.session',{when}),
       async ()=>{
         const [migrated]=migrateProject(data);
         FLOORS=migrated.floors;
         SETTINGS={...DEFAULT_SETTINGS,...(migrated.settings||{})};
         applyStoredCatalog();
         PROJECT_REVISIONS=Array.isArray(migrated.revisions)?migrated.revisions:[];
-        if(SETTINGS.language)setLang(SETTINGS.language);
+        setLang(SETTINGS.language||'en');
         curFloor=0;selId=null;selType=null;
         syncScaleFromFloor();
         syncNidFromFloors();
@@ -5711,7 +5734,7 @@ function tryRestoreAutosave(){
         await _rehydrateImages();
         applySettingsToBrand();
         loadFloorImage();renderFloorTabs();render();renderList();renderRP();calcCoverage();
-        toast('Session restored');
+        toast(t('notify.session_restored'));
       },
       ()=>{localStorage.removeItem(AUTOSAVE_KEY);}
     );
@@ -5987,21 +6010,24 @@ document.addEventListener('keydown',e=>{
 // Per-project branding/locale shown in HTML & PDF exports. Built as DOM nodes
 // (no innerHTML) so user-supplied strings are inert.
 function showSettings(){
+  const savedLanguage=getLang();
   const wrap=document.createElement('div');wrap.className='settings-form';
 
   // ── Helpers for compact rows ──
   const inputs={};
   const addText=(key,label,placeholder)=>{
     const row=document.createElement('div');row.className='ep-row';
-    const lbl=document.createElement('label');lbl.className='ep-lbl';lbl.textContent=label;
+    const lbl=document.createElement('label');lbl.className='ep-lbl';localizeText(lbl,label);
     const inp=document.createElement('input');inp.className='ep-in';inp.type='text';
-    inp.value=SETTINGS[key]??'';inp.placeholder=placeholder||'';
+    inp.value=SETTINGS[key]??'';if(placeholder && typeof placeholder==='object'){
+      inp.setAttribute('data-i18n-placeholder',placeholder.i18n);inp.placeholder=t(placeholder.i18n);
+    }else inp.placeholder=placeholder||'';
     row.appendChild(lbl);row.appendChild(inp);wrap.appendChild(row);
     inputs[key]=inp;
   };
   const addNumber=(key,label,min,max,step)=>{
     const row=document.createElement('div');row.className='ep-row';
-    const lbl=document.createElement('label');lbl.className='ep-lbl';lbl.textContent=label;
+    const lbl=document.createElement('label');lbl.className='ep-lbl';localizeText(lbl,label);
     const inp=document.createElement('input');inp.className='ep-in';inp.type='number';
     if(min!==undefined)inp.min=min;if(max!==undefined)inp.max=max;
     if(step!==undefined)inp.step=step;
@@ -6011,10 +6037,10 @@ function showSettings(){
   };
   const addSelect=(key,label,options)=>{
     const row=document.createElement('div');row.className='ep-row';
-    const lbl=document.createElement('label');lbl.className='ep-lbl';lbl.textContent=label;
+    const lbl=document.createElement('label');lbl.className='ep-lbl';localizeText(lbl,label);
     const sel=document.createElement('select');sel.className='ep-in';
     for(const o of options){
-      const op=document.createElement('option');op.value=o.value;op.textContent=o.label;
+      const op=document.createElement('option');op.value=o.value;if(o.i18n)localizeText(op,o.i18n);else op.textContent=o.label;
       if(String(SETTINGS[key])===String(o.value))op.selected=true;
       sel.appendChild(op);
     }
@@ -6023,33 +6049,35 @@ function showSettings(){
   };
   const addCheck=(key,label)=>{
     const row=document.createElement('div');row.className='ep-row';
-    const lbl=document.createElement('label');lbl.className='ep-lbl';lbl.textContent=label;
+    const lbl=document.createElement('label');lbl.className='ep-lbl';localizeText(lbl,label);
     const inp=document.createElement('input');inp.type='checkbox';
     inp.checked=!!SETTINGS[key];
     row.appendChild(lbl);row.appendChild(inp);wrap.appendChild(row);
     inputs[key]=inp;
   };
   const addHeading=(text)=>{
-    const h=document.createElement('div');h.className='settings-heading';h.textContent=text;
+    const h=document.createElement('div');h.className='settings-heading';localizeText(h,text);
     wrap.appendChild(h);
   };
 
   // ── Branding ──
-  addHeading('Branding');
-  addText('company','Company / Brand','Plexus');
-  addText('tagline','Tagline','Network Planning');
-  addText('contact','Contact','hello@plexus.example');
-  addText('metaLine','Cover meta line','optional, shown above the logo on exports');
-  addText('reportTitle','Report title','Network Audit Report');
-  addText('footerLine','Footer line','optional, shown in HTML/PDF report footer');
-  addText('logoDataUrl','Brand logo (data URL)','data:image/png;base64,...');
-  addText('locale','Date locale','en-GB');
-  addSelect('language','UI language',availableLangs().map(c=>({value:c,label:c})));
+  addHeading('settings.branding');
+  addText('company','settings.company','Plexus');
+  addText('tagline','settings.tagline',{i18n:'settings.tagline_placeholder'});
+  addText('contact','settings.contact','hello@plexus.example');
+  addText('metaLine','settings.meta_line',{i18n:'settings.meta_placeholder'});
+  addText('reportTitle','settings.report_title',{i18n:'settings.report_placeholder'});
+  addText('footerLine','settings.footer_line',{i18n:'settings.footer_placeholder'});
+  addText('logoDataUrl','settings.logo','data:image/png;base64,...');
+  addText('locale','settings.locale','en-GB');
+  addSelect('language','settings.language',availableLangs().map(c=>({value:c,label:c})));
+
+  inputs.language.addEventListener('change',()=>setLang(inputs.language.value));
 
   // ── Coverage display ──
-  addHeading('Coverage display');
+  addHeading('settings.display');
   const opacityRow=document.createElement('div');opacityRow.className='ep-row ep-slider-row';
-  const opacityLbl=document.createElement('label');opacityLbl.className='ep-lbl';opacityLbl.textContent='Coverage opacity';
+  const opacityLbl=document.createElement('label');opacityLbl.className='ep-lbl';localizeText(opacityLbl,'settings.coverage_opacity');
   const opacityIn=document.createElement('input');
   opacityIn.type='range';opacityIn.min='20';opacityIn.max='100';opacityIn.step='5';
   opacityIn.className='ep-rng';
@@ -6065,63 +6093,63 @@ function showSettings(){
     SETTINGS.coverageOpacity=v;
     render();
   });
-  addSelect('heatmapMode','Heatmap mode',HEATMAP_MODE_KEYS.map(k=>({value:k,label:HEATMAP_MODES[k].label})));
-  addSelect('heatmapBand','Heatmap band',[
-    {value:'all',label:'All bands'},
-    {value:'2.4',label:'2.4 GHz'},
-    {value:'5',label:'5 GHz'},
-    {value:'6',label:'6 GHz'},
+  addSelect('heatmapMode','settings.heatmap_mode',HEATMAP_MODE_KEYS.map(k=>({value:k,i18n:'heat.metric_'+k})));
+  addSelect('heatmapBand','settings.heatmap_band',[
+    {value:'all',i18n:'heat.band_all'},
+    {value:'2.4',i18n:'heat.band_24'},
+    {value:'5',i18n:'heat.band_5'},
+    {value:'6',i18n:'heat.band_6'},
   ]);
-  addCheck('showRoamingOverlap','Show roaming-overlap layer (≥2 APs ≥ -67 dBm)');
+  addCheck('showRoamingOverlap','settings.roaming_detail');
 
   // ── RF model + regulatory ──
-  addHeading('RF model & regulatory');
-  addSelect('propagationModel','Propagation model',PROPAGATION_MODEL_KEYS.map(k=>({value:k,label:PROPAGATION_MODELS[k].label})));
-  addSelect('regulatoryRegion','Regulatory region',REGULATORY_REGION_KEYS.map(k=>({value:k,label:REGULATORY_REGIONS[k].label})));
-  addNumber('noiseFloorDbm','Noise floor (dBm)',-110,-70,1);
-  addNumber('floorSlabAttenDb','Floor slab attenuation (dB)',0,40,1);
-  addCheck('showFloorLeakage','Include neighbouring floors in heatmap');
+  addHeading('settings.rf');
+  addSelect('propagationModel','settings.propagation_model',PROPAGATION_MODEL_KEYS.map(k=>({value:k,i18n:'propagation.'+k})));
+  addSelect('regulatoryRegion','settings.regulatory_region',REGULATORY_REGION_KEYS.map(k=>({value:k,i18n:'regulatory.'+k})));
+  addNumber('noiseFloorDbm','settings.noise_floor',-110,-70,1);
+  addNumber('floorSlabAttenDb','settings.floor_slab',0,40,1);
+  addCheck('showFloorLeakage','settings.show_floor_leakage');
 
   // ── Architect scale ──
-  addHeading('Drawing scale');
-  addSelect('archScale','Architect scale preset',[
-    {value:'',label:'Custom (use scale toolbar)'},
+  addHeading('settings.drawing');
+  addSelect('archScale','settings.arch_scale',[
+    {value:'',i18n:'settings.custom_scale'},
     ...ARCH_SCALE_PRESETS.map(p=>({value:p.label,label:`${p.label} (${p.m100px} m / 100 px)`})),
   ]);
 
   // ── Organization ──
-  addHeading('Organization');
-  addText('siteCode','Site code','HQ — feeds {site} in the name pattern');
-  addText('namePattern','Device name pattern','{site}-F{floor}-{type}{nn}');
+  addHeading('settings.organization');
+  addText('siteCode','settings.site_code',{i18n:'settings.site_placeholder'});
+  addText('namePattern','settings.name_pattern','{site}-F{floor}-{type}{nn}');
   const nameHint=document.createElement('div');nameHint.className='ep-hint';
-  nameHint.textContent='Tokens: {site} {floor} {type} {n}/{nn}/{nnn}. Validate flags names that break the pattern; Inventory → Auto-rename applies it to every device.';
+  localizeText(nameHint,'settings.name_hint');
   wrap.appendChild(nameHint);
 
   // ── Cabling & capacity ──
-  addHeading('Cabling & capacity');
-  addNumber('cableRoutingFactor','Cable routing factor',1,3,0.05);
-  addNumber('cableBoxM','Cable box length (m)',1,1000,1);
-  addNumber('expectedClients','Expected concurrent clients',0,100000,1);
-  addNumber('perClientMbps','Per-client demand (Mbps)',0.5,100,0.5);
-  addCheck('colorByVlan','Colour devices by VLAN on the map');
+  addHeading('settings.cabling');
+  addNumber('cableRoutingFactor','settings.routing',1,3,0.05);
+  addNumber('cableBoxM','settings.box',1,1000,1);
+  addNumber('expectedClients','settings.clients',0,100000,1);
+  addNumber('perClientMbps','settings.demand',0.5,100,0.5);
+  addCheck('colorByVlan','settings.vlan_colors');
 
   // ── Cameras: DORI + storage ──
-  addHeading('Cameras');
-  addCheck('showDori','Show DORI pixel-density bands in camera cones');
-  addNumber('retentionDays','Video retention (days)',1,365,1);
-  addSelect('storageCodec','Recording codec',[
+  addHeading('report.cameras');
+  addCheck('showDori','settings.dori');
+  addNumber('retentionDays','settings.retention',1,365,1);
+  addSelect('storageCodec','settings.codec',[
     {value:'h265',label:'H.265 / HEVC'},
     {value:'h264',label:'H.264 / AVC'},
   ]);
 
   // ── VLAN registry ──
-  addHeading('VLANs');
+  addHeading('settings.vlans');
   const vlanWrap=document.createElement('div');
   const vlanRows=[];
   const addVlanRow=(v)=>{
     const row=document.createElement('div');row.className='ep-row';row.style.cssText='display:flex;gap:4px;align-items:center';
     const id=document.createElement('input');id.className='ep-in';id.placeholder='ID';id.value=(v&&v.id)||'';id.style.cssText='width:50px;flex:0 0 auto';
-    const name=document.createElement('input');name.className='ep-in';name.placeholder='Name';name.value=(v&&v.name)||'';
+    const name=document.createElement('input');name.className='ep-in';name.setAttribute('data-i18n-placeholder','settings.name');name.placeholder=t('settings.name');name.value=(v&&v.name)||'';
     const color=document.createElement('input');color.type='color';color.value=(v&&v.color)||'#1565c0';color.style.cssText='width:30px;height:28px;padding:0;border:none;background:none;flex:0 0 auto';
     const subnet=document.createElement('input');subnet.className='ep-in ep-mono';subnet.placeholder='10.0.10.0/24';subnet.value=(v&&v.subnet)||'';subnet.style.cssText='width:118px;flex:0 0 auto';
     const del=document.createElement('button');del.className='btn';del.textContent='✕';del.style.cssText='flex:0 0 auto;padding:4px 8px';
@@ -6133,25 +6161,25 @@ function showSettings(){
   };
   vlanList().forEach(addVlanRow);
   wrap.appendChild(vlanWrap);
-  const addVlanBtn=document.createElement('button');addVlanBtn.className='btn';addVlanBtn.textContent='+ Add VLAN';addVlanBtn.style.marginTop='4px';
+  const addVlanBtn=document.createElement('button');addVlanBtn.className='btn';localizeText(addVlanBtn,'settings.add_vlan');addVlanBtn.style.marginTop='4px';
   addVlanBtn.addEventListener('click',()=>addVlanRow());
   wrap.appendChild(addVlanBtn);
 
   // ── Security ──
-  addHeading('Security');
+  addHeading('settings.security');
   const credRow=document.createElement('div');credRow.className='ep-row';
-  const credLbl=document.createElement('label');credLbl.className='ep-lbl';credLbl.textContent='Credentials passphrase';
+  const credLbl=document.createElement('label');credLbl.className='ep-lbl';localizeText(credLbl,'settings.passphrase');
   const credInp=document.createElement('input');
   credInp.type='password';credInp.className='ep-in';credInp.autocomplete='new-password';
-  credInp.value=_credPass;credInp.placeholder='blank = store credentials unencrypted';
+  credInp.value=_credPass;credInp.setAttribute('data-i18n-placeholder','settings.passphrase_placeholder');credInp.placeholder=t('settings.passphrase_placeholder');
   credRow.append(credLbl,credInp);wrap.appendChild(credRow);
   const credHint=document.createElement('div');credHint.className='ep-hint';
-  credHint.textContent='When set, device credentials are AES-256-GCM encrypted in saved project files and never written to autosave or Share links. Session-only — not stored anywhere; you re-enter it to unlock an encrypted project.';
+  localizeText(credHint,'settings.credentials_hint');
   wrap.appendChild(credHint);
 
   const hint=document.createElement('div');
   hint.className='ep-hint';
-  hint.textContent='Saved with the project. Used in HTML/PDF exports, the heatmap pipeline, the top-bar brand label, and channel/Tx planning. Routing factor scales straight-line cable runs; VLAN subnets feed the “suggest IP” buttons.';
+  localizeText(hint,'settings.detail_hint');
   wrap.appendChild(hint);
 
   const apply=()=>{
@@ -6181,7 +6209,7 @@ function showSettings(){
     _credPass=credInp.value||'';
     const opacity=parseInt(opacityIn.value,10)||100;
     if(SETTINGS.coverageOpacity!==opacity){SETTINGS.coverageOpacity=opacity;changed=true;}
-    if(SETTINGS.language)setLang(SETTINGS.language);
+    setLang(SETTINGS.language||'en');
     // Apply architect scale: convert to m/100px and propagate to current floor.
     if(SETTINGS.archScale){
       const preset=ARCH_SCALE_PRESETS.find(p=>p.label===SETTINGS.archScale);
@@ -6198,12 +6226,13 @@ function showSettings(){
     }
   };
   const cancel=()=>{
+    setLang(savedLanguage);
     if(SETTINGS.coverageOpacity!==savedOpacity){
       SETTINGS.coverageOpacity=savedOpacity;
       render();
     }
   };
-  showModalNode('Project Settings',wrap,apply,cancel);
+  showModalNode({i18n:'settings.title'},wrap,apply,cancel);
 }
 
 // ═══ HELP OVERLAY ═════════════════════════════════
@@ -6211,61 +6240,61 @@ function showSettings(){
 // inadvertently inject markup.
 function _helpRow(parent,parts){
   const row=document.createElement('div');row.className='help-row';
-  // parts: array of either {kbd:'A'} | {text:'foo'} | {desc:'Add AP'}
+  // parts: array of either {kbd:'A'} | {text:'foo'} | {desc:'mode.add'}
   // We render kbd/text inline, then push desc into a <span>.
   parts.forEach(p=>{
     if(p.kbd){const k=document.createElement('kbd');k.textContent=p.kbd;row.appendChild(k);}
     else if(p.sep){row.appendChild(document.createTextNode(p.sep));}
-    else if(p.text){row.appendChild(document.createTextNode(p.text));}
-    else if(p.desc){const s=document.createElement('span');s.textContent=p.desc;row.appendChild(s);}
+    else if(p.text){const span=document.createElement('span');if(p.text==='+')span.textContent='+';else localizeText(span,p.text);row.appendChild(span);}
+    else if(p.desc){const s=document.createElement('span');localizeText(s,p.desc);row.appendChild(s);}
   });
   parent.appendChild(row);
 }
 function _helpSection(grid,title,rows){
   const sec=document.createElement('div');sec.className='help-sec';
-  const h=document.createElement('div');h.className='help-h';h.textContent=title;sec.appendChild(h);
+  const h=document.createElement('div');h.className='help-h';localizeText(h,title);sec.appendChild(h);
   rows.forEach(r=>_helpRow(sec,r));
   grid.appendChild(sec);
 }
 function showHelp(){
   const grid=document.createElement('div');grid.className='help-grid';
-  _helpSection(grid,'Modes',[
-    [{kbd:'A'},{desc:'Add AP'}],
-    [{kbd:'S'},{desc:'Select'}],
-    [{kbd:'D'},{desc:'Dead Zone'}],
-    [{kbd:'W'},{desc:'Switch / Router'}],
-    [{kbd:'L'},{desc:'Wall (draw)'}],
-    [{kbd:'R'},{desc:'Ruler / Measure'}],
-    [{kbd:'C'},{desc:'Camera'}],
-    [{kbd:'N'},{desc:'Annotation'}],
-    [{kbd:'P'},{desc:'Present mode'}],
+  _helpSection(grid,'help.modes',[
+    [{kbd:'A'},{desc:'mode.add'}],
+    [{kbd:'S'},{desc:'mode.select'}],
+    [{kbd:'D'},{desc:'mode.dead_zone'}],
+    [{kbd:'W'},{desc:'mode.switch'}],
+    [{kbd:'L'},{desc:'mode.wall'}],
+    [{kbd:'R'},{desc:'mode.ruler'}],
+    [{kbd:'C'},{desc:'mode.camera'}],
+    [{kbd:'N'},{desc:'mode.annotation'}],
+    [{kbd:'P'},{desc:'help.present'}],
   ]);
-  _helpSection(grid,'View',[
-    [{kbd:'O'},{desc:'Toggle Overlaps'}],
-    [{kbd:'H'},{desc:'Toggle Heatmap'}],
-    [{kbd:'G'},{desc:'Toggle Grid'}],
-    [{kbd:'V'},{desc:'Toggle Coverage'}],
-    [{kbd:'+'},{sep:' / '},{kbd:'-'},{desc:'Zoom'}],
-    [{kbd:'0'},{desc:'Fit to screen'}],
-    [{kbd:'Space'},{text:' + drag'},{desc:'Pan'}],
-    [{text:'Scroll'},{desc:'Zoom in/out'}],
+  _helpSection(grid,'help.view',[
+    [{kbd:'O'},{desc:'help.overlaps'}],
+    [{kbd:'H'},{desc:'help.heatmap'}],
+    [{kbd:'G'},{desc:'help.grid'}],
+    [{kbd:'V'},{desc:'help.coverage'}],
+    [{kbd:'+'},{sep:' / '},{kbd:'-'},{desc:'help.zoom'}],
+    [{kbd:'0'},{desc:'help.fit'}],
+    [{kbd:'Space'},{text:'help.drag'},{desc:'help.pan'}],
+    [{text:'help.scroll'},{desc:'help.zoom_in_out'}],
   ]);
-  _helpSection(grid,'Edit',[
-    [{kbd:'Ctrl'},{text:'+'},{kbd:'Z'},{desc:'Undo'}],
-    [{kbd:'Ctrl'},{text:'+'},{kbd:'Y'},{desc:'Redo'}],
-    [{kbd:'Del'},{desc:'Delete selected'}],
-    [{kbd:'Esc'},{desc:'Deselect / close modal'}],
-    [{kbd:'Shift'},{text:'+click AP'},{desc:'Duplicate'}],
+  _helpSection(grid,'help.edit',[
+    [{kbd:'Ctrl'},{text:'+'},{kbd:'Z'},{desc:'tb.undo'}],
+    [{kbd:'Ctrl'},{text:'+'},{kbd:'Y'},{desc:'tb.redo'}],
+    [{kbd:'Del'},{desc:'help.delete'}],
+    [{kbd:'Esc'},{desc:'help.deselect'}],
+    [{kbd:'Shift'},{text:'help.click_ap'},{desc:'help.duplicate'}],
   ]);
-  _helpSection(grid,'Floors',[
-    [{text:'Click '},{kbd:'+'},{desc:'Add floor'}],
-    [{text:'Double-click tab'},{desc:'Rename'}],
-    [{text:'Click '},{kbd:'×'},{text:' on tab'},{desc:'Delete floor'}],
+  _helpSection(grid,'report.floors',[
+    [{text:'help.click'},{kbd:'+'},{desc:'tip.floor'}],
+    [{text:'help.double_click'},{desc:'help.rename'}],
+    [{text:'help.click'},{kbd:'×'},{text:'help.on_tab'},{desc:'help.delete_floor'}],
   ]);
-  _helpSection(grid,'Help',[
-    [{kbd:'?'},{desc:'Show this panel'}],
+  _helpSection(grid,'tb.help',[
+    [{kbd:'?'},{desc:'help.show'}],
   ]);
-  showModalNode('Keyboard Shortcuts',grid,null);
+  showModalNode({i18n:'help.title'},grid,null);
   // Widen the modal for the help grid
   const mdl=document.getElementById('mdl');
   if(mdl)mdl.classList.add('help-modal');
@@ -6297,7 +6326,7 @@ function toggleTheme(){
   const next=document.body.classList.contains('theme-dark')?'light':'dark';
   applyTheme(next);
   try{localStorage.setItem(THEME_KEY,next);}catch(_){}
-  toast(next==='dark'?'Dark mode':'Light mode');
+  toast(next==='dark'?t('notify.dark_mode'):t('notify.light_mode'));
 }
 
 // Clear the sidebar search filter and reset the input + clear-button visibility.
@@ -6393,3 +6422,19 @@ setTimeout(async ()=>{
   const loaded=await tryLoadFromHash();
   if(!loaded)tryRestoreAutosave();
 },100);
+
+// Localize the initial static interface and every subsequent language change.
+onLanguageChange(()=>{
+  localizeDOM();
+  // A translated caption may widen an already-open context menu.
+  const menu=document.getElementById('ctx-menu');
+  if(menu?.classList.contains('vis')){
+    const rect=menu.getBoundingClientRect();
+    menu.style.left=Math.max(0,Math.min(rect.left,window.innerWidth-rect.width-4))+'px';
+    menu.style.top=Math.max(0,Math.min(rect.top,window.innerHeight-rect.height-4))+'px';
+  }
+  const label=document.getElementById('brand-lbl');
+  const floor=F();
+  if(label && !(floor&&floor.imgName))label.textContent=(SETTINGS.company||'Plexus')+' '+t('app.planner');
+});
+localizeDOM();

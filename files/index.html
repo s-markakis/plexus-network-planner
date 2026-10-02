@@ -8,7 +8,7 @@
      and base-tag hijacking. fonts.* allow the Google Fonts webfonts; img http(s)
      allows pasted device-photo URLs; blob: covers the PDF-import worker. -->
 <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' blob:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' data: https://fonts.gstatic.com; img-src 'self' data: blob: https: http:; connect-src 'self' data: blob: https://fonts.googleapis.com https://fonts.gstatic.com; worker-src 'self' blob:; object-src 'none'; base-uri 'self'"/>
-<title>Plexus — Network Site Planner</title>
+<title data-i18n="app.title">Plexus — Network Site Planner</title>
 <link rel="stylesheet" href="fonts.css"/>
 <link rel="stylesheet" href="styles.css"/>
 </head>
@@ -18,137 +18,137 @@
   <div class="topbar topbar-meta">
     <span class="brand" id="brand-lbl">Plexus Planner</span>
     <div class="tsep"></div>
-    <button class="btn" data-action="new-project" title="Start a fresh project">✦ New</button>
-    <button class="btn" data-action="open-upload">↑ Upload Map</button>
+    <button class="btn" data-action="new-project" title="Start a fresh project" data-i18n-title="tip.new">✦ <span data-i18n="tb.new">New</span></button>
+    <button class="btn" data-action="open-upload">↑ <span data-i18n="tb.upload">Upload Map</span></button>
     <input type="file" id="file-up" accept="image/*,.svg,.pdf,application/pdf" style="display:none" data-change-action="upload-map"/>
-    <button class="btn" data-action="open-svg" title="Import walls from an SVG floor-plan">↺ Walls SVG</button>
+    <button class="btn" data-action="open-svg" title="Import walls from an SVG floor-plan" data-i18n-title="tip.svg">↺ <span data-i18n="tb.walls_svg">Walls SVG</span></button>
     <input type="file" id="svg-up" accept=".svg,image/svg+xml" style="display:none" data-change-action="import-svg-walls"/>
-    <button class="btn" data-action="open-dxf" title="Import walls from a DXF (LINE/POLYLINE)">↺ DXF</button>
+    <button class="btn" data-action="open-dxf" title="Import walls from a DXF (LINE/POLYLINE)" data-i18n-title="tip.dxf">↺ DXF</button>
     <input type="file" id="dxf-up" accept=".dxf" style="display:none" data-change-action="import-dxf-walls"/>
-    <button class="btn" data-action="detect-walls" title="Auto-detect walls from the floor-plan image (Hough transform)">▦ Detect walls</button>
-    <button class="btn" data-action="open-esx" title="Import an Ekahau project (.esx)">⇊ ESX</button>
+    <button class="btn" data-action="detect-walls" title="Auto-detect walls from the floor-plan image (Hough transform)" data-i18n-title="tip.detect">▦ <span data-i18n="tb.detect_walls">Detect walls</span></button>
+    <button class="btn" data-action="open-esx" title="Import an Ekahau project (.esx)" data-i18n-title="tip.esx">⇊ ESX</button>
     <input type="file" id="esx-up" accept=".esx,.zip" style="display:none" data-change-action="import-esx"/>
-    <button class="btn" data-action="open-survey" title="Import RSSI survey samples from a CSV">↺ Survey CSV</button>
+    <button class="btn" data-action="open-survey" title="Import RSSI survey samples from a CSV" data-i18n-title="tip.survey">↺ <span data-i18n="tb.survey_csv">Survey CSV</span></button>
     <input type="file" id="survey-up" accept=".csv,text/csv" style="display:none" data-change-action="import-survey-csv"/>
-    <button class="btn" data-action="save">💾 Save</button>
-    <button class="btn" data-action="open-load">📂 Load</button>
-    <button class="btn" data-action="share-link" title="Copy a shareable URL of the current project (images not included)">🔗 Share</button>
+    <button class="btn" data-action="save">💾 <span data-i18n="tb.save">Save</span></button>
+    <button class="btn" data-action="open-load">📂 <span data-i18n="tb.load">Load</span></button>
+    <button class="btn" data-action="share-link" title="Copy a shareable URL of the current project (images not included)" data-i18n-title="tip.share">🔗 <span data-i18n="tb.share">Share</span></button>
     <input type="file" id="load-up" accept=".json" style="display:none" data-change-action="load-project"/>
     <div class="tsep"></div>
-    <button class="btn btn-ghost" id="btn-undo" data-action="undo" title="Undo (Ctrl+Z)" disabled>↩ Undo</button>
-    <button class="btn btn-ghost" id="btn-redo" data-action="redo" title="Redo (Ctrl+Y)" disabled>↪ Redo</button>
+    <button class="btn btn-ghost" id="btn-undo" data-action="undo" title="Undo (Ctrl+Z)" disabled data-i18n-title="tip.undo">↩ <span data-i18n="tb.undo">Undo</span></button>
+    <button class="btn btn-ghost" id="btn-redo" data-action="redo" title="Redo (Ctrl+Y)" disabled data-i18n-title="tip.redo">↪ <span data-i18n="tb.redo">Redo</span></button>
 
     <div class="topbar-spacer"></div>
 
-    <div class="status"><span class="sdot"></span><span id="ap-cnt">0</span> APs · <span id="fl-cnt">0</span> floors</div>
+    <div class="status"><span class="sdot"></span><span id="ap-cnt">0</span> <span data-i18n="count.aps">APs</span> · <span id="fl-cnt">0</span> <span data-i18n="count.floors">floors</span></div>
     <div class="tsep"></div>
-    <button class="btn btn-primary" id="btn-pres" data-action="toggle-present" title="Presentation mode (P)">▶ Present</button>
-    <button class="btn btn-primary" data-action="export" title="Export HTML report">↓ Export</button>
-    <button class="btn btn-primary" data-action="pdf" title="Export PDF">⎙ PDF</button>
-    <button class="btn" data-action="export-bom" title="Export Bill of Materials (CSV)">≡ BoM</button>
-    <button class="btn" data-action="export-cables" title="Export cable schedule (CSV)">∼ Cables CSV</button>
-    <button class="btn" data-action="install-sheets" title="Per-AP install sheets PDF">⎙ Install sheets</button>
-    <button class="btn" data-action="show-inventory" title="As-built inventory, rollout status & organization tools">▤ Inventory</button>
-    <button class="btn" data-action="handover-pack" title="Zip the HTML summary + every CSV deliverable">⇩ Handover</button>
-    <button class="btn" data-action="export-esx" title="Export the project as an Ekahau .esx (best-effort)">⇈ ESX</button>
-    <button class="btn" id="btn-unifi" data-action="show-unifi" title="Pull as-built data from / push the channel plan to a UniFi controller (desktop app)" style="display:none">⇅ UniFi</button>
-    <button class="btn btn-icon-only" id="btn-theme" data-action="toggle-theme" title="Toggle dark mode" aria-label="Toggle theme">☾</button>
-    <button class="btn btn-icon-only" data-action="show-revisions" title="Project revisions" aria-label="Revisions">⟲</button>
-    <button class="btn btn-icon-only" data-action="show-plugins" title="Custom vendor catalogs" aria-label="Plugins">+</button>
-    <button class="btn btn-icon-only" data-action="show-settings" title="Project settings" aria-label="Settings">⚙</button>
-    <button class="btn btn-icon-only" data-action="show-help" title="Keyboard shortcuts (?)" aria-label="Help">?</button>
+    <button class="btn btn-primary" id="btn-pres" data-action="toggle-present" title="Presentation mode (P)" data-i18n-title="tip.present">▶ <span data-i18n="tb.present">Present</span></button>
+    <button class="btn btn-primary" data-action="export" title="Export HTML report" data-i18n-title="tip.html">↓ <span data-i18n="tb.export_html">Export</span></button>
+    <button class="btn btn-primary" data-action="pdf" title="Export PDF" data-i18n-title="tip.pdf">⎙ <span data-i18n="tb.export_pdf">PDF</span></button>
+    <button class="btn" data-action="export-bom" title="Export Bill of Materials (CSV)" data-i18n-title="tip.bom">≡ <span data-i18n="tb.bom">BoM</span></button>
+    <button class="btn" data-action="export-cables" title="Export cable schedule (CSV)" data-i18n-title="tip.cables">∼ <span data-i18n="ws.cable_csv">Cables CSV</span></button>
+    <button class="btn" data-action="install-sheets" title="Per-AP install sheets PDF" data-i18n-title="tip.install">⎙ <span data-i18n="ws.install_sheets">Install sheets</span></button>
+    <button class="btn" data-action="show-inventory" title="As-built inventory, rollout status & organization tools" data-i18n-title="tip.inventory">▤ <span data-i18n="tb.inventory">Inventory</span></button>
+    <button class="btn" data-action="handover-pack" title="Zip the HTML summary + every CSV deliverable" data-i18n-title="tip.handover">⇩ <span data-i18n="tb.handover">Handover</span></button>
+    <button class="btn" data-action="export-esx" title="Export the project as an Ekahau .esx (best-effort)" data-i18n-title="tip.export_esx">⇈ ESX</button>
+    <button class="btn" id="btn-unifi" data-action="show-unifi" title="Pull as-built data from / push the channel plan to a UniFi controller (desktop app)" style="display:none" data-i18n-title="tip.unifi">⇅ UniFi</button>
+    <button class="btn btn-icon-only" id="btn-theme" data-action="toggle-theme" title="Toggle dark mode" aria-label="Toggle theme" data-i18n-title="tip.theme" data-i18n-aria-label="tb.theme">☾</button>
+    <button class="btn btn-icon-only" data-action="show-revisions" title="Project revisions" aria-label="Revisions" data-i18n-title="tip.revisions" data-i18n-aria-label="tb.revisions">⟲</button>
+    <button class="btn btn-icon-only" data-action="show-plugins" title="Custom vendor catalogs" aria-label="Plugins" data-i18n-title="tip.plugins" data-i18n-aria-label="tb.plugins">+</button>
+    <button class="btn btn-icon-only" data-action="show-settings" title="Project settings" aria-label="Settings" data-i18n-title="tip.settings" data-i18n-aria-label="tb.settings">⚙</button>
+    <button class="btn btn-icon-only" data-action="show-help" title="Keyboard shortcuts (?)" aria-label="Help" data-i18n-title="tip.help" data-i18n-aria-label="tb.help">?</button>
   </div>
 
   <!-- ROW 2 — Workspace tools: modes (icon-only strip), view toggles, zoom, scale -->
   <div class="topbar topbar-tools">
     <!-- Mode toolstrip (icon-only) -->
-    <div class="toolstrip" role="toolbar" aria-label="Drawing tools">
-      <button class="btn-tool active" id="btn-add" data-action="set-mode" data-arg="add" title="Add AP (A)" aria-label="Add AP">+</button>
-      <button class="btn-tool" id="btn-sel" data-action="set-mode" data-arg="sel" title="Select (S)" aria-label="Select">↖</button>
-      <button class="btn-tool" id="btn-dz" data-action="set-mode" data-arg="dz" title="Dead Zone (D)" aria-label="Dead Zone">⚠</button>
-      <button class="btn-tool" id="btn-sw" data-action="set-mode" data-arg="sw" title="Switch/Router (W)" aria-label="Switch / Router">⊞</button>
-      <button class="btn-tool" id="btn-cam" data-action="set-mode" data-arg="cam" title="Camera (C)" aria-label="Camera">◉</button>
-      <button class="btn-tool" id="btn-ruler" data-action="set-mode" data-arg="ruler" title="Ruler (R)" aria-label="Ruler">↔</button>
-      <button class="btn-tool" id="btn-wall" data-action="set-mode" data-arg="wall" title="Wall (L)" aria-label="Wall">▌</button>
-      <button class="btn-tool" id="btn-anno" data-action="set-mode" data-arg="anno" title="Annotation (N)" aria-label="Annotation">✎</button>
-      <button class="btn-tool" id="btn-survey" data-action="set-mode" data-arg="survey" title="Live WiFi survey — click the map where you stand (desktop app)" aria-label="Live survey" style="display:none">📶</button>
+    <div class="toolstrip" role="toolbar" aria-label="Drawing tools" data-i18n-aria-label="ws.tools">
+      <button class="btn-tool active" id="btn-add" data-action="set-mode" data-arg="add" title="Add AP (A)" aria-label="Add AP" data-i18n-title="tip.add" data-i18n-aria-label="mode.add">+</button>
+      <button class="btn-tool" id="btn-sel" data-action="set-mode" data-arg="sel" title="Select (S)" aria-label="Select" data-i18n-title="tip.select" data-i18n-aria-label="mode.select">↖</button>
+      <button class="btn-tool" id="btn-dz" data-action="set-mode" data-arg="dz" title="Dead Zone (D)" aria-label="Dead Zone" data-i18n-title="tip.dz" data-i18n-aria-label="mode.dead_zone">⚠</button>
+      <button class="btn-tool" id="btn-sw" data-action="set-mode" data-arg="sw" title="Switch/Router (W)" aria-label="Switch / Router" data-i18n-title="tip.switch" data-i18n-aria-label="mode.switch">⊞</button>
+      <button class="btn-tool" id="btn-cam" data-action="set-mode" data-arg="cam" title="Camera (C)" aria-label="Camera" data-i18n-title="tip.camera" data-i18n-aria-label="mode.camera">◉</button>
+      <button class="btn-tool" id="btn-ruler" data-action="set-mode" data-arg="ruler" title="Ruler (R)" aria-label="Ruler" data-i18n-title="tip.ruler" data-i18n-aria-label="mode.ruler">↔</button>
+      <button class="btn-tool" id="btn-wall" data-action="set-mode" data-arg="wall" title="Wall (L)" aria-label="Wall" data-i18n-title="tip.wall" data-i18n-aria-label="mode.wall">▌</button>
+      <button class="btn-tool" id="btn-anno" data-action="set-mode" data-arg="anno" title="Annotation (N)" aria-label="Annotation" data-i18n-title="tip.anno" data-i18n-aria-label="mode.annotation">✎</button>
+      <button class="btn-tool" id="btn-survey" data-action="set-mode" data-arg="survey" title="Live WiFi survey — click the map where you stand (desktop app)" aria-label="Live survey" style="display:none" data-i18n-title="tip.live_survey" data-i18n-aria-label="mode.survey">📶</button>
     </div>
-    <div class="anno-sub-bar" id="anno-sub-bar" style="display:none" role="group" aria-label="Annotation type">
-      <button class="btn-tool active" data-action="anno-sub" data-arg="text" data-anno-sub="text" title="Text label" aria-label="Text label">T</button>
-      <button class="btn-tool" data-action="anno-sub" data-arg="arrow" data-anno-sub="arrow" title="Arrow" aria-label="Arrow">→</button>
-      <button class="btn-tool" data-action="anno-sub" data-arg="dim" data-anno-sub="dim" title="Dimension line" aria-label="Dimension line">↔</button>
+    <div class="anno-sub-bar" id="anno-sub-bar" style="display:none" role="group" aria-label="Annotation type" data-i18n-aria-label="anno.type">
+      <button class="btn-tool active" data-action="anno-sub" data-arg="text" data-anno-sub="text" title="Text label" aria-label="Text label" data-i18n-title="anno.text" data-i18n-aria-label="anno.text">T</button>
+      <button class="btn-tool" data-action="anno-sub" data-arg="arrow" data-anno-sub="arrow" title="Arrow" aria-label="Arrow" data-i18n-title="anno.arrow" data-i18n-aria-label="anno.arrow">→</button>
+      <button class="btn-tool" data-action="anno-sub" data-arg="dim" data-anno-sub="dim" title="Dimension line" aria-label="Dimension line" data-i18n-title="anno.dim" data-i18n-aria-label="anno.dim">↔</button>
     </div>
     <div class="tsep"></div>
 
     <!-- View toggles -->
-    <button class="toggle active" id="btn-cov" data-action="toggle-coverage" title="Show/hide coverage rings (V)">
-      <span class="toggle-lbl">Coverage</span>
+    <button class="toggle active" id="btn-cov" data-action="toggle-coverage" title="Show/hide coverage rings (V)" data-i18n-title="tip.coverage">
+      <span class="toggle-lbl" data-i18n="report.coverage">Coverage</span>
       <span class="toggle-switch" aria-hidden="true"></span>
     </button>
-    <button class="toggle" id="btn-ol" data-action="toggle-ol" title="Show coverage overlaps (O)">
-      <span class="toggle-lbl">Overlaps</span>
+    <button class="toggle" id="btn-ol" data-action="toggle-ol" title="Show coverage overlaps (O)" data-i18n-title="tip.overlaps">
+      <span class="toggle-lbl" data-i18n="ws.overlaps">Overlaps</span>
       <span class="toggle-switch" aria-hidden="true"></span>
     </button>
-    <button class="toggle" id="btn-heat" data-action="toggle-heat" title="Signal heatmap (H)">
-      <span class="toggle-lbl">Heatmap</span>
+    <button class="toggle" id="btn-heat" data-action="toggle-heat" title="Signal heatmap (H)" data-i18n-title="tip.heatmap">
+      <span class="toggle-lbl" data-i18n="ws.heatmap">Heatmap</span>
       <span class="toggle-switch" aria-hidden="true"></span>
     </button>
-    <button class="toggle" id="btn-grid" data-action="toggle-grid" title="Snap to grid (G)">
-      <span class="toggle-lbl">Grid</span>
+    <button class="toggle" id="btn-grid" data-action="toggle-grid" title="Snap to grid (G)" data-i18n-title="tip.grid">
+      <span class="toggle-lbl" data-i18n="ws.grid">Grid</span>
       <span class="toggle-switch" aria-hidden="true"></span>
     </button>
-    <button class="toggle" id="btn-cables" data-action="toggle-cables" title="Show cable runs to switches">
-      <span class="toggle-lbl">Cables</span>
+    <button class="toggle" id="btn-cables" data-action="toggle-cables" title="Show cable runs to switches" data-i18n-title="tip.cable_runs">
+      <span class="toggle-lbl" data-i18n="ws.cables">Cables</span>
       <span class="toggle-switch" aria-hidden="true"></span>
     </button>
-    <button class="toggle" id="btn-roaming" data-action="toggle-roaming" title="Show roaming overlap layer">
-      <span class="toggle-lbl">Roaming</span>
+    <button class="toggle" id="btn-roaming" data-action="toggle-roaming" title="Show roaming overlap layer" data-i18n-title="settings.show_roaming">
+      <span class="toggle-lbl" data-i18n="ws.roaming">Roaming</span>
       <span class="toggle-switch" aria-hidden="true"></span>
     </button>
-    <button class="toggle" id="btn-vlan" data-action="toggle-vlan-colors" title="Colour devices by VLAN">
-      <span class="toggle-lbl">VLAN colors</span>
+    <button class="toggle" id="btn-vlan" data-action="toggle-vlan-colors" title="Colour devices by VLAN" data-i18n-title="tip.vlan">
+      <span class="toggle-lbl" data-i18n="ws.vlan_colors">VLAN colors</span>
       <span class="toggle-switch" aria-hidden="true"></span>
     </button>
-    <div class="heat-mode-cluster" role="group" aria-label="Heatmap display">
-      <button class="heat-pill" data-action="cycle-heatmap-mode" id="heat-mode-pill" title="Cycle heatmap metric" aria-label="Cycle heatmap metric">RSSI (dBm)</button>
-      <button class="heat-pill" data-action="cycle-heatmap-band" id="heat-band-pill" title="Cycle heatmap band filter" aria-label="Cycle heatmap band filter">All</button>
+    <div class="heat-mode-cluster" role="group" aria-label="Heatmap display" data-i18n-aria-label="ws.heat_display">
+      <button class="heat-pill" data-action="cycle-heatmap-mode" id="heat-mode-pill" data-i18n="heat.metric_rssi" title="Cycle heatmap metric" aria-label="Cycle heatmap metric" data-i18n-title="tip.metric" data-i18n-aria-label="tip.metric">RSSI (dBm)</button>
+      <button class="heat-pill" data-action="cycle-heatmap-band" id="heat-band-pill" title="Cycle heatmap band filter" aria-label="Cycle heatmap band filter" data-i18n="heat.all" data-i18n-title="tip.band" data-i18n-aria-label="tip.band">All</button>
     </div>
     <div class="tsep"></div>
-    <button class="btn" data-action="auto-place" title="Auto-place APs to reach target coverage">✦ Auto-place</button>
-    <button class="btn" data-action="auto-channel" title="Auto-assign channels (graph coloring)">⌁ Auto-channel</button>
-    <button class="btn" data-action="auto-power" title="Auto-tune per-AP Tx power">⌁ Auto-power</button>
-    <button class="btn" data-action="show-poe" title="PoE budget summary">⚡ PoE</button>
-    <button class="btn" data-action="auto-assign-sw" title="Assign APs/cameras to nearest switch">⚯ Auto-cable</button>
-    <button class="btn" data-action="show-topology" title="Switch uplink tree & port usage">⊟ Topology</button>
-    <button class="btn" data-action="show-validation" title="Validate network wiring & PoE">✓ Validate</button>
+    <button class="btn" data-action="auto-place" title="Auto-place APs to reach target coverage" data-i18n-title="tip.auto_place">✦ <span data-i18n="ws.auto_place">Auto-place</span></button>
+    <button class="btn" data-action="auto-channel" title="Auto-assign channels (graph coloring)" data-i18n-title="tip.auto_channel">⌁ <span data-i18n="ws.auto_channel">Auto-channel</span></button>
+    <button class="btn" data-action="auto-power" title="Auto-tune per-AP Tx power" data-i18n-title="tip.auto_power">⌁ <span data-i18n="ws.auto_power">Auto-power</span></button>
+    <button class="btn" data-action="show-poe" title="PoE budget summary" data-i18n-title="poe.title">⚡ <span data-i18n="ws.poe">PoE</span></button>
+    <button class="btn" data-action="auto-assign-sw" title="Assign APs/cameras to nearest switch" data-i18n-title="tip.auto_cable">⚯ <span data-i18n="ws.auto_cable">Auto-cable</span></button>
+    <button class="btn" data-action="show-topology" title="Switch uplink tree & port usage" data-i18n-title="tip.topology">⊟ <span data-i18n="ws.topology">Topology</span></button>
+    <button class="btn" data-action="show-validation" title="Validate network wiring & PoE" data-i18n-title="tip.validate">✓ <span data-i18n="ws.validate">Validate</span></button>
 
     <div class="topbar-spacer"></div>
 
     <!-- Scale (moved up from floor row) -->
     <div class="scale-cluster">
-      <span class="scale-lbl">SCALE</span>
+      <span class="scale-lbl" data-i18n="ws.scale">SCALE</span>
       <input id="scale-m" type="number" min="1" value="100" class="scale-in" data-input-action="update-scale"/>
       <span class="scale-lbl">m/100px</span>
-      <button class="btn btn-ghost" data-action="calibrate-scale" title="Set scale by measuring a known dimension on the plan">⇲ Calibrate</button>
+      <button class="btn btn-ghost" data-action="calibrate-scale" title="Set scale by measuring a known dimension on the plan" data-i18n-title="tip.calibrate">⇲ <span data-i18n="ws.calibrate">Calibrate</span></button>
       <div class="tsep"></div>
-      <span class="scale-lbl">COV</span>
+      <span class="scale-lbl" data-i18n="ws.cov">COV</span>
       <span id="cov-pct" class="cov-val">—</span>
     </div>
     <div class="tsep"></div>
 
     <!-- Zoom -->
     <div class="zoom-grp">
-      <button class="zbtn" data-action="zoom-out" title="Zoom out (−)">−</button>
+      <button class="zbtn" data-action="zoom-out" title="Zoom out (−)" data-i18n-title="tip.zoom_out">−</button>
       <span class="zval" id="zval">100%</span>
-      <button class="zbtn" data-action="zoom-in" title="Zoom in (+)">+</button>
-      <button class="zbtn zbtn-fit" data-action="zoom-fit" title="Fit to screen (0)">FIT</button>
+      <button class="zbtn" data-action="zoom-in" title="Zoom in (+)" data-i18n-title="tip.zoom_in">+</button>
+      <button class="zbtn zbtn-fit" data-action="zoom-fit" title="Fit to screen (0)" data-i18n="ws.fit" data-i18n-title="tip.fit">FIT</button>
     </div>
   </div>
 
   <!-- ROW 3 — Floor tabs only (scale moved to row 2) -->
   <div class="topbar floor-row">
     <div class="floor-tabs" id="floor-tabs"></div>
-    <button class="ftab-add" data-action="add-floor" title="Add floor">+</button>
+    <button class="ftab-add" data-action="add-floor" title="Add floor" data-i18n-title="tip.floor">+</button>
   </div>
 
   <div class="workspace">
@@ -156,34 +156,34 @@
     <div class="sidebar" id="left-sb">
       <div class="sb-head sb-head-counters" id="sb-counters"></div>
       <div class="sb-search-row">
-        <input type="text" id="sb-search" class="sb-search" placeholder="Search items…" data-input-action="sb-search" autocomplete="off"/>
-        <button class="sb-search-clear" id="sb-search-clear" data-action="sb-search-clear" title="Clear search" aria-label="Clear search">×</button>
+        <input type="text" id="sb-search" class="sb-search" placeholder="Search items…" data-input-action="sb-search" autocomplete="off" data-i18n-placeholder="sidebar.search"/>
+        <button class="sb-search-clear" id="sb-search-clear" data-action="sb-search-clear" title="Clear search" aria-label="Clear search" data-i18n-title="sidebar.clear" data-i18n-aria-label="sidebar.clear">×</button>
       </div>
       <div class="sb-status-row">
-        <select id="sb-status" class="sb-status" data-input-action="status-filter" title="Filter devices by install status" aria-label="Filter by status">
-          <option value="">All statuses</option>
-          <option value="planned">Planned</option>
-          <option value="ordered">Ordered</option>
-          <option value="installed">Installed</option>
-          <option value="tested">Tested</option>
-          <option value="live">Live</option>
+        <select id="sb-status" class="sb-status" data-input-action="status-filter" title="Filter devices by install status" aria-label="Filter by status" data-i18n-title="tip.status" data-i18n-aria-label="sidebar.filter">
+          <option value="" data-i18n="status.all">All statuses</option>
+          <option value="planned" data-i18n="status.planned">Planned</option>
+          <option value="ordered" data-i18n="status.ordered">Ordered</option>
+          <option value="installed" data-i18n="status.installed">Installed</option>
+          <option value="tested" data-i18n="status.tested">Tested</option>
+          <option value="live" data-i18n="status.live">Live</option>
         </select>
       </div>
       <div class="sb-scroll" id="left-list"></div>
-      <div class="sb-resize-handle" id="sb-resize-handle" aria-label="Resize sidebar"></div>
+      <div class="sb-resize-handle" id="sb-resize-handle" aria-label="Resize sidebar" data-i18n-aria-label="sidebar.resize"></div>
     </div>
 
     <!-- Map -->
     <div class="map-area" id="map-area">
       <div id="empty-state">
-        <div class="es-line">Upload a floor plan to begin</div>
-        <div class="es-sub">Click <strong>↑ Upload Map</strong> above · Press <kbd>?</kbd> for shortcuts</div>
-        <button class="btn btn-primary es-sample" data-action="load-sample" title="Open a ready-made office plan with APs, cameras, walls and a switch">▶ Load sample project</button>
+        <div class="es-line" data-i18n="empty.title">Upload a floor plan to begin</div>
+        <div class="es-sub"><span data-i18n="empty.click">Click</span> <strong>↑ <span data-i18n="tb.upload">Upload Map</span></strong> <span data-i18n="empty.above">above · Press</span> <kbd>?</kbd> <span data-i18n="empty.shortcuts">for shortcuts</span></div>
+        <button class="btn btn-primary es-sample" data-action="load-sample" title="Open a ready-made office plan with APs, cameras, walls and a switch" data-i18n-title="tip.sample">▶ <span data-i18n="empty.sample">Load sample project</span></button>
       </div>
-      <div class="hint-bar" id="hint-bar" role="status" aria-live="polite">Click map to place an AP</div>
+      <div class="hint-bar" id="hint-bar" role="status" aria-live="polite" data-i18n="hint.add">Click map to place an AP</div>
       <div id="vp" class="cur-cross">
         <div id="cv">
-          <img id="mi" src="" alt="Map"/>
+          <img id="mi" src="" alt="Map" data-i18n-alt="map.alt"/>
           <canvas id="heat-canvas"></canvas>
           <svg id="sl" xmlns="http://www.w3.org/2000/svg">
             <defs>
@@ -212,11 +212,11 @@
         </div>
       </div>
       <div class="map-leg">
-        <div class="leg-i"><div class="leg-dot"></div>AP</div>
-        <div class="leg-i"><div class="leg-ring"></div>Coverage</div>
-        <div class="leg-i" id="leg-ol" style="display:none"><div class="leg-ol"></div>Overlap</div>
-        <div class="leg-i">⚠ Dead Zone</div>
-        <div class="leg-i">⊞ Switch</div>
+        <div class="leg-i"><div class="leg-dot"></div><span data-i18n="legend.ap">AP</span></div>
+        <div class="leg-i"><div class="leg-ring"></div><span data-i18n="report.coverage">Coverage</span></div>
+        <div class="leg-i" id="leg-ol" style="display:none"><div class="leg-ol"></div><span data-i18n="legend.overlap">Overlap</span></div>
+        <div class="leg-i">⚠ <span data-i18n="mode.dead_zone">Dead Zone</span></div>
+        <div class="leg-i">⊞ <span data-i18n="legend.switch">Switch</span></div>
         <span class="leg-vlans" id="leg-vlans"></span>
         <span class="leg-brand">Plexus</span>
       </div>
@@ -229,8 +229,8 @@
 
     <!-- Right panel -->
     <div class="sidebar right" id="right-sb">
-      <div class="sb-head" id="rp-head">Properties</div>
-      <div class="rp-body" id="rp-body"><div class="rp-empty"><div class="rp-empty-icon">◎</div><div class="rp-empty-txt">Select an item<br>to edit properties</div></div></div>
+      <div class="sb-head" id="rp-head" data-i18n="sidebar.properties">Properties</div>
+      <div class="rp-body" id="rp-body"><div class="rp-empty"><div class="rp-empty-icon">◎</div><div class="rp-empty-txt" data-i18n="sidebar.select">Select an item to edit properties</div></div></div>
     </div>
   </div>
 </div>
@@ -238,11 +238,11 @@
 <div id="toast" role="status" aria-live="polite"></div>
 <div id="ctx-menu" role="menu"></div>
 <div id="mbg"><div id="mdl" role="dialog" aria-modal="true" aria-labelledby="mdl-title">
-  <div class="mdl-title" id="mdl-title">Confirm</div>
+  <div class="mdl-title" id="mdl-title" data-i18n="modal.confirm">Confirm</div>
   <div class="mdl-body" id="mdl-body"></div>
   <div class="mdl-actions">
-    <button class="btn" data-action="modal-close">Cancel</button>
-    <button class="btn danger" id="mdl-ok" data-action="modal-ok">OK</button>
+    <button class="btn" data-action="modal-close" data-i18n="modal.cancel">Cancel</button>
+    <button class="btn danger" id="mdl-ok" data-action="modal-ok" data-i18n="modal.ok">OK</button>
   </div>
 </div></div>
 <script type="module" src="app.js"></script>
