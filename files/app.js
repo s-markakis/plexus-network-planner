@@ -4939,7 +4939,7 @@ function renderSWPanel(){
   const uplinkOpts=FLOORS.map((f,i)=>{
     const opts=(f.SWS||[]).filter(s=>s.id!==sw.id)
       .map(s=>`<option value="${esc(s.id)}"${s.id===sw.uplinkId?' selected':''}>${esc(s.name)} · ${esc(s.model||'')}</option>`).join('');
-    return opts?`<optgroup label="${esc(f.name||('Floor '+(i+1)))}">${opts}</optgroup>`:'';
+    return opts?`<optgroup ${f.name?`label="${esc(f.name)}"`:`data-i18n-label="topology.floor" data-i18n-vars="${esc(JSON.stringify({n:i+1}))}" label="${esc(t('topology.floor',{n:i+1}))}"`}>${opts}</optgroup>`:'';
   }).join('');
   const statusColor=a.overBudget||a.overPorts||a.classFails.length?'#c0382b':'#1e7d3c';
   const portTxt=a.ports!=null?`${a.used}/${a.ports}`:`${a.used}`;

@@ -102,3 +102,19 @@ test('French annotation prompt preserves entered text as user content',async({pa
   await language(page,'en');await expect(page.getByText('Label text <literal> $&',{exact:true})).toHaveCount(1);
   expect((await save(page)).floors[0].ANNOS.some(a=>a.text==='Label text <literal> $&')).toBe(true);
 });
+
+test('switch uplink unnamed-floor fallback translates live and preserves named floors and IDs',async({page})=>{
+  const project=buildSampleProject();const first=project.floors[0];
+  project.floors.push({...structuredClone(first),id:'unnamed',name:'',APS:[],CAMS:[],SWS:[{...first.SWS[0],id:'target',name:'Target literal'}]});
+  await load(page,project);const before=await save(page);
+  await page.locator('.sw-grp[data-id="sw17"]').click();
+  const select=page.locator('#sw-uplink');await select.selectOption('target');
+  const group=select.locator('[data-i18n-label="topology.floor"]');const node=await group.elementHandle();
+  for(const lang of ['en','fr','en','fr']){
+    await language(page,lang);await expect(group).toHaveAttribute('label',lang==='fr'?'Étage 2':'Floor 2');
+    await expect(select).toHaveValue('target');await expect(group.locator('option')).toHaveText('Target literal · USW-24-PoE');
+    expect(await node.evaluate(el=>el===document.querySelector('#sw-uplink [data-i18n-label]'))).toBe(true);
+  }
+  const saved=await save(page);expect(saved.floors[1]).toEqual(before.floors[1]);
+  expect(saved.floors[0].name).toBe(before.floors[0].name);expect(saved.floors[0].SWS[0].uplinkId).toBe('target');
+});
