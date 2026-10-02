@@ -36,7 +36,7 @@ test('applied French survives UI refreshes and saving, while legacy projects def
   await page.locator('#mdl-ok').click();
   await expect(page.locator('html')).toHaveAttribute('lang','fr');
   await expect(page.locator('#left-list .sec-lbl').first()).toHaveText("Points d'accès");
-  expect(await page.locator('#left-list .li-name').allTextContents()).toEqual(names);
+  expect(await page.locator('#left-list .li-name').allTextContents()).toEqual(names.map(name=>name.replace(/^Wall (\d+)$/,'Mur $1')));
   await page.locator('#btn-anno').click();
   await expect(page.locator('#hint-bar')).toContainText('Cliquez pour placer');
   await expect(page.locator('#anno-sub-bar')).toBeVisible();

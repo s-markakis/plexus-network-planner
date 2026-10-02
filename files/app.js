@@ -312,12 +312,12 @@ function renderFloorTabs(){
   document.getElementById('fl-cnt').textContent=FLOORS.length;
 }
 function askDeleteFloor(i){
-  if(FLOORS.length<=1){toast('Cannot delete the only floor');return;}
+  if(FLOORS.length<=1){toast(t('notify.cannot_delete_the_only_floor'));return;}
   const f=FLOORS[i];
   const total=(f.APS?.length||0)+(f.DZS?.length||0)+(f.SWS?.length||0);
   const body=total>0
-    ? `Delete <strong>${esc(f.name)}</strong>?<br><br>This will remove ${total} item${total===1?'':'s'} on this floor.`
-    : `Delete <strong>${esc(f.name)}</strong>?`;
+    ? t('confirm.floor_items',{name:esc(f.name),n:total,suffix:total===1?'':'s'})
+    : t('confirm.floor',{name:esc(f.name)});
   showModal({i18n:'modal.delete_floor'},body,()=>deleteFloor(i));
 }
 function deleteFloor(i){
@@ -333,7 +333,7 @@ function deleteFloor(i){
   else if(curFloor>i)curFloor--;
   selId=null;selType=null;
   loadFloorImage();renderFloorTabs();render();renderList();renderRP();
-  toast('Floor deleted');
+  toast(t('notify.floor_deleted'));
 }
 function startFloorRename(nameEl,floor){
   const tabEl=nameEl.parentElement;
@@ -369,7 +369,7 @@ function addFloor(){
   const inheritedScale=F()?.scaleM||100;
   FLOORS.push({id:'f'+(++nid),name:defaultName,img:'',imgId:'',imgName:'',APS:[],DZS:[],SWS:[],WALLS:[],CAMS:[],ANNOS:[],SAMPLES:[],scaleM:inheritedScale});
   switchFloor(FLOORS.length-1);
-  toast('Floor added');
+  toast(t('notify.floor_added'));
   // Immediately enter rename mode on the new tab so user can pick a real name
   setTimeout(()=>{
     const tabs=document.querySelectorAll('#floor-tabs .ftab');
@@ -420,7 +420,7 @@ async function _applyMapDataUrl(dataUrl,name,label){
     mapImg.src=dataUrl;if(mmImg)mmImg.src=dataUrl;
     document.getElementById('brand-lbl').textContent=(SETTINGS.company||'Plexus')+' · '+name;
     updateEmptyState();
-    toast('Map loaded: '+label);
+    toast(t('notify.map_loaded')+label);
     if(oldId&&oldId!==id)idbDeleteImage(oldId).catch(()=>{});
   }catch(err){
     // IndexedDB unavailable or quota exceeded — fall back to inline.
@@ -428,7 +428,7 @@ async function _applyMapDataUrl(dataUrl,name,label){
     mapImg.src=dataUrl;if(mmImg)mmImg.src=dataUrl;
     document.getElementById('brand-lbl').textContent=(SETTINGS.company||'Plexus')+' · '+name;
     updateEmptyState();
-    toast('Map loaded (inline fallback)');
+    toast(t('notify.map_loaded_inline_fallback'));
   }
 }
 // Render the first page of a PDF to a PNG data-URL at a crisp resolution.
@@ -456,10 +456,10 @@ function uploadMap(input){
   const name=file.name.replace(/\.[^/.]+$/,'');
   const isPdf=file.type==='application/pdf'||/\.pdf$/i.test(file.name);
   if(isPdf){
-    toast('Rendering PDF…');
+    toast(t('notify.rendering_pdf'));
     _pdfFirstPageDataUrl(file)
       .then(dataUrl=>_applyMapDataUrl(dataUrl,name,file.name+' (page 1)'))
-      .catch(err=>{console.error('PDF import failed',err);toast('Could not read PDF: '+(err&&err.message||err));});
+      .catch(err=>{console.error('PDF import failed',err);toast(t('notify.could_not_read_pdf')+(err&&err.message||err));});
     input.value='';
     return;
   }
@@ -477,7 +477,7 @@ function uploadMap(input){
 // finishes in well under a second for realistic floor sizes.
 function autoPlaceAPs(){
   const w=mapImg.naturalWidth,h=mapImg.naturalHeight;
-  if(!w||!h){toast('Upload a map first');return;}
+  if(!w||!h){toast(t('notify.upload_a_map_first'));return;}
   const model=AP_RANGE_M[SETTINGS.lastModel]?SETTINGS.lastModel:'U6 Pro';
   const r=rangeMToPx(AP_RANGE_M[model]);
   // Build a sample grid (the same one sampleFloorCoverage uses, conceptually).
@@ -544,7 +544,7 @@ function autoPlaceAPs(){
   render();renderList();renderRP();calcCoverage();
   if(placedNow.length){
     const pct=Math.round(coveredCount()/samples.length*100);
-    toast(`Placed ${placedNow.length} ${model} AP${placedNow.length===1?'':'s'} — ${pct}% coverage`);
+    toast(t('notify.placed',{n:placedNow.length,model,pct,suffix:placedNow.length===1?'':'s'}));
     // Capacity sanity check vs this floor's switches (ports + PoE budget).
     if(SWS().length){
       let ports=0,portsKnown=true,budget=0;
@@ -552,12 +552,12 @@ function autoPlaceAPs(){
       const devCount=APS().length+CAMS().length;
       const draw=APS().reduce((n,a)=>n+(AP_POE_W[a.model]||10),0)+CAMS().reduce((n,c)=>n+((CAM_SPECS[c.model]||{}).poeW||0),0);
       const issues=[];
-      if(portsKnown && devCount>ports)issues.push(`${devCount} devices vs ${ports} ports`);
-      if(budget>0 && draw>budget)issues.push(`${draw.toFixed(0)} W vs ${budget} W PoE`);
-      if(issues.length)toast('⚠ Switch capacity: '+issues.join(' · ')+' — add/upgrade switches');
+      if(portsKnown && devCount>ports)issues.push(t('notify.capacity_ports',{devices:devCount,ports}));
+      if(budget>0 && draw>budget)issues.push(t('notify.capacity_poe',{draw:draw.toFixed(0),budget}));
+      if(issues.length)toast(t('notify.switch_capacity')+issues.join(' · ')+t('notify.add_upgrade_switches'));
     }
   }else{
-    toast('Already at target coverage — nothing to place');
+    toast(t('notify.already_at_target_coverage_nothing_to_place'));
   }
 }
 
@@ -805,9 +805,9 @@ function devSwitchPorts(dev){
 function suggestIp(type){
   const list=type==='cam'?CAMS():APS();
   const d=list.find(x=>x.id===selId);if(!d)return;
-  if(!vlanById(d.vlan)){toast('Set this device’s VLAN first (see Settings → VLANs)');return;}
+  if(!vlanById(d.vlan)){toast(t('notify.set_this_device_s_vlan_first_see_settings_vlans'));return;}
   const ip=nextFreeIp(d);
-  if(!ip){toast('No subnet on that VLAN, or its range is full');return;}
+  if(!ip){toast(t('notify.no_subnet_on_that_vlan_or_its_range_is_full'));return;}
   snapshot();d.ip=ip;
   render();renderList();
   if(type==='cam')renderCAMPanel();else renderAPPanel();
@@ -852,7 +852,7 @@ function autoAssignIps(){
     const v=vlanById(dev.vlan);
     return !!(v&&v.subnet);
   });
-  if(!todo.length){toast('No devices with a subnet-backed VLAN are missing an IP');return;}
+  if(!todo.length){toast(t('notify.no_devices_with_a_subnet_backed_vlan_are_missing_an_ip'));return;}
   snapshot();
   let n=0;
   for(const {dev} of todo){
@@ -862,13 +862,13 @@ function autoAssignIps(){
     dev.ip=ip;used.add(ip);n++;
   }
   render();renderList();renderRP();
-  toast(n?`Assigned ${n} IP address${n===1?'':'es'}`:'No free addresses left in the VLAN subnets');
+  toast(n?t('notify.ips',{n,suffix:n===1?'':t('notify.address_suffix')}):t('notify.no_free_addresses_left_in_the_vlan_subnets'));
 }
 // Rename every AP/camera/switch to the convention in SETTINGS.namePattern,
 // numbering devices per floor and type in list order.
 function autoRenameDevices(){
   const pattern=(SETTINGS.namePattern||'').trim();
-  if(!patternHasNumber(pattern)){toast('Set a name pattern with a number token first (Settings → Organization)');return;}
+  if(!patternHasNumber(pattern)){toast(t('notify.set_a_name_pattern_with_a_number_token_first_settings_organization'));return;}
   snapshot();
   let n=0;
   FLOORS.forEach((f,floorIdx)=>{
@@ -880,7 +880,7 @@ function autoRenameDevices(){
     }
   });
   render();renderList();renderRP();
-  toast(n?`Renamed ${n} device${n===1?'':'s'}`:'All names already follow the pattern');
+  toast(n?t('notify.renamed',{n,suffix:n===1?'':'s'}):t('notify.all_names_already_follow_the_pattern'));
 }
 
 // Walk every switch on the current floor, summarise PoE draw vs budget, port
@@ -942,7 +942,7 @@ function showPoESummary(){
 // is internally consistent.
 function autoAssignSwitches(){
   const sws=SWS();
-  if(!sws.length){toast('Place a switch first (W)');return;}
+  if(!sws.length){toast(t('notify.place_a_switch_first_w'));return;}
   const w=mapImg.naturalWidth||1,h=mapImg.naturalHeight||1;
   // Running tallies per switch so we don't oversubscribe as we assign.
   const state=new Map(sws.map(sw=>{
@@ -978,7 +978,7 @@ function autoAssignSwitches(){
   }
   render();renderList();renderRP();
   showCables=true;document.getElementById('btn-cables')?.classList.add('active');render();
-  toast(assigned?`Assigned ${assigned} device(s) to nearest switch`:'All devices already on nearest switch');
+  toast(assigned?t('notify.assigned',{n:assigned}):t('notify.all_devices_already_on_nearest_switch'));
 }
 
 // ── Network validation ────────────────────────────────────────────────────
@@ -990,17 +990,17 @@ function showValidation(){
   const sws=SWS();
   for(const sw of sws){
     const a=analyzeSwitch(sw,f);
-    if(a.overBudget)errors.push(`${sw.name}: PoE draw ${a.draw.toFixed(0)} W exceeds ${a.budget} W budget.`);
-    else if(a.budget>0 && a.headroom!=null && a.headroom<10 && a.draw>0)warns.push(`${sw.name}: only ${a.headroom}% PoE headroom left.`);
-    if(a.overPorts)errors.push(`${sw.name}: ${a.used} devices on ${a.ports} ports — over capacity.`);
-    for(const c of a.classFails)errors.push(`${c.name} needs ${c.cls} PoE but ${sw.name} delivers ${a.swCls||'none'}.`);
-    if(!a.swCls && a.clients.some(c=>c.w>0))warns.push(`${sw.name} has PoE devices but no PoE budget set.`);
+    if(a.overBudget)errors.push(t('validation.poe_over_budget',{v0:sw.name,v1:a.draw.toFixed(0),v2:a.budget}));
+    else if(a.budget>0 && a.headroom!=null && a.headroom<10 && a.draw>0)warns.push(t('validation.poe_headroom',{v0:sw.name,v1:a.headroom}));
+    if(a.overPorts)errors.push(t('validation.port_capacity',{v0:sw.name,v1:a.used,v2:a.ports}));
+    for(const c of a.classFails)errors.push(t('validation.poe_class',{v0:c.name,v1:c.cls,v2:sw.name,v3:a.swCls||'none'}));
+    if(!a.swCls && a.clients.some(c=>c.w>0))warns.push(t('validation.poe_unset',{v0:sw.name}));
     // Duplicate port labels on the same switch.
     const seen=new Map();
     for(const c of a.clients){
       const p=(c.port||'').trim().toLowerCase();
       if(!p)continue;
-      if(seen.has(p))warns.push(`${sw.name}: port "${c.port}" used by both ${seen.get(p)} and ${c.name}.`);
+      if(seen.has(p))warns.push(t('validation.duplicate_port',{v0:sw.name,v1:c.port,v2:seen.get(p),v3:c.name}));
       else seen.set(p,c.name);
     }
   }
@@ -1010,22 +1010,22 @@ function showValidation(){
     if(!dev.swId)return;
     const sw=sws.find(s=>s.id===dev.swId);if(!sw)return;
     const m=cableRunM(dev,sw,f);
-    if(m>100)errors.push(`${label}: cable run to ${sw.name} is ${m.toFixed(0)} m (>100 m Ethernet limit).`);
-    else if(m>90)warns.push(`${label}: cable run to ${sw.name} is ${m.toFixed(0)} m (near 100 m limit).`);
+    if(m>100)errors.push(t('validation.cable_too_long',{v0:label,v1:sw.name,v2:m.toFixed(0)}));
+    else if(m>90)warns.push(t('validation.cable_near_limit',{v0:label,v1:sw.name,v2:m.toFixed(0)}));
   };
   if(hasMap){APS().forEach(ap=>checkRun(ap,ap.name));CAMS().forEach(c=>checkRun(c,c.name));}
   // Unassigned devices (informational).
-  APS().forEach(ap=>{if(!ap.swId)infos.push(`${ap.name} is not assigned to a switch.`);});
-  CAMS().forEach(c=>{if(!c.swId)infos.push(`${c.name} is not assigned to a switch.`);});
+  APS().forEach(ap=>{if(!ap.swId)infos.push(t('validation.unassigned',{v0:ap.name}));});
+  CAMS().forEach(c=>{if(!c.swId)infos.push(t('validation.unassigned',{v0:c.name}));});
   // Duplicate IPs across all floor devices + switches.
   const ipMap=new Map();
-  const noteIp=(ip,name)=>{const k=(ip||'').trim();if(!k)return;if(ipMap.has(k))warns.push(`Duplicate IP ${k}: ${ipMap.get(k)} and ${name}.`);else ipMap.set(k,name);};
+  const noteIp=(ip,name)=>{const k=(ip||'').trim();if(!k)return;if(ipMap.has(k))warns.push(t('validation.duplicate_ip',{v0:k,v1:ipMap.get(k),v2:name}));else ipMap.set(k,name);};
   APS().forEach(ap=>noteIp(ap.ip,ap.name));
   CAMS().forEach(c=>noteIp(c.ip,c.name));
   sws.forEach(sw=>noteIp(sw.ip,sw.name));
   // VLANs referenced but not in the registry (only when a registry exists).
   if(vlanList().length){
-    const checkVlan=(dev,label)=>{const v=(dev.vlan||'').trim();if(v&&!vlanById(v))warns.push(`${label}: VLAN "${v}" is not in the VLAN registry.`);};
+    const checkVlan=(dev,label)=>{const v=(dev.vlan||'').trim();if(v&&!vlanById(v))warns.push(t('validation.unknown_vlan',{v0:label,v1:v}));};
     APS().forEach(ap=>checkVlan(ap,ap.name));
     CAMS().forEach(c=>checkVlan(c,c.name));
   }
@@ -1034,7 +1034,7 @@ function showValidation(){
     const v=vlanById(dev.vlan);
     const ip=(dev.ip||'').trim();
     if(!ip||!v||!v.subnet)return;
-    if(!ipInCidr(ip,v.subnet))warns.push(`${label}: IP ${ip} is outside VLAN ${v.id} subnet ${v.subnet}.`);
+    if(!ipInCidr(ip,v.subnet))warns.push(t('validation.ip_outside_subnet',{v0:label,v1:ip,v2:v.id,v3:v.subnet}));
   };
   APS().forEach(ap=>checkIpSubnet(ap,ap.name));
   CAMS().forEach(c=>checkIpSubnet(c,c.name));
@@ -1046,8 +1046,8 @@ function showValidation(){
       if(!v.subnet)continue;
       const u=subnetUsage(v.subnet,allIps);
       if(!u)continue;
-      if(u.pct>=100)errors.push(`VLAN ${v.id} subnet ${v.subnet} is full (${u.used}/${u.capacity} hosts).`);
-      else if(u.pct>=90)warns.push(`VLAN ${v.id} subnet ${v.subnet} is ${u.pct}% full (${u.used}/${u.capacity} hosts).`);
+      if(u.pct>=100)errors.push(t('validation.subnet_full',{v0:v.id,v1:v.subnet,v2:u.used,v3:u.capacity}));
+      else if(u.pct>=90)warns.push(t('validation.subnet_nearly_full',{v0:v.id,v1:v.subnet,v2:u.pct,v3:u.used,v4:u.capacity}));
     }
   }
   // Naming convention (when one is configured in Settings → Organization).
@@ -1059,7 +1059,7 @@ function showValidation(){
     }
     if(offenders.length){
       const shown=offenders.slice(0,3).join(', ');
-      warns.push(`${offenders.length} device name${offenders.length===1?'':'s'} break the "${SETTINGS.namePattern}" convention (${shown}${offenders.length>3?', …':''}) — Inventory → Auto-rename fixes them.`);
+      warns.push(t('validation.naming',{v0:offenders.length,v1:offenders.length===1?'':'s',v2:SETTINGS.namePattern,v3:shown,v4:offenders.length>3?', …':''}));
     }
   }
   // Per-AP airtime utilization (this floor). Demand = clients × per-client
@@ -1068,23 +1068,23 @@ function showValidation(){
     for(const ap of APS()){
       if(!(ap.capacityClients>0))continue;
       const pct=apAirtimePct(ap,f);
-      if(pct===Infinity)errors.push(`${ap.name}: expected ${ap.capacityClients} clients but the cell delivers no usable throughput.`);
-      else if(pct>100)errors.push(`${ap.name}: airtime ~${pct}% — ${ap.capacityClients} clients × ${parseFloat(SETTINGS.perClientMbps)||5} Mbps exceeds what this cell can carry.`);
-      else if(pct>80)warns.push(`${ap.name}: airtime ~${pct}% — near saturation; consider a wider channel or another AP.`);
+      if(pct===Infinity)errors.push(t('validation.no_throughput',{v0:ap.name,v1:ap.capacityClients}));
+      else if(pct>100)errors.push(t('validation.airtime_over_capacity',{v0:ap.name,v1:pct,v2:ap.capacityClients,v3:parseFloat(SETTINGS.perClientMbps)||5}));
+      else if(pct>80)warns.push(t('validation.airtime_near_capacity',{v0:ap.name,v1:pct}));
     }
   }
   // Client-capacity rollup (building-wide; only when an expectation is set).
   const expected=parseInt(SETTINGS.expectedClients,10)||0;
   if(expected>0){
     const cap=totalClientCapacity();
-    if(cap<expected)warns.push(`Client capacity ${cap} < expected ${expected} — consider more/denser APs.`);
-    else infos.push(`Client capacity ${cap} ≥ expected ${expected}.`);
+    if(cap<expected)warns.push(t('validation.client_capacity_low',{v0:cap,v1:expected}));
+    else infos.push(t('validation.client_capacity_ok',{v0:cap,v1:expected}));
   }
   // Camera storage rollup (building-wide).
   const storGb=totalStorageGb();
   if(storGb>0){
     const days=parseInt(SETTINGS.retentionDays,10)||30;
-    infos.push(`Camera recording needs ~${storGb>=1000?(storGb/1000).toFixed(2)+' TB':Math.round(storGb)+' GB'} of NVR storage for ${days}-day retention (${SETTINGS.storageCodec==='h264'?'H.264':'H.265'}).`);
+    infos.push(t('validation.camera_storage',{v0:storGb>=1000?(storGb/1000).toFixed(2)+' TB':Math.round(storGb)+' GB',v1:days,v2:SETTINGS.storageCodec==='h264'?'H.264':'H.265'}));
   }
 
   const wrap=document.createElement('div');
@@ -1093,7 +1093,7 @@ function showValidation(){
   // storage rollup) still print below a passing result.
   if(!errors.length&&!warns.length){
     const ok=document.createElement('div');ok.style.cssText='color:#1e7d3c;font-weight:700;font-size:15px;padding:6px 0';
-    ok.textContent='✓ All checks passed.';wrap.appendChild(ok);
+    ok.textContent=t('validation.passed');wrap.appendChild(ok);
   }
   {
     const group=(title,items,color,icon)=>{
@@ -1101,12 +1101,12 @@ function showValidation(){
       const h=document.createElement('div');h.style.cssText=`font-weight:700;margin:10px 0 4px;color:${color}`;h.textContent=`${icon} ${title} (${items.length})`;wrap.appendChild(h);
       for(const it of items){const d=document.createElement('div');d.style.cssText='font-size:12px;padding:2px 0 2px 16px';d.textContent=it;wrap.appendChild(d);}
     };
-    group('Errors',errors,'#c0382b','✕');
-    group('Warnings',warns,'#b8860b','⚠');
-    group('Info',infos,'#555','ℹ');
+    group(t('validation.errors'),errors,'#c0382b','✕');
+    group(t('validation.warnings'),warns,'#b8860b','⚠');
+    group(t('validation.info'),infos,'#555','ℹ');
   }
-  if(!hasMap){const n=document.createElement('div');n.style.cssText='margin-top:10px;font-size:10px;opacity:.55';n.textContent='Cable-length checks skipped — no floor plan on this floor.';wrap.appendChild(n);}
-  const scope=document.createElement('div');scope.style.cssText='margin-top:8px;font-size:10px;opacity:.55';scope.textContent=`Checked floor "${f.name||''}".`;wrap.appendChild(scope);
+  if(!hasMap){const n=document.createElement('div');n.style.cssText='margin-top:10px;font-size:10px;opacity:.55';n.textContent=t('validation.no_plan');wrap.appendChild(n);}
+  const scope=document.createElement('div');scope.style.cssText='margin-top:8px;font-size:10px;opacity:.55';scope.textContent=t('validation.floor',{name:f.name||''});wrap.appendChild(scope);
   showModalNode({i18n:'modal.validation'},wrap,null);
 }
 
@@ -1227,12 +1227,12 @@ async function shareLink(){
     const b64=await _b64urlFromBytes(bytes);
     const url=`${location.origin}${location.pathname}#p=${b64}`;
     if(url.length>8000){
-      toast('Project too large for a URL — use 💾 Save instead');
+      toast(t('notify.project_too_large_for_a_url_use_save_instead'));
       return;
     }
     try{
       await navigator.clipboard.writeText(url);
-      toast('Share link copied to clipboard (no floor-plan image)');
+      toast(t('notify.share_link_copied_to_clipboard_no_floor_plan_image'));
     }catch{
       // Clipboard blocked (insecure context, perms). Show the URL in a modal.
       const wrap=document.createElement('div');
@@ -1245,7 +1245,7 @@ async function shareLink(){
       setTimeout(()=>ta.select(),50);
     }
   }catch(err){
-    toast('Share failed: '+(err.message||'unknown error'));
+    toast(t('notify.share_failed')+(err.message||t('notify.unknown_error')));
   }
 }
 async function tryLoadFromHash(){
@@ -1266,10 +1266,10 @@ async function tryLoadFromHash(){
     loadFloorImage();renderFloorTabs();render();renderList();renderRP();calcCoverage();
     // Strip the hash so a reload doesn't keep loading the same project.
     history.replaceState(null,'',location.pathname+location.search);
-    toast(warnings.length?warnings[0]:'Project loaded from link');
+    toast(warnings.length?warnings[0]:t('notify.project_loaded_from_link'));
     return true;
   }catch(err){
-    toast('Could not decode shared link');
+    toast(t('notify.could_not_decode_shared_link'));
     return false;
   }
 }
@@ -1280,7 +1280,7 @@ async function tryLoadFromHash(){
 // We accept <line>, <polyline>, <polygon>, and the line-like subset of <path>.
 function importSvgWalls(input){
   const file=input.files[0];if(!file)return;
-  if(!mapImg.naturalWidth){toast('Upload a floor-plan image first so we know the scale');input.value='';return;}
+  if(!mapImg.naturalWidth){toast(t('notify.upload_a_floor_plan_image_first_so_we_know_the_scale'));input.value='';return;}
   const reader=new FileReader();
   reader.onload=e=>{
     try{
@@ -1350,7 +1350,7 @@ function importSvgWalls(input){
           }
         }
       });
-      if(!segs.length){toast('No line segments found in that SVG');return;}
+      if(!segs.length){toast(t('notify.no_line_segments_found_in_that_svg'));return;}
       // Map SVG viewBox coords → fractional image coords.
       snapshot();
       const imgW=mapImg.naturalWidth,imgH=mapImg.naturalHeight;
@@ -1361,9 +1361,9 @@ function importSvgWalls(input){
       }
       invalidateCoverageCache();
       render();renderList();calcCoverage();
-      toast(`Imported ${segs.length} walls from SVG`);
+      toast(t('notify.svg',{n:segs.length}));
     }catch(err){
-      toast('SVG import failed: '+(err.message||'invalid SVG'));
+      toast(t('notify.svg_import_failed')+(err.message||t('notify.invalid_svg')));
     }
   };
   reader.readAsText(file);
@@ -1381,7 +1381,7 @@ function importDxfWalls(input){
   reader.onload=async e=>{
     try{
       const {segments,minX,minY,maxX,maxY}=parseDxf(String(e.target.result||''));
-      if(!segments.length){toast('No LINE/POLYLINE entities found in that DXF');return;}
+      if(!segments.length){toast(t('notify.no_line_polyline_entities_found_in_that_dxf'));return;}
       const spanX=Math.max(1e-9,maxX-minX),spanY=Math.max(1e-9,maxY-minY);
       let w=mapImg.naturalWidth,h=mapImg.naturalHeight;
       if(!w||!h){
@@ -1403,9 +1403,9 @@ function importDxfWalls(input){
       }
       invalidateCoverageCache();
       render();renderList();calcCoverage();
-      toast(`Imported ${segments.length} walls from DXF`);
+      toast(t('notify.dxf',{n:segments.length}));
     }catch(err){
-      toast('DXF import failed: '+(err&&err.message||err));
+      toast(t('notify.dxf_import_failed')+(err&&err.message||err));
     }
   };
   reader.readAsText(file);
@@ -1418,11 +1418,11 @@ function importDxfWalls(input){
 // cameras, IPAM, inventory) stays on our side.
 function importEsxFile(input){
   const file=input.files[0];if(!file)return;
-  toast('Reading Ekahau project…');
+  toast(t('notify.reading_ekahau_project'));
   file.arrayBuffer()
     .then(buf=>importEsx(new Uint8Array(buf)))
     .then(async ({floors,warnings})=>{
-      if(!floors.length){toast('No floors found in that .esx');return;}
+      if(!floors.length){toast(t('notify.no_floors_found_in_that_esx'));return;}
       snapshot();
       const firstNew=FLOORS.length;
       for(const ef of floors){
@@ -1458,9 +1458,9 @@ function importEsxFile(input){
       syncNidFromFloors();
       switchFloor(firstNew);
       warnings.forEach(w=>console.warn('[esx import]',w));
-      toast(`Imported ${floors.length} floor(s) from Ekahau${warnings.length?` — ${warnings.length} warning(s) in console`:''}`);
+      toast(t('notify.esx',{n:floors.length,warnings:warnings.length?t('notify.esx_warnings',{n:warnings.length}):''}));
     })
-    .catch(err=>toast('ESX import failed: '+(err&&err.message||err)));
+    .catch(err=>toast(t('notify.esx_import_failed')+(err&&err.message||err)));
   input.value='';
 }
 async function doExportEsx(){
@@ -1533,7 +1533,7 @@ function _unifiChannelPlan(){
 }
 function showUnifiDialog(){
   if(!(window.plexusNative&&window.plexusNative.unifiPull)){
-    toast('UniFi sync needs the desktop app');return;
+    toast(t('notify.unifi_sync_needs_the_desktop_app'));return;
   }
   const wrap=document.createElement('div');wrap.className='settings-form';
   const field=(label,type,value,placeholder)=>{
@@ -1567,25 +1567,25 @@ function showUnifiDialog(){
   const pushBtn=mkBtn('unifi.push','unifi.push_tip');
   const busy=(on)=>{pullBtn.disabled=on;pushBtn.disabled=on;};
   pullBtn.addEventListener('click',async()=>{
-    saveFields();busy(true);status.textContent='Connecting…';
+    saveFields();busy(true);status.textContent=t('notify.connecting');
     const res=await window.plexusNative.unifiPull(cfg());
     busy(false);
     if(!res.ok){status.textContent='✕ '+res.error;return;}
     const n=_applyUnifiDevices(res.devices);
-    status.textContent=`✓ Controller reports ${res.devices.length} device(s); matched ${n} to this plan (by MAC, then name). IP / firmware / serial / status updated.`;
+    status.textContent=t('notify.unifi_matched',{count:res.devices.length,n});
   });
   pushBtn.addEventListener('click',async()=>{
     saveFields();
     const changes=_unifiChannelPlan();
-    if(!changes.length){status.textContent='✕ No APs with a concrete channel — run ⌁ Auto-channel first.';return;}
-    if(!confirm(`Push channel/width/tx settings for ${changes.length} AP(s) to the controller? Radios will briefly drop clients when they retune.`))return;
-    busy(true);status.textContent='Pushing…';
+    if(!changes.length){status.textContent=t('notify.no_channel');return;}
+    if(!confirm(t('confirm.unifi',{n:changes.length})))return;
+    busy(true);status.textContent=t('notify.pushing');
     const res=await window.plexusNative.unifiPush({...cfg(),changes});
     busy(false);
     if(!res.ok){status.textContent='✕ '+res.error;return;}
     const okN=res.results.filter(r=>r.ok).length;
     const fails=res.results.filter(r=>!r.ok);
-    status.textContent=`✓ Updated ${okN}/${res.results.length} AP(s).`+(fails.length?'\n'+fails.map(f=>`  ✕ ${f.name}: ${f.error}`).join('\n'):'');
+    status.textContent=t('notify.unifi_updated',{n:okN,total:res.results.length})+(fails.length?'\n'+fails.map(f=>`  ✕ ${f.name}: ${f.error}`).join('\n'):'');
   });
   wrap.appendChild(btnRow);
   wrap.appendChild(status);
@@ -1633,7 +1633,7 @@ async function saveProject(){
   const blob=new Blob([JSON.stringify(data,_stripCacheReplacer,2)],{type:'application/json'});
   const a=document.createElement('a');a.href=URL.createObjectURL(blob);
   a.download='plexus_project.json';a.click();
-  toast(_credPass?'Project saved (credentials encrypted)':'Project saved');
+  toast(_credPass?t('notify.project_saved_credentials_encrypted'):t('notify.project_saved'));
 }
 // ── Credential vault (encrypt-at-rest for saved/exported projects) ─────────
 // Gather {deviceId: creds} across floors.
@@ -1667,9 +1667,9 @@ async function _unlockCreds(data){
     for(const f of FLOORS)for(const key of ['APS','CAMS','SWS'])
       for(const d of (f[key]||[]))if(map[d.id])d.creds=map[d.id];
     render();renderRP();
-    toast('Credentials unlocked');
+    toast(t('notify.credentials_unlocked'));
   }catch{
-    toast('Wrong passphrase — credentials stay locked');
+    toast(t('notify.wrong_passphrase_credentials_stay_locked'));
   }
 }
 // Modal password prompt → resolves to the string, or null if cancelled.
@@ -1707,7 +1707,7 @@ function newProject(){
     lastAutosavePayload='';
     invalidateCoverageCache();
     loadFloorImage();renderFloorTabs();render();renderList();renderRP();calcCoverage();
-    toast('New project');
+    toast(t('notify.new_project'));
   };
   if(hasAny){
     showModalText({i18n:'modal.new'},{i18n:'modal.new_body'},doIt);
@@ -1736,9 +1736,9 @@ function loadProject(input){
       await _rehydrateImages();
       applySettingsToBrand();
       loadFloorImage();renderFloorTabs();render();renderList();renderRP();calcCoverage();
-      if(warnings.length){toast(warnings[0]);}else{toast('Project loaded');}
+      if(warnings.length){toast(warnings[0]);}else{toast(t('notify.project_loaded'));}
       await _unlockCreds(data);   // prompt for the passphrase if creds are encrypted
-    }catch(err){toast('Error loading project: '+(err.message||'invalid file'));}
+    }catch(err){toast(t('notify.error_loading_project')+(err.message||t('notify.invalid_file')));}
   };
   reader.readAsText(file);input.value='';
 }
@@ -1758,8 +1758,8 @@ async function loadSampleProject(){
     await _rehydrateImages();
     applySettingsToBrand();
     loadFloorImage();renderFloorTabs();render();renderList();renderRP();calcCoverage();
-    if(warnings.length){toast(warnings[0]);}else{toast('Sample project loaded — drag things around');}
-  }catch(err){toast('Error loading sample: '+(err.message||'unknown'));}
+    if(warnings.length){toast(warnings[0]);}else{toast(t('notify.sample_project_loaded_drag_things_around'));}
+  }catch(err){toast(t('notify.error_loading_sample')+(err.message||t('notify.unknown')));}
 }
 // Update the top-bar brand label to whatever the current SETTINGS specify.
 // Called after settings change or a project load.
@@ -2016,7 +2016,7 @@ function undo(){
   loadFloorImage();renderFloorTabs();render();renderList();renderRP();calcCoverage();
   document.getElementById('btn-undo').disabled=!undoStack.length;
   document.getElementById('btn-redo').disabled=false;
-  toast('Undo');
+  toast(t('notify.undo'));
 }
 function redo(){
   if(!redoStack.length)return;
@@ -2026,7 +2026,7 @@ function redo(){
   loadFloorImage();renderFloorTabs();render();renderList();renderRP();calcCoverage();
   document.getElementById('btn-redo').disabled=!redoStack.length;
   document.getElementById('btn-undo').disabled=false;
-  toast('Redo');
+  toast(t('notify.redo'));
 }
 
 // ═══ MODE ═════════════════════════════════════════
@@ -2058,7 +2058,7 @@ function setMode(m){
 viewport.addEventListener('click',e=>{
   if(panning||spaceDown||e.button!==0)return;
   if(e.target.closest('.ap-grp,.dz-grp,.sw-grp'))return;
-  if(!mapImg.naturalWidth){toast('Upload a map image first');return;}
+  if(!mapImg.naturalWidth){toast(t('notify.upload_a_map_image_first'));return;}
   const raw=vpToImg(e.clientX,e.clientY);
   const {x,y}=snapPt(raw.x,raw.y);
   const {fx,fy}=imgToFrac(x,y);
@@ -2081,19 +2081,19 @@ viewport.addEventListener('click',e=>{
       cableLossDb:0,txPowerDbm:20,mountHeightM:2.7,downtiltDeg:0,
       capacityClients:25,chanWidth:40,
     });
-    sel(id,'ap');setMode('sel');render();renderList();calcCoverage();toast('AP placed — edit in panel');
+    sel(id,'ap');setMode('sel');render();renderList();calcCoverage();toast(t('notify.ap_placed_edit_in_panel'));
   }else if(mode==='dz'){
     snapshot();
     const id='dz'+nid++;
     const num=nextNameSuffix(DZS(),/^Dead Zone (\d+)/);
     DZS().push({id,label:'Dead Zone '+num,fx,fy,r:40,locked:false});
-    sel(id,'dz');setMode('sel');render();renderList();toast('Dead zone marked');
+    sel(id,'dz');setMode('sel');render();renderList();toast(t('notify.dead_zone_marked'));
   }else if(mode==='sw'){
     snapshot();
     const id='sw'+nid++;
     const num=nextNameSuffix(SWS(),/^SW-(\d+)/);
     SWS().push({id,name:'SW-'+num,model:'USW-24-PoE',ip:'',notes:'',fx,fy,size:22,locked:false,poeBudget:SW_POE_BUDGET_W['USW-24-PoE']||0,ports:0,uplinkId:''});
-    sel(id,'sw');setMode('sel');render();renderList();toast('Switch placed');
+    sel(id,'sw');setMode('sel');render();renderList();toast(t('notify.switch_placed'));
   }else if(mode==='cam'){
     snapshot();
     const id='cm'+nid++;
@@ -2107,7 +2107,7 @@ viewport.addEventListener('click',e=>{
       heading:0, resolution:spec.res,
       ip:'',mac:'',swId:'',port:'',vlan:'',notes:'',color:'',locked:false,
     });
-    sel(id,'cam');setMode('sel');render();renderList();toast('Camera placed — set heading in panel');
+    sel(id,'cam');setMode('sel');render();renderList();toast(t('notify.camera_placed_set_heading_in_panel'));
   }else if(mode==='ruler'){
     if(!rulerStart){
       rulerStart={x,y};rulerEnd=null;rulerHover={x,y};
@@ -2115,7 +2115,7 @@ viewport.addEventListener('click',e=>{
       rulerEnd={x,y};
       if(calibratePending){calibratePending=false;renderRuler();promptCalibration();return;}
       const distM=Math.hypot(rulerEnd.x-rulerStart.x,rulerEnd.y-rulerStart.y)*(scaleM/100);
-      toast(`${distM.toFixed(1)} m · Click again for new measurement`);
+      toast(t('notify.measurement',{m:distM.toFixed(1)}));
     }else{
       // Start a new measurement
       rulerStart={x,y};rulerEnd=null;rulerHover={x,y};
@@ -2142,11 +2142,11 @@ viewport.addEventListener('click',e=>{
     // Live survey (desktop app): click = "I'm standing here", sample the OS's
     // current WiFi connection and drop a survey point at the click.
     if(!(window.plexusNative&&window.plexusNative.wifiSample)){
-      toast('Live survey needs the desktop app');return;
+      toast(t('notify.live_survey_needs_the_desktop_app'));return;
     }
-    toast('Sampling WiFi…');
+    toast(t('notify.sampling_wifi'));
     window.plexusNative.wifiSample().then(res=>{
-      if(!res||!res.ok){toast('WiFi sample failed: '+((res&&res.error)||'no WiFi info'));return;}
+      if(!res||!res.ok){toast(t('notify.wifi_sample_failed')+((res&&res.error)||t('notify.no_wifi_info')));return;}
       snapshot();
       SAMPLES().push({
         id:'s'+(++nid),fx,fy,
@@ -2156,7 +2156,7 @@ viewport.addEventListener('click',e=>{
         floorName:F().name||'',
       });
       render();
-      toast(`Sampled ${res.rssi} dBm${res.ssid?' on '+res.ssid:''}${res.channel?` · ch ${res.channel}`:''}`);
+      toast(t('notify.sample',{rssi:res.rssi,ssid:res.ssid?t('notify.sample_ssid',{ssid:res.ssid}):'',channel:res.channel?` · ch ${res.channel}`:''}));
     });
   }else{
     desel();render();
@@ -2334,8 +2334,8 @@ function renderWalls(){
 let _detectedWallPreview=null;
 function detectWallsFromMap(){
   const w=mapImg.naturalWidth,h=mapImg.naturalHeight;
-  if(!w||!h){toast('Upload a floor plan first');return;}
-  toast('Detecting walls…');
+  if(!w||!h){toast(t('notify.upload_a_floor_plan_first'));return;}
+  toast(t('notify.detecting_walls'));
   // Let the toast paint before the (CPU-bound) detection pass runs.
   setTimeout(()=>{
     try{
@@ -2347,12 +2347,12 @@ function detectWallsFromMap(){
       ctx.fillStyle='#fff';ctx.fillRect(0,0,cw,ch);   // flatten transparency
       ctx.drawImage(mapImg,0,0,cw,ch);
       const segs=detectWalls(ctx.getImageData(0,0,cw,ch));
-      if(!segs.length){toast('No wall-like lines found — try the SVG/DXF import instead');return;}
+      if(!segs.length){toast(t('notify.no_wall_like_lines_found_try_the_svg_dxf_import_instead'));return;}
       _detectedWallPreview=segs.map(s=>({fx1:s.x1/cw,fy1:s.y1/ch,fx2:s.x2/cw,fy2:s.y2/ch}));
       renderWalls();
       showModalText(
         {i18n:'modal.wall_detection'},
-        `Found ${segs.length} straight wall candidates (previewed as dashed blue lines). Add them as drywall walls? You can re-material or delete individual walls afterwards.`,
+        t('confirm.walls',{n:segs.length}),
         ()=>{
           snapshot();
           for(const s of _detectedWallPreview){
@@ -2362,13 +2362,13 @@ function detectWallsFromMap(){
           _detectedWallPreview=null;
           invalidateCoverageCache();
           render();renderList();calcCoverage();
-          toast(`Added ${n} detected walls`);
+          toast(t('notify.walls',{n}));
         },
         ()=>{_detectedWallPreview=null;renderWalls();},
       );
     }catch(err){
       _detectedWallPreview=null;
-      toast('Wall detection failed: '+(err&&err.message||err));
+      toast(t('notify.wall_detection_failed')+(err&&err.message||err));
     }
   },30);
 }
@@ -2426,7 +2426,7 @@ function finishMarquee(){
   const first=selection.values().next().value;
   if(first){[selType,selId]=first.split(':');}else{selId=null;selType=null;}
   render();renderList();renderRP();
-  if(selection.size>1)toast(`${selection.size} items selected`);
+  if(selection.size>1)toast(t('notify.selected',{n:selection.size}));
 }
 
 // Bulk-delete every currently selected item. Used by Delete/Backspace when
@@ -2445,7 +2445,7 @@ function deleteSelection(){
   clearSelection();
   invalidateCoverageCache();
   render();renderList();renderRP();calcCoverage();
-  toast(`Deleted ${targets.length} item${targets.length===1?'':'s'}`);
+  toast(t('notify.deleted',{n:targets.length,suffix:targets.length===1?'':'s'}));
 }
 function updateWallVertex(cx,cy){
   if(!wallVertDrag)return;
@@ -2503,7 +2503,7 @@ function commitWall(x2,y2){
   wallStart=null;wallHover=null;
   invalidateCoverageCache();
   render();renderList();
-  toast('Wall added — drywall by default');
+  toast(t('notify.wall_added_drywall_by_default'));
 }
 
 // ═══ SELECTION ════════════════════════════════════
@@ -2575,7 +2575,7 @@ function duplicateSelected(){
   snapshot();
   const id='ap'+nid++;
   APS().push({...ap,id,name:ap.name+'-copy',fx:Math.min(1,ap.fx+0.05),fy:Math.min(1,ap.fy+0.05)});
-  sel(id,'ap');render();renderList();calcCoverage();toast('AP duplicated');
+  sel(id,'ap');render();renderList();calcCoverage();toast(t('toast.ap_duplicated'));
 }
 
 // ═══ LOCK ═════════════════════════════════════════
@@ -3040,11 +3040,10 @@ function cycleHeatmapMode(){
   const cur=SETTINGS.heatmapMode||'rssi';
   const i=keys.indexOf(cur);
   SETTINGS.heatmapMode=keys[(i+1)%keys.length];
-  const lbl=(HEATMAP_MODES[SETTINGS.heatmapMode]||HEATMAP_MODES.rssi).label;
   const pill=document.getElementById('heat-mode-pill');
   if(pill)localizeText(pill,'heat.metric_'+SETTINGS.heatmapMode);
   render();autosave();
-  toast('Heatmap mode: '+lbl);
+  toast(t('notify.heatmap_mode')+t('heat.metric_'+SETTINGS.heatmapMode));
 }
 function cycleHeatmapBand(){
   const cur=SETTINGS.heatmapBand||'all';
@@ -3054,7 +3053,7 @@ function cycleHeatmapBand(){
   const pill=document.getElementById('heat-band-pill');
   if(pill)localizeText(pill,({'all':'heat.all','2.4':'heat.band_24','5':'heat.band_5','6':'heat.band_6'})[SETTINGS.heatmapBand]);
   render();autosave();
-  toast('Heatmap band: '+SETTINGS.heatmapBand);
+  toast(t('notify.heatmap_band')+SETTINGS.heatmapBand);
 }
 function _bandMatches(ap,bandFilter){
   if(bandFilter==='all'||!bandFilter)return true;
@@ -3387,7 +3386,7 @@ function importSurveyCsv(input){
     try{
       const text=String(e.target.result||'');
       const lines=text.split(/\r?\n/).filter(l=>l.trim().length);
-      if(!lines.length){toast('CSV is empty');return;}
+      if(!lines.length){toast(t('notify.csv_is_empty'));return;}
       const head=lines[0].toLowerCase().split(',').map(s=>s.trim());
       const hasHeader=head.some(h=>['x','fx','rssi','ssid','bssid','channel','floor'].includes(h));
       const colIdx=(k,fallback)=>{
@@ -3419,7 +3418,7 @@ function importSurveyCsv(input){
           floorName: fl||'',
         });
       }
-      if(!samples.length){toast('No valid samples found in CSV');return;}
+      if(!samples.length){toast(t('notify.no_valid_samples_found_in_csv'));return;}
       snapshot();
       // For now, route all samples to the current floor — a future patch
       // could route by `floorName` when provided.
@@ -3427,7 +3426,7 @@ function importSurveyCsv(input){
       render();
       toast(t('toast.imported_samples',{n:samples.length}));
     }catch(err){
-      toast('Failed to parse CSV: '+(err&&err.message||err));
+      toast(t('notify.failed_to_parse_csv')+(err&&err.message||err));
     }
     if(input)input.value='';
   };
@@ -3453,7 +3452,7 @@ function _bandForAp(ap){
 }
 function autoChannelPlan(){
   const aps=APS();
-  if(!aps.length){toast('No APs to plan');return;}
+  if(!aps.length){toast(t('notify.no_aps_to_plan'));return;}
   snapshot();
   const w=mapImg.naturalWidth||1,h=mapImg.naturalHeight||1;
   // For each AP, score each channel in its band by neighbour overlap penalty.
@@ -3494,7 +3493,7 @@ function autoChannelPlan(){
     if(String(ap.channel)!==String(bestCh)){ap.channel=String(bestCh);changed++;}
   }
   render();renderRP();
-  toast(`Auto channel: ${changed} AP${changed===1?'':'s'} updated`);
+  toast(t('notify.channels',{n:changed,suffix:changed===1?'':'s'}));
 }
 // Reference Tx power that maps to an AP's stored coverage radius `ap.r`.
 const TX_POWER_REF_DBM=20;
@@ -3506,7 +3505,7 @@ function _radiusAtTx(baseR,tx){
 }
 function autoTxPower(){
   const aps=APS();
-  if(!aps.length){toast('No APs to plan');return;}
+  if(!aps.length){toast(t('notify.no_aps_to_plan'));return;}
   snapshot();
   const w=mapImg.naturalWidth||1,h=mapImg.naturalHeight||1;
   // Try each Tx power (from 5 to 23 dBm) and pick the one whose resulting
@@ -3544,7 +3543,7 @@ function autoTxPower(){
   }
   invalidateCoverageCache();
   render();renderRP();calcCoverage();
-  toast('Tx-power tuned for each AP');
+  toast(t('notify.tx_power_tuned_for_each_ap'));
 }
 
 // ═══ BOM + CABLE-SCHEDULE CSV EXPORTS ═════════════
@@ -3875,18 +3874,18 @@ function newRevision(){
     createdAt:new Date().toISOString(),
     snapshot:_snapshotForRevision(),
   });
-  toast('Revision saved: '+name.trim());
+  toast(t('notify.revision_saved')+name.trim());
   autosave();
 }
 function restoreRevision(id){
   const rev=PROJECT_REVISIONS.find(r=>r.id===id);
   if(!rev)return;
-  showModal({i18n:'modal.restore_revision'},`Replace current floors with revision <strong>${esc(rev.name)}</strong>? Current state will be lost (consider saving a fresh revision first).`,()=>{
+  showModal({i18n:'modal.restore_revision'},t('confirm.revision',{name:esc(rev.name)}),()=>{
     snapshot();
     FLOORS=JSON.parse(JSON.stringify(rev.snapshot));
     if(curFloor>=FLOORS.length)curFloor=0;
     syncScaleFromFloor();loadFloorImage();renderFloorTabs();render();renderList();renderRP();calcCoverage();
-    toast('Restored '+rev.name);
+    toast(t('notify.restored')+rev.name);
   });
 }
 function _diffRevisions(a,b){
@@ -4328,13 +4327,13 @@ function calibrateScale(){
   if(rulerStart&&rulerEnd){promptCalibration();return;}
   calibratePending=true;
   setMode('ruler');
-  toast('Draw a line over a known dimension to set the scale');
+  toast(t('notify.draw_a_line_over_a_known_dimension_to_set_the_scale'));
 }
 // Ask for the line's real length, then derive metres-per-100px from its pixels.
 function promptCalibration(){
   if(!(rulerStart&&rulerEnd))return;
   const px=Math.hypot(rulerEnd.x-rulerStart.x,rulerEnd.y-rulerStart.y);
-  if(px<2){toast('Line too short — draw a longer one');return;}
+  if(px<2){toast(t('notify.line_too_short_draw_a_longer_one'));return;}
   const wrap=document.createElement('div');
   wrap.style.cssText='font-family:Rajdhani,sans-serif;font-size:13px';
   const p=document.createElement('div');
@@ -4348,14 +4347,14 @@ function promptCalibration(){
   row.append(inp,unit);wrap.append(p,row);
   showModalNode({i18n:'modal.calibrate'},wrap,()=>{
     const realM=parseFloat(inp.value);
-    if(!(realM>0)){toast('Enter a positive length');return;}
+    if(!(realM>0)){toast(t('notify.enter_a_positive_length'));return;}
     snapshot();
     const newScale=realM/px*100;            // metres per 100 px
     setScaleM(newScale);
     const el=document.getElementById('scale-m');if(el)el.value=Math.round(newScale*100)/100;
     SETTINGS.archScale='';                   // now a custom, measured scale
     updateScaleBar();calcCoverage();render();renderList();renderRP();
-    toast(`Scale set: ${newScale.toFixed(2)} m / 100 px`);
+    toast(t('notify.scale',{scale:newScale.toFixed(2)}));
   });
   setTimeout(()=>{inp.focus();inp.select();},50);
 }
@@ -4440,8 +4439,8 @@ function openMgmt(){
   const d=_selectedDevice();
   const host=(document.getElementById('cred-host')?.value||'').trim()||((d&&d.ip)||'').trim();
   const port=(document.getElementById('cred-port')?.value||'').trim();
-  if(!host){toast('No host or IP set');return;}
-  if(proto!=='http'&&proto!=='https'){toast('Open supports HTTP/HTTPS only — use an SSH client for '+proto.toUpperCase());return;}
+  if(!host){toast(t('notify.no_host_or_ip_set'));return;}
+  if(proto!=='http'&&proto!=='https'){toast(t('notify.open_supports_http_https_only_use_an_ssh_client_for')+proto.toUpperCase());return;}
   window.open(`${proto}://${host}${port?':'+port:''}`,'_blank','noopener');
 }
 
@@ -4782,25 +4781,26 @@ function renderWallPanel(){
   const lengthM=(lengthPx*(scaleM/100)).toFixed(1);
   const opts=WALL_MATERIAL_KEYS.map(k=>{
     const m=WALL_MATERIALS[k];
-    return `<option value="${k}"${k===w.material?' selected':''}>${esc(m.label)} · ${m.loss} dB</option>`;
+    return `<option value="${k}"${k===w.material?' selected':''} data-i18n="wall.material.${k}" data-i18n-vars="${esc(JSON.stringify({loss:m.loss}))}">${esc(m.label)} · ${m.loss} dB</option>`;
   }).join('');
   rpBody.innerHTML=`
-    <div class="ep-section">Material</div>
+    <div class="ep-section" data-i18n="wall.material">Material</div>
     <div class="ep-row">
       <select class="ep-sel" id="wall-mat" data-change-action="upd-wall">${opts}</select>
     </div>
-    <div class="ep-section">Info</div>
+    <div class="ep-section" data-i18n="wall.info">Info</div>
     <div class="ep-row">
-      <div class="ep-lbl">Length</div>
+      <div class="ep-lbl" data-i18n="wall.length">Length</div>
       <div class="ep-readout">${lengthM} m</div>
     </div>
     <div class="ep-row">
-      <div class="ep-lbl">Signal Loss</div>
+      <div class="ep-lbl" data-i18n="wall.loss">Signal Loss</div>
       <div class="ep-readout">${mat.loss} dB</div>
     </div>
-    <div class="ep-section">Notes</div>
-    <div class="ep-row"><textarea class="ep-txt" id="wall-notes" rows="3" data-input-action="upd-wall-notes" placeholder="Construction detail, partial-height, glazing…">${esc(w.notes||'')}</textarea></div>
-    <button class="btn ep-del" data-action="ask-del">✕ Delete Wall</button>`;
+    <div class="ep-section" data-i18n="panel.notes">Notes</div>
+    <div class="ep-row"><textarea class="ep-txt" id="wall-notes" rows="3" data-input-action="upd-wall-notes" placeholder="Construction detail, partial-height, glazing…" data-i18n-placeholder="wall.notes_hint">${esc(w.notes||'')}</textarea></div>
+    <button class="btn ep-del" data-action="ask-del">✕ <span data-i18n="wall.delete">Delete Wall</span></button>`;
+  localizeDOM(rpBody);
 }
 
 function updWall(){
@@ -4901,17 +4901,18 @@ function renderDZPanel(){
   localizeText(document.getElementById('rp-head'),'sidebar.edit_dz');
   const realR=Math.round(dz.r*(scaleM/100));
   rpBody.innerHTML=`
-    <div class="ep-section">Label</div>
+    <div class="ep-section" data-i18n="dz.label">Label</div>
     <div class="ep-row"><input class="ep-in" id="dz-lbl" value="${dz.label}" data-input-action="upd-dz"/></div>
-    <div class="ep-section">Radius</div>
+    <div class="ep-section" data-i18n="dz.radius">Radius</div>
     <div class="ep-row ep-slider-row">
       <input class="ep-rng" id="dz-r" type="range" min="10" max="300" value="${Math.round(dz.r)}" data-input-action="upd-dz-r"/>
       <span class="ep-rng-val" id="dz-rv">${realR}m</span>
     </div>
-    <label class="ep-check"><input type="checkbox" ${dz.locked?'checked':''} data-change-action="toggle-lock"/><span>Lock position</span></label>
-    <div class="ep-section">Notes</div>
-    <div class="ep-row"><textarea class="ep-txt" id="dz-notes" rows="3" data-input-action="upd-dz" placeholder="Why this area is a dead zone, remediation plan…">${esc(dz.notes||'')}</textarea></div>
-    <button class="btn ep-del" data-action="ask-del">✕ Delete</button>`;
+    <label class="ep-check"><input type="checkbox" ${dz.locked?'checked':''} data-change-action="toggle-lock"/><span data-i18n="panel.lock">Lock position</span></label>
+    <div class="ep-section" data-i18n="panel.notes">Notes</div>
+    <div class="ep-row"><textarea class="ep-txt" id="dz-notes" rows="3" data-input-action="upd-dz" placeholder="Why this area is a dead zone, remediation plan…" data-i18n-placeholder="dz.notes_hint">${esc(dz.notes||'')}</textarea></div>
+    <button class="btn ep-del" data-action="ask-del">✕ <span data-i18n="modal.delete">Delete</span></button>`;
+  localizeDOM(rpBody);
 }
 
 function renderSWPanel(){
@@ -5103,7 +5104,7 @@ function renderList(){
   const filteredSWs=SWS().filter(sw=>stOk(sw)&&matches(sw.name,sw.model,sw.ip,sw.mac,sw.serial,sw.assetTag,sw.notes));
   const filteredCAMs=CAMS().filter(c=>stOk(c)&&matches(c.name,c.model,c.ip,c.mac,c.serial,c.assetTag,c.notes));
   const filteredDZs=DZS().filter(dz=>matches(dz.label));
-  const filteredWalls=WALLS().filter(w=>matches((WALL_MATERIALS[w.material]||{}).label));
+  const filteredWalls=WALLS().filter(w=>matches((WALL_MATERIALS[w.material]||{}).label,t('sidebar.wall.'+(WALL_MATERIALS[w.material]?w.material:'drywall'))));
   const matchTotal=filteredAPs.length+filteredSWs.length+filteredCAMs.length+filteredDZs.length+filteredWalls.length;
 
   // No matches when there IS a query → friendly "no results" instead of empty space
@@ -5158,7 +5159,7 @@ function renderList(){
       const lenM=(Math.hypot(wpx.x2-wpx.x1,wpx.y2-wpx.y1)*(scaleM/100)).toFixed(1);
       const d=document.createElement('div');
       d.className='list-item'+(w.id===selId?' active':'');
-      d.innerHTML=`<span style="font-size:12px">▌</span><div class="li-info"><div class="li-name">Wall ${i+1}</div><div class="li-sub">${esc(mat.label)} · ${lenM} m</div></div><button class="li-del" data-action="quick-del" data-id="${w.id}" data-type="wall">✕</button>`;
+      d.innerHTML=`<span style="font-size:12px">▌</span><div class="li-info"><div class="li-name">${panelText('sidebar.wall_number',{n:i+1})}</div><div class="li-sub">${panelText('sidebar.wall.'+(WALL_MATERIALS[w.material]?w.material:'drywall'))} · ${lenM} m</div></div><button class="li-del" data-action="quick-del" data-id="${w.id}" data-type="wall">✕</button>`;
       d.addEventListener('click',e=>{if(e.target.closest('.li-del'))return;sel(w.id,'wall',{zoom:true});setMode('sel');});
       leftList.appendChild(d);
     });
@@ -5187,7 +5188,7 @@ function doDelete(target){
   if(selId===id){selId=null;selType=null;}
   // Wall removal changes coverage shapes everywhere
   if(type==='wall'||type==='ap')invalidateCoverageCache();
-  render();renderList();renderRP();calcCoverage();toast('Deleted');
+  render();renderList();renderRP();calcCoverage();toast(t('toast.deleted'));
 }
 let modalCancelCB=null;
 // Element focused before the modal opened — focus returns here on close so
@@ -5282,7 +5283,7 @@ function showContextMenu(clientX,clientY,items){
   const m=document.getElementById('ctx-menu');
   m.innerHTML=items.map((it,i)=>{
     if(it==='-')return '<div class="ctx-sep"></div>';
-    return `<div class="ctx-item${it.disabled?' disabled':''}${it.danger?' danger':''}" data-ctx-idx="${i}">${esc(it.label)}${it.key?`<span class="ctx-key">${esc(it.key)}</span>`:''}</div>`;
+    return `<div class="ctx-item${it.disabled?' disabled':''}${it.danger?' danger':''}" data-ctx-idx="${i}">${panelText(it.labelKey)}${it.key?`<span class="ctx-key">${esc(it.key)}</span>`:''}</div>`;
   }).join('');
   m.classList.add('vis');
   // Position: keep menu on-screen
@@ -5328,13 +5329,13 @@ function openItemContextMenu(type,id,clientX,clientY){
   // Select the item so Edit + Delete use the right target
   sel(id,type);
   const items=[];
-  items.push({label:'Edit properties',key:'', action:()=>{sel(id,type);setMode('sel');}});
+  items.push({labelKey:'context.edit',key:'', action:()=>{sel(id,type);setMode('sel');}});
   if(type==='ap'){
-    items.push({label:'Duplicate',key:'Ctrl+D',action:()=>duplicateSelected()});
+    items.push({labelKey:'help.duplicate',key:'Ctrl+D',action:()=>duplicateSelected()});
   }
-  items.push({label:item.locked?'Unlock':'Lock',key:'Ctrl+L',action:()=>toggleLock()});
+  items.push({labelKey:item.locked?'context.unlock':'context.lock',key:'Ctrl+L',action:()=>toggleLock()});
   items.push('-');
-  items.push({label:'Delete',key:'Del',danger:true,action:()=>{qDel(id,type);}});
+  items.push({labelKey:'modal.delete',key:'Del',danger:true,action:()=>{qDel(id,type);}});
   showContextMenu(clientX,clientY,items);
 }
 // Right-click on the empty map shouldn't show a browser context menu (we use it for panning).
@@ -5355,7 +5356,7 @@ function togglePresent(){
   // Hide the meta + tools rows, but keep the floor-row so users can still flip floors.
   document.querySelectorAll('.topbar-meta, .topbar-tools').forEach(el=>{el.style.display=pres?'none':'';});
   document.querySelector('.topbar.floor-row').classList.toggle('present-slim',pres);
-  setTimeout(fitZoom,50);toast(pres?'Presentation mode — Esc to exit':'Editor mode');
+  setTimeout(fitZoom,50);toast(pres?t('notify.presentation_mode_esc_to_exit'):t('notify.editor_mode'));
 }
 
 // ═══ TOAST ════════════════════════════════════════
@@ -5693,7 +5694,7 @@ function autosave(){
     const isQuota=err&&(err.name==='QuotaExceededError'||err.code===22||err.code===1014);
     if(isQuota&&!_autosaveQuotaWarned){
       _autosaveQuotaWarned=true;
-      toast('Autosave full — use Save to keep your work');
+      toast(t('notify.autosave_full_use_save_to_keep_your_work'));
     }
   }
 }
@@ -5705,8 +5706,8 @@ function tryRestoreAutosave(){
     // Only offer to restore if there's actually content
     const hasContent=(data.floors||[]).some(f=>(f.APS&&f.APS.length)||(f.DZS&&f.DZS.length)||(f.SWS&&f.SWS.length)||f.img||f.imgId);
     if(!hasContent){localStorage.removeItem(AUTOSAVE_KEY);return false;}
-    const when=data.savedAt?new Date(data.savedAt).toLocaleString():'previous session';
-    showModalText({i18n:'modal.restore_session'},`A saved session from ${when} was found.\n\nRestore it, or start fresh?`,
+    const when=data.savedAt?new Date(data.savedAt).toLocaleString():t('confirm.previous_session');
+    showModalText({i18n:'modal.restore_session'},t('confirm.session',{when}),
       async ()=>{
         const [migrated]=migrateProject(data);
         FLOORS=migrated.floors;
@@ -5722,7 +5723,7 @@ function tryRestoreAutosave(){
         await _rehydrateImages();
         applySettingsToBrand();
         loadFloorImage();renderFloorTabs();render();renderList();renderRP();calcCoverage();
-        toast('Session restored');
+        toast(t('notify.session_restored'));
       },
       ()=>{localStorage.removeItem(AUTOSAVE_KEY);}
     );
@@ -6314,7 +6315,7 @@ function toggleTheme(){
   const next=document.body.classList.contains('theme-dark')?'light':'dark';
   applyTheme(next);
   try{localStorage.setItem(THEME_KEY,next);}catch(_){}
-  toast(next==='dark'?'Dark mode':'Light mode');
+  toast(next==='dark'?t('notify.dark_mode'):t('notify.light_mode'));
 }
 
 // Clear the sidebar search filter and reset the input + clear-button visibility.
@@ -6414,6 +6415,13 @@ setTimeout(async ()=>{
 // Localize the initial static interface and every subsequent language change.
 onLanguageChange(()=>{
   localizeDOM();
+  // A translated caption may widen an already-open context menu.
+  const menu=document.getElementById('ctx-menu');
+  if(menu?.classList.contains('vis')){
+    const rect=menu.getBoundingClientRect();
+    menu.style.left=Math.max(0,Math.min(rect.left,window.innerWidth-rect.width-4))+'px';
+    menu.style.top=Math.max(0,Math.min(rect.top,window.innerHeight-rect.height-4))+'px';
+  }
   const label=document.getElementById('brand-lbl');
   const floor=F();
   if(label && !(floor&&floor.imgName))label.textContent=(SETTINGS.company||'Plexus')+' '+t('app.planner');

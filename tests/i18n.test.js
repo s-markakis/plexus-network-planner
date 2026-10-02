@@ -5,14 +5,48 @@ import {en} from '../files/src/i18n/en.js';
 import {fr} from '../files/src/i18n/fr.js';
 import {getLang,onLanguageChange,registerBundle,setLang,t} from '../files/src/i18n.js';
 import {localizeDOM,localizeText} from '../files/src/localizeDom.js';
+import {WALL_MATERIALS} from '../files/src/geometry.js';
 
 afterEach(()=>{setLang('en');document.body.replaceChildren();});
 
 describe('static interface localization',()=>{
+  it('translates wall material options without changing their IDs, attenuation or selection',()=>{
+    const select=document.createElement('select');
+    for(const [id,material] of Object.entries(WALL_MATERIALS)){
+      const option=document.createElement('option');option.value=id;
+      option.setAttribute('data-i18n','wall.material.'+id);
+      option.setAttribute('data-i18n-vars',JSON.stringify({loss:material.loss}));
+      select.append(option);
+    }
+    select.value='glass';document.body.append(select);
+    for(const language of ['en','fr','en']){
+      setLang(language);localizeDOM();
+      expect(select.value).toBe('glass');
+      for(const option of select.options){
+        expect(option.textContent).toBe(t('wall.material.'+option.value,{loss:WALL_MATERIALS[option.value].loss}));
+        expect(option.textContent).toMatch(/ · \d+ dB$/);
+      }
+    }
+  });
+
+  it('updates menu captions in place while retaining shortcuts and click handlers',()=>{
+    document.body.innerHTML='<div id="menu"><div data-ctx-idx="0"><span data-i18n="context.lock"></span><span class="ctx-key">Ctrl+L</span></div></div>';
+    const item=document.querySelector('[data-ctx-idx]');const clicked=vi.fn();
+    item.addEventListener('click',clicked);
+    for(const language of ['en','fr','en']){
+      setLang(language);localizeDOM();
+      expect(item.firstElementChild.textContent).toBe(t('context.lock'));
+      expect(item.lastElementChild.textContent).toBe('Ctrl+L');
+      expect(document.querySelector('[data-ctx-idx]')).toBe(item);
+      item.firstElementChild.dispatchEvent(new MouseEvent('click',{bubbles:true}));
+    }
+    expect(clicked).toHaveBeenCalledTimes(3);
+  });
+
   it('keeps bundle keys and substitution tokens in sync',()=>{
     expect(Object.keys(fr).sort()).toEqual(Object.keys(en).sort());
     for(const key of Object.keys(en)){
-      expect(fr[key].match(/\{\w+\}/g)||[],key).toEqual(en[key].match(/\{\w+\}/g)||[]);
+      expect([...new Set(fr[key].match(/\{\w+\}/g)||[])].sort(),key).toEqual([...new Set(en[key].match(/\{\w+\}/g)||[])].sort());
     }
   });
 
