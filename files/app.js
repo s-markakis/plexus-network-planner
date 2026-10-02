@@ -24,6 +24,7 @@ import {
   channelsOverlapMhz,
   widthThroughputMult,
 } from './src/geometry.js';
+import {localizeMigrationMessage} from './src/localizeMigration.js';
 import {computeHeatGrid} from './src/heatmap.js';
 // Heatmap computation runs in a Web Worker (inline-bundled like the PDF
 // worker) so dragging an AP never janks the main thread. computeHeatGrid is
@@ -394,7 +395,7 @@ function loadFloorImage(){
   // render correctly during the transition.
   const applySrc=(src,name)=>{
     mapImg.src=src||'';if(mmImg)mmImg.src=src||'';
-    document.getElementById('brand-lbl').textContent=src?(SETTINGS.company||'Plexus')+' · '+(name||''):(SETTINGS.company||'Plexus')+' Planner';
+    document.getElementById('brand-lbl').textContent=src?(SETTINGS.company||'Plexus')+' · '+(name||''):(SETTINGS.company||'Plexus')+' '+t('app.planner');
     if(src&&mapImg.complete&&mapImg.naturalWidth>0){fitZoom();render();renderMM();updateScaleBar();calcCoverage();}
     updateEmptyState();
   };
@@ -1268,7 +1269,7 @@ async function tryLoadFromHash(){
     loadFloorImage();renderFloorTabs();render();renderList();renderRP();calcCoverage();
     // Strip the hash so a reload doesn't keep loading the same project.
     history.replaceState(null,'',location.pathname+location.search);
-    toast(warnings.length?warnings[0]:t('notify.project_loaded_from_link'));
+    toast(warnings.length?localizeMigrationMessage(warnings[0]):t('notify.project_loaded_from_link'));
     return true;
   }catch(err){
     toast(t('notify.could_not_decode_shared_link'));
@@ -1661,7 +1662,7 @@ async function _encryptCredsInto(data){
 // and reattach the decrypted creds to the in-memory devices.
 async function _unlockCreds(data){
   if(!data||!data.credsVault)return;
-  const pass=await promptPassphrase('This project’s credentials are encrypted.\nEnter the passphrase to unlock them, or Cancel to keep them locked:');
+  const pass=await promptPassphrase('credentials.unlock_instructions');
   if(pass==null)return;
   try{
     const map=await decryptObject(data.credsVault,pass);
@@ -1678,7 +1679,8 @@ async function _unlockCreds(data){
 function promptPassphrase(message){
   return new Promise(resolve=>{
     const wrap=document.createElement('div');wrap.style.cssText='font-family:Rajdhani,sans-serif;font-size:13px';
-    String(message).split('\n').forEach((line,i,arr)=>{wrap.appendChild(document.createTextNode(line));if(i<arr.length-1)wrap.appendChild(document.createElement('br'));});
+    const instructions=document.createElement('div');instructions.style.whiteSpace='pre-line';
+    localizeText(instructions,message);wrap.appendChild(instructions);
     const inp=document.createElement('input');inp.type='password';inp.className='ep-in';inp.autocomplete='off';
     inp.style.cssText='width:100%;margin-top:10px';
     wrap.appendChild(inp);
@@ -1738,9 +1740,9 @@ function loadProject(input){
       await _rehydrateImages();
       applySettingsToBrand();
       loadFloorImage();renderFloorTabs();render();renderList();renderRP();calcCoverage();
-      if(warnings.length){toast(warnings[0]);}else{toast(t('notify.project_loaded'));}
+      if(warnings.length){toast(localizeMigrationMessage(warnings[0]));}else{toast(t('notify.project_loaded'));}
       await _unlockCreds(data);   // prompt for the passphrase if creds are encrypted
-    }catch(err){toast(t('notify.error_loading_project')+(err.message||t('notify.invalid_file')));}
+    }catch(err){toast(t('notify.error_loading_project')+(localizeMigrationMessage(err.message)||t('notify.invalid_file')));}
   };
   reader.readAsText(file);input.value='';
 }
@@ -1760,7 +1762,7 @@ async function loadSampleProject(){
     await _rehydrateImages();
     applySettingsToBrand();
     loadFloorImage();renderFloorTabs();render();renderList();renderRP();calcCoverage();
-    if(warnings.length){toast(warnings[0]);}else{toast(t('notify.sample_project_loaded_drag_things_around'));}
+    if(warnings.length){toast(localizeMigrationMessage(warnings[0]));}else{toast(t('notify.sample_project_loaded_drag_things_around'));}
   }catch(err){toast(t('notify.error_loading_sample')+(err.message||t('notify.unknown')));}
 }
 // Update the top-bar brand label to whatever the current SETTINGS specify.
@@ -2290,7 +2292,7 @@ function renderWalls(){
       const lbl=mk('text');
       lbl.setAttribute('x',mx);lbl.setAttribute('y',my);
       lbl.setAttribute('class','wall-lbl');
-      lbl.textContent=mat.label;
+      localizeText(lbl,'sidebar.wall.'+(WALL_MATERIALS[w.material]?w.material:'drywall'));
       wallLayer.appendChild(lbl);
 
       // Vertex handles — drag to reshape the wall endpoints in place.
@@ -2778,7 +2780,8 @@ function renderCables(){
       const txt=mk('text');
       txt.setAttribute('x',x);txt.setAttribute('y',y-30);
       txt.setAttribute('class','cable-lbl');txt.style.fill='#6a1b9a';
-      txt.textContent='↑ '+(tgt.sw.name||'')+' · '+(tgt.floor.name||('Floor '+(tgt.floorIdx+1)));
+      if(tgt.floor.name)txt.textContent='↑ '+(tgt.sw.name||'')+' · '+tgt.floor.name;
+      else{txt.setAttribute('data-i18n-vars',JSON.stringify({name:tgt.sw.name||'',n:tgt.floorIdx+1}));localizeText(txt,'map.uplink_floor');localizeDOM(txt);}
       cableLayer.appendChild(txt);
     }
   });
@@ -3250,7 +3253,7 @@ function renderAnnotations(){
       const lbl=mk('text');
       lbl.setAttribute('x',x);lbl.setAttribute('y',y);
       lbl.setAttribute('class','anno-text');
-      lbl.textContent=a.text||'Note';
+      if(a.text)lbl.textContent=a.text;else localizeText(lbl,'anno.note');
       layer.appendChild(lbl);
     }
   }
@@ -3297,9 +3300,10 @@ function renderSamples(){
     }
     c.setAttribute('data-rssi',String(measured));
     if(delta!==null){
-      const t=mk('title');
-      t.textContent=`Measured ${measured} dBm · Predicted ${Math.round(predicted)} dBm · Δ ${delta>=0?'+':''}${Math.round(delta)} dB`;
-      c.appendChild(t);
+      const title=mk('title');
+      title.setAttribute('data-i18n-vars',JSON.stringify({measured,predicted:Math.round(predicted),delta:(delta>=0?'+':'')+Math.round(delta)}));
+      localizeText(title,'survey.comparison');localizeDOM(title);
+      c.appendChild(title);
     }
     layer.appendChild(c);
   }
@@ -3325,7 +3329,7 @@ function commitAnno(x2,y2){
   const w=mapImg.naturalWidth||1,h=mapImg.naturalHeight||1;
   const fx=annoStart.x/w, fy=annoStart.y/h, fx2=x2/w, fy2=y2/h;
   if(annoSubMode==='text'){
-    const txt=prompt('Label text','');
+    const txt=prompt(t('anno.label_prompt'),'');
     if(txt!==null && txt.trim()){
       snapshot();
       ANNOS().push({id:'an'+(++nid),kind:'text',fx,fy,fx2:fx,fy2:fy,text:txt.trim()});
@@ -4018,14 +4022,14 @@ function showInventory(){
     const m=DEVICE_STATUS_META[s];
     const pill=document.createElement('span');
     pill.style.cssText='display:flex;align-items:center;gap:5px';
-    pill.innerHTML=`<span style="width:9px;height:9px;border-radius:50%;background:${m.color}"></span>${m.label} <strong>${counts[s]}</strong>`;
+    pill.innerHTML=`<span style="width:9px;height:9px;border-radius:50%;background:${m.color}"></span>${panelText('status.'+s)} <strong>${counts[s]}</strong>`;
     prog.appendChild(pill);
   }
   const done=counts.live+counts.tested;
   const pct=Math.round((done/devs.length)*100);
   const pctEl=document.createElement('span');
   pctEl.style.cssText='margin-left:auto;font-family:"Share Tech Mono",monospace;font-size:11px;opacity:.7';
-  pctEl.textContent=`${pct}% tested/live`;
+  pctEl.setAttribute('data-i18n-vars',JSON.stringify({pct}));localizeText(pctEl,'inventory.progress');
   prog.appendChild(pctEl);
   wrap.appendChild(prog);
   // Search box.
@@ -4050,14 +4054,14 @@ function showInventory(){
     let shown=0;
     for(const entry of devs){
       const {dev,type,floor,floorIdx}=entry;
-      const hay=[dev.name,dev.model,dev.serial,dev.assetTag,dev.firmware,dev.ip,dev.mac,dev.vlan,statusMeta(dev).label,floor.name].join(' ').toLowerCase();
+      const hay=[dev.name,dev.model,dev.serial,dev.assetTag,dev.firmware,dev.ip,dev.mac,dev.vlan,statusMeta(dev).label,t('status.'+(DEVICE_STATUSES.includes(dev.status)?dev.status:'planned')),floor.name].join(' ').toLowerCase();
       if(q&&!hay.includes(q))continue;
       shown++;
       const sw=(floor.SWS||[]).find(s=>s.id===dev.swId);
       const tr=document.createElement('tr');
       tr.style.cssText='cursor:pointer';
       const td=(html,mono)=>{const c=document.createElement('td');c.style.cssText=`padding:5px 8px;border-bottom:1px solid var(--ink-04)${mono?';font-family:\'Share Tech Mono\',monospace;font-size:10px':''}`;c.innerHTML=html;return c;};
-      tr.appendChild(td(esc(floor.name||`Floor ${floorIdx+1}`)));
+      tr.appendChild(td(floor.name?esc(floor.name):panelText('topology.floor',{n:floorIdx+1})));
       tr.appendChild(td(type));
       tr.appendChild(td(`<strong>${esc(dev.name||dev.id)}</strong>`));
       tr.appendChild(td(esc(dev.model||'')));
@@ -5127,7 +5131,7 @@ function renderList(){
       const sigDots={strong:'●●●',medium:'●●○',weak:'●○○'}[ap.sig||'strong'];
       const sigClass={strong:'sig-s',medium:'sig-m',weak:'sig-w'}[ap.sig||'strong'];
       const dotStyle=ap.color?` style="background:${esc(ap.color)}"`:'';
-      d.innerHTML=`<div class="li-dot"${dotStyle}></div><div class="li-info"><div class="li-name">${esc(ap.name)}<span class="li-status" style="background:${statusMeta(ap).color}" title="${esc(statusMeta(ap).label)}"></span></div><div class="li-sub">${esc(ap.model||'U6 Pro')}</div></div><span class="li-sig ${sigClass}">${sigDots}</span>${ap.locked?'<span class="li-lock">🔒</span>':''}<button class="li-del" data-action="quick-del" data-id="${ap.id}" data-type="ap">✕</button>`;
+      d.innerHTML=`<div class="li-dot"${dotStyle}></div><div class="li-info"><div class="li-name">${esc(ap.name)}<span class="li-status" style="background:${statusMeta(ap).color}" data-i18n-title="status.${DEVICE_STATUSES.includes(ap.status)?ap.status:'planned'}" title="${esc(t('status.'+(DEVICE_STATUSES.includes(ap.status)?ap.status:'planned')))}"></span></div><div class="li-sub">${esc(ap.model||'U6 Pro')}</div></div><span class="li-sig ${sigClass}">${sigDots}</span>${ap.locked?'<span class="li-lock">🔒</span>':''}<button class="li-del" data-action="quick-del" data-id="${ap.id}" data-type="ap">✕</button>`;
       d.addEventListener('click',e=>{if(e.target.closest('.li-del'))return;sel(ap.id,'ap',{zoom:true});setMode('sel');});leftList.appendChild(d);
     });
   }
@@ -5135,7 +5139,7 @@ function renderList(){
     const h=document.createElement('div');h.className='sec-lbl';localizeText(h,'sidebar.switches');leftList.appendChild(h);
     filteredSWs.forEach(sw=>{
       const d=document.createElement('div');d.className='list-item sw-item'+(sw.id===selId?' active':'');
-      d.innerHTML=`<span style="font-size:12px">⊞</span><div class="li-info"><div class="li-name">${esc(sw.name)}<span class="li-status" style="background:${statusMeta(sw).color}" title="${esc(statusMeta(sw).label)}"></span></div><div class="li-sub">${esc(sw.model||'')}</div></div><button class="li-del" data-action="quick-del" data-id="${sw.id}" data-type="sw">✕</button>`;
+      d.innerHTML=`<span style="font-size:12px">⊞</span><div class="li-info"><div class="li-name">${esc(sw.name)}<span class="li-status" style="background:${statusMeta(sw).color}" data-i18n-title="status.${DEVICE_STATUSES.includes(sw.status)?sw.status:'planned'}" title="${esc(t('status.'+(DEVICE_STATUSES.includes(sw.status)?sw.status:'planned')))}"></span></div><div class="li-sub">${esc(sw.model||'')}</div></div><button class="li-del" data-action="quick-del" data-id="${sw.id}" data-type="sw">✕</button>`;
       d.addEventListener('click',e=>{if(e.target.closest('.li-del'))return;sel(sw.id,'sw',{zoom:true});setMode('sel');});leftList.appendChild(d);
     });
   }
@@ -5144,7 +5148,7 @@ function renderList(){
     filteredCAMs.forEach(c=>{
       const d=document.createElement('div');d.className='list-item cam-item'+(c.id===selId?' active':'')+(c.locked?' locked':'');
       const dotStyle=c.color?` style="background:${esc(c.color)}"`:'';
-      d.innerHTML=`<div class="li-dot"${dotStyle}></div><div class="li-info"><div class="li-name">${esc(c.name)}<span class="li-status" style="background:${statusMeta(c).color}" title="${esc(statusMeta(c).label)}"></span></div><div class="li-sub">${esc(c.model||'')} · ${esc(c.resolution||'')}</div></div>${c.locked?'<span class="li-lock">🔒</span>':''}<button class="li-del" data-action="quick-del" data-id="${c.id}" data-type="cam">✕</button>`;
+      d.innerHTML=`<div class="li-dot"${dotStyle}></div><div class="li-info"><div class="li-name">${esc(c.name)}<span class="li-status" style="background:${statusMeta(c).color}" data-i18n-title="status.${DEVICE_STATUSES.includes(c.status)?c.status:'planned'}" title="${esc(t('status.'+(DEVICE_STATUSES.includes(c.status)?c.status:'planned')))}"></span></div><div class="li-sub">${esc(c.model||'')} · ${esc(c.resolution||'')}</div></div>${c.locked?'<span class="li-lock">🔒</span>':''}<button class="li-del" data-action="quick-del" data-id="${c.id}" data-type="cam">✕</button>`;
       d.addEventListener('click',e=>{if(e.target.closest('.li-del'))return;sel(c.id,'cam',{zoom:true});setMode('sel');});leftList.appendChild(d);
     });
   }
@@ -6100,8 +6104,8 @@ function showSettings(){
 
   // ── RF model + regulatory ──
   addHeading('settings.rf');
-  addSelect('propagationModel','settings.propagation_model',PROPAGATION_MODEL_KEYS.map(k=>({value:k,label:PROPAGATION_MODELS[k].label})));
-  addSelect('regulatoryRegion','settings.regulatory_region',REGULATORY_REGION_KEYS.map(k=>({value:k,label:REGULATORY_REGIONS[k].label})));
+  addSelect('propagationModel','settings.propagation_model',PROPAGATION_MODEL_KEYS.map(k=>({value:k,i18n:'propagation.'+k})));
+  addSelect('regulatoryRegion','settings.regulatory_region',REGULATORY_REGION_KEYS.map(k=>({value:k,i18n:'regulatory.'+k})));
   addNumber('noiseFloorDbm','settings.noise_floor',-110,-70,1);
   addNumber('floorSlabAttenDb','settings.floor_slab',0,40,1);
   addCheck('showFloorLeakage','settings.show_floor_leakage');
