@@ -1262,3 +1262,29 @@ body.theme-dark #heat-canvas{mix-blend-mode:screen;opacity:.55}
 }
 .anno-arrow.preview,.anno-dim.preview{opacity:.55}
 .sample-dot{cursor:pointer}
+
+/* Settings dialog: prevent horizontal overflow and keep wheel scrolling
+   without displaying the scrollbars. */
+.settings-form {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+}
+
+.settings-form .ep-row,
+.settings-form .ep-in {
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
+#mdl:has(.settings-form) .mdl-body {
+  overflow-x: hidden;
+  overflow-y: auto;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+#mdl:has(.settings-form) .mdl-body::-webkit-scrollbar {
+  display: none;
+}
