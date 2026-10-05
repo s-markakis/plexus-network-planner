@@ -342,6 +342,15 @@ function forward(net, dev, pkt, events, hops = 0) {
     return { status: 'filtered' };
   }
 
+  // An "internet cloud" answers any request addressed past it. Replies route back
+  // out its own default route (it isn't re-triggered — only requests match here).
+  if (dev.kind === 'cloud' && (pkt.type === 'echo-request' || pkt.type === 'l4-request')) {
+    const l4 = pkt.type === 'l4-request';
+    events.push(ev(l4 ? 'l4-open' : 'cloud-reply', dev, null, { from: intToIp(pkt.srcIp), to: intToIp(pkt.dstIp), port: pkt.dport }));
+    const reply = { srcIp: pkt.dstIp, dstIp: pkt.srcIp, ttl: DEFAULT_TTL, type: l4 ? 'l4-reply' : 'echo-reply', protocol: pkt.protocol, dport: pkt.dport };
+    return forward(net, dev, reply, events, hops + 1);
+  }
+
   // Destined for this device?
   const mine = ownsIp(dev, pkt.dstIp);
   if (mine) {
@@ -458,6 +467,14 @@ export function probe(net, opts) {
   const pkt = { srcIp, dstIp, ttl, type: 'l4-request', protocol, dport: port };
   const res = forward(net, src, pkt, events, 0);
   return { ok: res.status === 'delivered', status: res.status, events };
+}
+
+// Fault injection: bring an interface up/down, then re-run routing to watch it
+// reconverge. Returns true if the interface existed.
+export function setIfaceDown(net, devId, ifaceName, down = true) {
+  const i = net.devices.get(devId)?.ifaces.get(ifaceName);
+  if (i) i.up = !down;
+  return !!i;
 }
 
 // Discover the hops to `to` by sending probes with increasing TTL. Returns an
