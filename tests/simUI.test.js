@@ -90,3 +90,59 @@ describe('mountSimPanel against the sample project', () => {
     expect(onFocus.mock.calls[0][0]).toHaveProperty('srcId');
   });
 });
+
+describe('simUI robustness (DOM)', () => {
+  /** @returns {HTMLSelectElement} */
+  const pick = (root, id) => root.querySelector(id);
+
+  it('renders a hostile device name as inert text, never as markup', () => {
+    const root = document.createElement('div');
+    document.body.appendChild(root);
+    const proj = () => ({
+      settings: { vlans: [{ id: '10', subnet: '10.0.10.0/24' }] },
+      floors: [{
+        id: 'f1', SWS: [{ id: 's' }],
+        APS: [
+          { id: 'a1', name: '<img src=x onerror=1>', swId: 's', port: '1', vlan: '10', ip: '10.0.10.1' },
+          { id: 'a2', name: '<b>B</b>', swId: 's', port: '2', vlan: '10', ip: '10.0.10.2' },
+        ], CAMS: [],
+      }],
+    });
+    mountSimPanel({ root, getProject: proj, onFocus: () => {} });
+    pick(root, '#sim-from').value = 'h:a1';
+    pick(root, '#sim-to').value = 'h:a2';
+    root.querySelectorAll('button')[0].click(); // Ping
+    // No markup from the names was parsed into real elements…
+    expect(root.querySelector('.sim-log img')).toBeNull();
+    expect(root.querySelector('.sim-log b')).toBeNull();
+    expect(root.querySelector('#sim-from img')).toBeNull();
+    // …but the literal text is present.
+    expect(root.querySelector('.sim-log').textContent).toContain('<img src=x onerror=1>');
+  });
+
+  it('surfaces compile warnings in the status line instead of hiding them', () => {
+    const root = document.createElement('div');
+    document.body.appendChild(root);
+    const proj = () => ({
+      settings: { vlans: [{ id: '10', subnet: '10.0.10.0/24' }] },
+      floors: [{ id: 'f1', SWS: [{ id: 's' }], APS: [{ id: 'a', name: 'orphan', vlan: '10', ip: '10.0.10.1' }], CAMS: [] }],
+    });
+    mountSimPanel({ root, getProject: proj, onFocus: () => {} });
+    expect(root.querySelector('.sim-status').textContent).toMatch(/warning/);
+  });
+
+  it('shows a status (no throw) when getProject fails', () => {
+    const root = document.createElement('div');
+    document.body.appendChild(root);
+    expect(() => mountSimPanel({ root, getProject: () => { throw new Error('boom'); }, onFocus: () => {} })).not.toThrow();
+    expect(root.querySelector('.sim-status').textContent).toMatch(/No project/);
+  });
+
+  it('handles an empty plan: no devices, Ping is a safe no-op', () => {
+    const root = document.createElement('div');
+    document.body.appendChild(root);
+    mountSimPanel({ root, getProject: () => ({ settings: { vlans: [] }, floors: [] }), onFocus: () => {} });
+    expect(pick(root, '#sim-from').options.length).toBe(0);
+    expect(() => root.querySelectorAll('button')[0].click()).not.toThrow();
+  });
+});

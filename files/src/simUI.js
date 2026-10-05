@@ -115,7 +115,14 @@ export function mountSimPanel({ root, getProject, onFocus }) {
       status.textContent = 'No project loaded.';
       return;
     }
-    compiled = compileTopology(project);
+    try {
+      compiled = compileTopology(project);
+    } catch (err) {
+      compiled = null;
+      status.textContent = `Could not build topology: ${err && err.message ? err.message : err}`;
+      for (const s of [fromSel, toSel]) s.innerHTML = '';
+      return;
+    }
     metaById = compiled.meta;
     const devs = pingableDevices(compiled).sort((a, b) => a.name.localeCompare(b.name));
     const swCount = [...compiled.meta.values()].filter((m) => m.type === 'switch').length;
@@ -165,7 +172,7 @@ export function mountSimPanel({ root, getProject, onFocus }) {
 
   function runPing() {
     refresh();
-    if (!fromSel.value || !toSel.value) return;
+    if (!compiled || !fromSel.value || !toSel.value) return;
     resetRuntime(compiled.net); // fresh ARP/MAC so the log shows the full exchange
     const toIp = toSel.selectedOptions[0].dataset.ip;
     const res = ping(compiled.net, { from: fromSel.value, to: toIp });
@@ -174,7 +181,7 @@ export function mountSimPanel({ root, getProject, onFocus }) {
 
   function runTrace() {
     refresh();
-    if (!fromSel.value || !toSel.value) return;
+    if (!compiled || !fromSel.value || !toSel.value) return;
     resetRuntime(compiled.net);
     const toIp = toSel.selectedOptions[0].dataset.ip;
     const hops = traceroute(compiled.net, { from: fromSel.value, to: toIp });

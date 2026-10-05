@@ -12,6 +12,9 @@
 // later schema addition (Phase 3/4), at which point this adapter grows a case.
 
 import { buildNet } from './sim.js';
+import { ipToInt } from './network.js';
+
+const validIp = (s) => s != null && s !== '' && ipToInt(s) != null;
 
 function vendorOf(model = '') {
   const m = String(model).toLowerCase();
@@ -38,22 +41,48 @@ export function compileTopology(project) {
   const links = [];
 
   // VLAN id (string) → { prefix, gateway } from settings.vlans. `gateway` is the
-  // SVI address an L3 device owns and hosts use as their default route.
+  // SVI address an L3 device owns and hosts use as their default route. Bad
+  // subnets/gateways are warned and dropped, never trusted into the topology.
   const vlanInfo = new Map();
   for (const v of project?.settings?.vlans || []) {
+    if (!v || v.id == null) continue;
     const p = prefixOfSubnet(v.subnet);
-    if (p != null) vlanInfo.set(String(v.id), { prefix: p, gateway: v.gateway || '' });
+    if (p == null) {
+      if (v.subnet) warnings.push(`VLAN ${v.id}: invalid subnet ${v.subnet} — ignored`);
+      continue;
+    }
+    let gateway = v.gateway || '';
+    if (gateway && !validIp(gateway)) {
+      warnings.push(`VLAN ${v.id}: invalid gateway IP ${gateway} — ignored`);
+      gateway = '';
+    }
+    vlanInfo.set(String(v.id), { prefix: p, gateway });
   }
   const allVlans = [...new Set([...vlanInfo.keys()].map(Number).concat(1))];
 
   // Gather switches + endpoints across every floor (the plan is multi-floor but
-  // the network is one fabric).
+  // the network is one fabric). Device ids become sim-device keys, so a missing
+  // or duplicate id would collide in buildNet — skip and warn instead of letting
+  // it throw, since this runs on live (possibly half-edited) plan data.
   const switches = [];
   const endpoints = [];
+  const seenSw = new Set();
+  const seenEp = new Set();
   for (const f of project?.floors || []) {
-    for (const sw of f.SWS || []) switches.push({ sw, floorId: f.id });
-    for (const ap of f.APS || []) endpoints.push({ ep: ap, type: 'ap', floorId: f.id });
-    for (const cm of f.CAMS || []) endpoints.push({ ep: cm, type: 'camera', floorId: f.id });
+    for (const sw of f.SWS || []) {
+      if (!sw || !sw.id) { warnings.push(`switch ${(sw && sw.name) || '(unnamed)'}: missing id — skipped`); continue; }
+      if (seenSw.has(sw.id)) { warnings.push(`switch ${sw.name || sw.id}: duplicate id ${sw.id} — skipped`); continue; }
+      seenSw.add(sw.id);
+      switches.push({ sw, floorId: f.id });
+    }
+    for (const [list, type] of [[f.APS, 'ap'], [f.CAMS, 'camera']]) {
+      for (const ep of list || []) {
+        if (!ep || !ep.id) { warnings.push(`${type} ${(ep && ep.name) || '(unnamed)'}: missing id — skipped`); continue; }
+        if (seenEp.has(ep.id)) { warnings.push(`${type} ${ep.name || ep.id}: duplicate id ${ep.id} — skipped`); continue; }
+        seenEp.add(ep.id);
+        endpoints.push({ ep, type, floorId: f.id });
+      }
+    }
   }
   const swById = new Map(switches.map((s) => [s.sw.id, s]));
 
@@ -76,7 +105,11 @@ export function compileTopology(project) {
       warnings.push(`${type} ${label}: no IP — skipped`);
       continue;
     }
-    const vlan = ep.vlan ? Number(ep.vlan) : 1;
+    if (!validIp(ep.ip)) {
+      warnings.push(`${type} ${label}: invalid IP ${ep.ip} — skipped`);
+      continue;
+    }
+    const vlan = ep.vlan && Number.isFinite(Number(ep.vlan)) ? Number(ep.vlan) : 1;
     const info = vlanInfo.get(String(ep.vlan));
     const prefix = info?.prefix ?? 24;
     const portName = `p${ep.port || `-${ep.id}`}`;
