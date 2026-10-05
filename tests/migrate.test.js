@@ -310,7 +310,7 @@ describe('migrateProject — v8 → v9 (install status, inventory, naming, basel
   test('PROJECT_VERSION is stamped',()=>{
     const [data]=migrateProject({version:8,floors:floors()});
     expect(data.version).toBe(PROJECT_VERSION);
-    expect(PROJECT_VERSION).toBe(10);
+    expect(PROJECT_VERSION).toBe(11);
   });
   // v9 → v10
   test('APs gain a 20 MHz channel width; junk widths are normalized',()=>{

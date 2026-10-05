@@ -71,6 +71,7 @@
       <button class="btn-tool" id="btn-ruler" data-action="set-mode" data-arg="ruler" title="Ruler (R)" aria-label="Ruler">↔</button>
       <button class="btn-tool" id="btn-wall" data-action="set-mode" data-arg="wall" title="Wall (L)" aria-label="Wall">▌</button>
       <button class="btn-tool" id="btn-anno" data-action="set-mode" data-arg="anno" title="Annotation (N)" aria-label="Annotation">✎</button>
+      <button class="btn-tool" id="btn-sim" data-action="set-mode" data-arg="sim" title="Packet simulation (M)" aria-label="Packet simulation">⇄</button>
       <button class="btn-tool" id="btn-survey" data-action="set-mode" data-arg="survey" title="Live WiFi survey — click the map where you stand (desktop app)" aria-label="Live survey" style="display:none">📶</button>
     </div>
     <div class="anno-sub-bar" id="anno-sub-bar" style="display:none" role="group" aria-label="Annotation type">
@@ -181,6 +182,10 @@
         <button class="btn btn-primary es-sample" data-action="load-sample" title="Open a ready-made office plan with APs, cameras, walls and a switch">▶ Load sample project</button>
       </div>
       <div class="hint-bar" id="hint-bar" role="status" aria-live="polite">Click map to place an AP</div>
+      <div class="sim-panel" id="sim-panel" style="display:none">
+        <div class="sim-panel-head">Packet Simulation</div>
+        <div class="sim-panel-body" id="sim-panel-body"></div>
+      </div>
       <div id="vp" class="cur-cross">
         <div id="cv">
           <img id="mi" src="" alt="Map"/>

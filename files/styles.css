@@ -1262,3 +1262,37 @@ body.theme-dark #heat-canvas{mix-blend-mode:screen;opacity:.55}
 }
 .anno-arrow.preview,.anno-dim.preview{opacity:.55}
 .sample-dot{cursor:pointer}
+
+/* ── Packet simulation panel ─────────────────────────────────────────────── */
+.sim-panel{
+  position:absolute;top:52px;right:14px;z-index:40;
+  display:flex;flex-direction:column;width:320px;max-height:calc(100% - 72px);
+  background:var(--surface);border:1px solid var(--hair);border-radius:var(--r-3);
+  box-shadow:var(--shadow-2);overflow:hidden;
+}
+.sim-panel-head{
+  padding:9px 12px;font-size:12px;font-weight:600;letter-spacing:.3px;
+  color:var(--ink-85);background:var(--surface-2);border-bottom:1px solid var(--hair);
+}
+.sim-panel-body{padding:10px 12px;overflow:auto;display:flex;flex-direction:column;gap:8px}
+.sim-status{font-size:11px;color:var(--ink-55);cursor:help}
+.sim-row{display:flex;align-items:center;gap:8px}
+.sim-row.sim-actions{justify-content:flex-start;gap:8px;margin-top:2px}
+.sim-lbl{width:38px;font-size:11px;color:var(--ink-70);flex-shrink:0}
+.sim-sel{
+  flex:1;min-width:0;padding:5px 7px;font-size:12px;border-radius:var(--r-1);
+  border:1px solid var(--ink-20);background:var(--surface-2);color:var(--ink);
+}
+.sim-verdict{font-size:12px;font-weight:600;padding:5px 0}
+.sim-verdict.ok{color:#1b7f3b}
+.sim-verdict.bad{color:#b23030}
+.sim-log{
+  list-style:decimal inside;margin:0;padding:6px 8px;max-height:260px;overflow:auto;
+  font-family:'Share Tech Mono',monospace;font-size:11px;line-height:1.5;
+  background:var(--surface-2);border:1px solid var(--hair);border-radius:var(--r-1);color:var(--ink-85);
+}
+.sim-log li{cursor:pointer;padding:1px 2px;border-radius:3px}
+.sim-log li:hover{background:var(--ink-08)}
+.sim-log li.active{background:var(--ink-12);font-weight:600}
+.sim-log li.ok{color:#1b7f3b}
+.sim-stepbar{display:flex;gap:8px;justify-content:space-between}

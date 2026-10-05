@@ -72,6 +72,7 @@ import {
   imgCache as _imgCache,
   resolveFloorImage,
 } from './src/imageStore.js';
+import {mountSimPanel} from './src/simUI.js';
 
 // AP_MODEL_GROUPS, AP_RANGE_M, SW_MODEL_GROUPS, AP_COLORS, WALL_MATERIAL_KEYS
 // all live in ./src/constants.js (single source of truth for the catalogs).
@@ -189,7 +190,8 @@ const HINTS={
   cam: 'Click to place a camera · rotate via heading slider in the panel',
   ruler:'Click two points to measure · Esc to clear',
   wall:'Click two points to draw a wall · Shift for 45° · Esc to cancel',
-  survey:'Click where you are standing — the desktop app samples the live WiFi signal there'
+  survey:'Click where you are standing — the desktop app samples the live WiFi signal there',
+  sim: 'Pick a source and destination, then Ping or Traceroute to simulate the planned network'
 };
 
 // Image store (IndexedDB-backed) lives in ./src/imageStore.js. We import
@@ -2045,8 +2047,9 @@ function setMode(m){
   if(m!=='wall'){wallStart=null;wallHover=null;renderWallPreview();}
   // Clear annotation drag when leaving annotation mode
   if(m!=='anno'){annoStart=null;annoHover=null;renderAnnoPreview();}
-  ['add','sel','dz','sw','cam','ruler','wall','anno','survey'].forEach(mm=>document.getElementById('btn-'+mm)?.classList.toggle('active',mm===m));
+  ['add','sel','dz','sw','cam','ruler','wall','anno','survey','sim'].forEach(mm=>document.getElementById('btn-'+mm)?.classList.toggle('active',mm===m));
   viewport.className=m==='sel'?'':m==='dz'?'cur-cell':m==='sw'?'cur-cell':m==='cam'?'cur-cell':'cur-cross';
+  toggleSimPanel(m==='sim');
   // Show/hide the annotation sub-mode chooser (text / arrow / dim).
   const subBar=document.getElementById('anno-sub-bar');
   if(subBar)subBar.style.display=(m==='anno')?'flex':'none';
@@ -2059,6 +2062,25 @@ function setMode(m){
     clearTimeout(hintEl._fadeT);
     hintEl._fadeT=setTimeout(()=>hintEl.classList.add('faded'),3500);
   }
+}
+
+// ═══ PACKET SIMULATION PANEL ══════════════════════
+// Lazily mounted on first entry to sim mode. getProject reads the live globals
+// (reassigned on load/undo), so the panel always compiles the current plan.
+// onFocus reuses the normal select+zoom so stepping walks the packet on the map.
+let _simPanel=null;
+function toggleSimPanel(show){
+  const panel=document.getElementById('sim-panel');
+  if(!panel)return;
+  if(show&&!_simPanel){
+    _simPanel=mountSimPanel({
+      root:document.getElementById('sim-panel-body'),
+      getProject:()=>({settings:SETTINGS,floors:FLOORS}),
+      onFocus:m=>{const type=m.type==='camera'?'cam':(m.type==='switch'||m.type==='router')?'sw':'ap';sel(m.srcId,type,{zoom:true});},
+    });
+  }
+  if(show&&_simPanel)_simPanel.refresh();
+  panel.style.display=show?'flex':'none';
 }
 
 // ═══ MAP CLICK ════════════════════════════════════
@@ -4951,6 +4973,7 @@ function renderSWPanel(){
         <option value=""${!sw.uplinkId?' selected':''}>— None (root) —</option>${uplinkOpts}
       </select>
     </div>
+    <label class="ep-check"><input type="checkbox" id="sw-l3" ${sw.role==='l3'?'checked':''} data-input-action="upd-sw"/><span>Layer 3 — routes between VLANs (set a gateway IP per VLAN in Project Settings)</span></label>
     <div class="ep-row" style="font-family:'Share Tech Mono';font-size:11px;color:${statusColor};opacity:.9">${esc(statusLine)}</div>
     <div class="ep-section">Connected Devices (${a.used})</div>
     ${a.clients.length
@@ -5054,6 +5077,8 @@ function updSW(){
   if(portsEl)sw.ports=parseInt(portsEl.value,10)||0;   // 0/blank → derive from model
   const upEl=document.getElementById('sw-uplink');
   if(upEl)sw.uplinkId=upEl.value;
+  const l3El=document.getElementById('sw-l3');
+  if(l3El)sw.role=l3El.checked?'l3':'switch';
   sw.notes=document.getElementById('sw-notes').value;
   // Switching to a different known model: adopt its default PoE budget unless
   // the user had set a custom one (i.e. it still matches the old model's default).
@@ -5969,6 +5994,7 @@ document.addEventListener('keydown',e=>{
   if(e.key==='r'||e.key==='R'){setMode('ruler');return;}
   if(e.key==='l'||e.key==='L'){setMode('wall');return;}
   if(e.key==='n'||e.key==='N'){setMode('anno');return;}
+  if(e.key==='m'||e.key==='M'){setMode('sim');return;}
   if(e.key==='p'||e.key==='P'){togglePresent();return;}
   // Toggles
   if(e.key==='o'||e.key==='O'){toggleOL();return;}
@@ -6124,10 +6150,11 @@ function showSettings(){
     const name=document.createElement('input');name.className='ep-in';name.placeholder='Name';name.value=(v&&v.name)||'';
     const color=document.createElement('input');color.type='color';color.value=(v&&v.color)||'#1565c0';color.style.cssText='width:30px;height:28px;padding:0;border:none;background:none;flex:0 0 auto';
     const subnet=document.createElement('input');subnet.className='ep-in ep-mono';subnet.placeholder='10.0.10.0/24';subnet.value=(v&&v.subnet)||'';subnet.style.cssText='width:118px;flex:0 0 auto';
+    const gw=document.createElement('input');gw.className='ep-in ep-mono';gw.placeholder='gateway';gw.title='Gateway/SVI IP for inter-VLAN routing (L3)';gw.value=(v&&v.gateway)||'';gw.style.cssText='width:92px;flex:0 0 auto';
     const del=document.createElement('button');del.className='btn';del.textContent='✕';del.style.cssText='flex:0 0 auto;padding:4px 8px';
-    const entry={id,name,color,subnet};
+    const entry={id,name,color,subnet,gw};
     del.addEventListener('click',()=>{row.remove();const i=vlanRows.indexOf(entry);if(i>=0)vlanRows.splice(i,1);});
-    row.append(id,name,color,subnet,del);
+    row.append(id,name,color,subnet,gw,del);
     vlanWrap.appendChild(row);
     vlanRows.push(entry);
   };
@@ -6175,7 +6202,7 @@ function showSettings(){
       if(SETTINGS[k]!==v){SETTINGS[k]=v;changed=true;}
     }
     // VLAN registry.
-    const newVlans=vlanRows.map(e=>({id:(e.id.value||'').trim(),name:(e.name.value||'').trim(),color:e.color.value||'',subnet:(e.subnet.value||'').trim()})).filter(v=>v.id||v.name);
+    const newVlans=vlanRows.map(e=>({id:(e.id.value||'').trim(),name:(e.name.value||'').trim(),color:e.color.value||'',subnet:(e.subnet.value||'').trim(),gateway:(e.gw.value||'').trim()})).filter(v=>v.id||v.name);
     if(JSON.stringify(newVlans)!==JSON.stringify(vlanList())){SETTINGS.vlans=newVlans;changed=true;}
     // Credentials passphrase (session-only; never persisted to SETTINGS).
     _credPass=credInp.value||'';

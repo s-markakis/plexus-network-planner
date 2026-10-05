@@ -4,7 +4,7 @@
 import {WALL_MATERIALS} from './geometry.js';
 import {AP_ANTENNA_GAIN_DBI,DEVICE_STATUSES} from './constants.js';
 
-export const PROJECT_VERSION=10;
+export const PROJECT_VERSION=11;
 
 // Settings that apply project-wide (branding, RF assumptions, region, defaults).
 // `coverageOpacity` / `lastModel` are user-preference style and live here too.
@@ -73,6 +73,11 @@ const DEFAULT_FLOOR_SCALE_M=100;
 //   v9 → v10: APs gain chanWidth (MHz); cameras gain bitrateMbps (0 = auto
 //            from resolution); settings gain perClientMbps/showDori/
 //            retentionDays/storageCodec + UniFi controller fields.
+//   v10 → v11: switches gain a `role` ('switch' | 'l3' — an L3 switch/router
+//            that routes between VLANs); VLANs gain an optional `gateway` IP
+//            (the SVI address), used by the packet simulator for inter-VLAN
+//            routing. Both default empty/benign, so plans built pre-v11 behave
+//            exactly as before until an L3 device and gateways are set.
 export function migrateProject(data){
   const warnings=[];
   if(!data||typeof data!=='object'){throw new Error('Not a Plexus project file');}
@@ -101,7 +106,8 @@ export function migrateProject(data){
     data.settings={...DEFAULT_SETTINGS};
   }
   // Clone the VLAN registry so it never aliases the shared DEFAULT_SETTINGS array.
-  data.settings.vlans=Array.isArray(data.settings.vlans)?data.settings.vlans.map(v=>({...v})):[];
+  // v11: carry an optional gateway IP (SVI) per VLAN for inter-VLAN routing sim.
+  data.settings.vlans=Array.isArray(data.settings.vlans)?data.settings.vlans.map(v=>({...v,gateway:typeof v.gateway==='string'?v.gateway:''})):[];
   if(!Array.isArray(data.revisions))data.revisions=[];
   data.revisions.forEach(r=>{if(typeof r.baseline!=='boolean')r.baseline=false;});
   // v8→v9: install status + inventory fields on every networked device.
@@ -155,6 +161,7 @@ export function migrateProject(data){
       if(typeof sw.comment!=='string')sw.comment='';
       if(typeof sw.ports!=='number')sw.ports=0;        // 0 = derive from model
       if(typeof sw.uplinkId!=='string')sw.uplinkId='';
+      if(sw.role!=='l3')sw.role='switch';              // v11: 'switch' | 'l3' (inter-VLAN router)
       inv(sw);
     });
     if(!Array.isArray(f.CAMS))f.CAMS=[];
