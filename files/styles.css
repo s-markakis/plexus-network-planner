@@ -1296,3 +1296,42 @@ body.theme-dark #heat-canvas{mix-blend-mode:screen;opacity:.55}
 .sim-log li.active{background:var(--ink-12);font-weight:600}
 .sim-log li.ok{color:#1b7f3b}
 .sim-stepbar{display:flex;gap:8px;justify-content:space-between}
+
+/* ── CLI console panel ────────────────────────────────────────────────────── */
+.cli-panel{
+  position:absolute;bottom:14px;left:50%;transform:translateX(-50%);z-index:45;
+  display:flex;flex-direction:column;width:min(680px,calc(100% - 28px));height:340px;
+  background:var(--surface);border:1px solid var(--hair);border-radius:var(--r-3);
+  box-shadow:var(--shadow-2);overflow:hidden;
+}
+.cli-panel-head{
+  display:flex;align-items:center;justify-content:space-between;
+  padding:8px 12px;font-size:12px;font-weight:600;letter-spacing:.3px;
+  color:var(--ink-85);background:var(--surface-2);border-bottom:1px solid var(--hair);
+}
+.cli-close{border:none;background:none;color:var(--ink-55);font-size:18px;line-height:1;cursor:pointer;padding:0 4px}
+.cli-close:hover{color:var(--ink)}
+.cli-panel-body{flex:1;display:flex;flex-direction:column;min-height:0;padding:8px 10px;gap:6px}
+.cli-bar{display:flex;align-items:center;gap:8px;flex:0 0 auto}
+.cli-dialect-lbl{font-size:11px;color:var(--ink-55)}
+.cli-vendor{
+  padding:3px 6px;font-size:11px;border-radius:var(--r-1);
+  border:1px solid var(--ink-20);background:var(--surface-2);color:var(--ink);
+}
+.cli-out{
+  flex:1;min-height:0;overflow:auto;padding:8px 10px;border-radius:var(--r-1);
+  background:#0d0f0d;border:1px solid var(--hair);
+  font-family:'Share Tech Mono',monospace;font-size:12px;line-height:1.5;color:#cfe8cf;
+  white-space:pre-wrap;word-break:break-word;
+}
+.cli-line{white-space:pre-wrap}
+.cli-cmd{color:#eaeaea}
+.cli-err{color:#ff7a6b}
+.cli-std{color:#9fd49f}
+.cli-row{display:flex;align-items:center;gap:6px;flex:0 0 auto;font-family:'Share Tech Mono',monospace;font-size:12px}
+.cli-prompt{color:var(--ink-70);white-space:nowrap}
+.cli-input{
+  flex:1;min-width:0;padding:5px 7px;border-radius:var(--r-1);
+  border:1px solid var(--ink-20);background:var(--surface-2);color:var(--ink);
+  font-family:'Share Tech Mono',monospace;font-size:12px;
+}

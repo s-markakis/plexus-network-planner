@@ -73,6 +73,7 @@ import {
   resolveFloorImage,
 } from './src/imageStore.js';
 import {mountSimPanel} from './src/simUI.js';
+import {mountCliConsole} from './src/cliUI.js';
 
 // AP_MODEL_GROUPS, AP_RANGE_M, SW_MODEL_GROUPS, AP_COLORS, WALL_MATERIAL_KEYS
 // all live in ./src/constants.js (single source of truth for the catalogs).
@@ -2082,6 +2083,29 @@ function toggleSimPanel(show){
   if(show&&_simPanel)_simPanel.refresh();
   panel.style.display=show?'flex':'none';
 }
+
+// ═══ CLI CONSOLE (per switch/router) ══════════════
+// Opens a terminal bound to the selected switch's running-config (sw.cli). The
+// console mutates sw.cli, which compileTopology reads, so configuration typed
+// here changes how the packet simulator routes. autosave persists it.
+function openCliConsole(){
+  const sw=SWS().find(s=>s.id===selId);
+  if(!sw){toast('Select a switch or router first');return;}
+  const panel=document.getElementById('cli-panel');
+  const body=document.getElementById('cli-panel-body');
+  const title=document.getElementById('cli-panel-title');
+  if(!panel||!body)return;
+  if(title)title.textContent=`${sw.name||sw.id} — Console`;
+  const con=mountCliConsole({
+    root:body,
+    getDevice:()=>sw,
+    getProject:()=>({settings:SETTINGS,floors:FLOORS}),
+    onConfigChange:()=>autosave(),
+  });
+  panel.style.display='flex';
+  con.focus&&con.focus();
+}
+function closeCliConsole(){const p=document.getElementById('cli-panel');if(p)p.style.display='none';}
 
 // ═══ MAP CLICK ════════════════════════════════════
 viewport.addEventListener('click',e=>{
@@ -4974,6 +4998,7 @@ function renderSWPanel(){
       </select>
     </div>
     <label class="ep-check"><input type="checkbox" id="sw-l3" ${sw.role==='l3'?'checked':''} data-input-action="upd-sw"/><span>Layer 3 — routes between VLANs (set a gateway IP per VLAN in Project Settings)</span></label>
+    <div class="ep-row"><button class="btn" data-action="open-console" style="width:100%">⌨ CLI Console (IOS / RouterOS)</button></div>
     <div class="ep-row" style="font-family:'Share Tech Mono';font-size:11px;color:${statusColor};opacity:.9">${esc(statusLine)}</div>
     <div class="ep-section">Connected Devices (${a.used})</div>
     ${a.clients.length
@@ -5830,6 +5855,8 @@ const CLICK_ACTIONS={
   'clear-device-img':()=>clearDeviceImage(),
   'duplicate':     ()=>duplicateSelected(),
   'ask-del':       ()=>askDel(),
+  'open-console':  ()=>openCliConsole(),
+  'close-console': ()=>closeCliConsole(),
   'quick-del':     (_,e,t)=>{e.stopPropagation();qDel(t.dataset.id,t.dataset.type);},
   'sb-search-clear':()=>{clearSearch();},
 };
