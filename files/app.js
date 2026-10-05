@@ -4997,6 +4997,12 @@ function renderSWPanel(){
         <option value=""${!sw.uplinkId?' selected':''}>— None (root) —</option>${uplinkOpts}
       </select>
     </div>
+    <div class="ep-row"><label class="ep-lbl">Uplink Type</label>
+      <select class="ep-sel" id="sw-uplinkmode" data-input-action="upd-sw">
+        <option value="trunk"${sw.uplinkMode!=='routed'?' selected':''}>Trunk (L2)</option>
+        <option value="routed"${sw.uplinkMode==='routed'?' selected':''}>Routed (L3 /30)</option>
+      </select>
+    </div>
     <label class="ep-check"><input type="checkbox" id="sw-l3" ${sw.role==='l3'?'checked':''} data-input-action="upd-sw"/><span>Layer 3 — routes between VLANs (set a gateway IP per VLAN in Project Settings)</span></label>
     <div class="ep-row"><button class="btn" data-action="open-console" style="width:100%">⌨ CLI Console (IOS / RouterOS)</button></div>
     <div class="ep-row" style="font-family:'Share Tech Mono';font-size:11px;color:${statusColor};opacity:.9">${esc(statusLine)}</div>
@@ -5102,6 +5108,8 @@ function updSW(){
   if(portsEl)sw.ports=parseInt(portsEl.value,10)||0;   // 0/blank → derive from model
   const upEl=document.getElementById('sw-uplink');
   if(upEl)sw.uplinkId=upEl.value;
+  const umEl=document.getElementById('sw-uplinkmode');
+  if(umEl)sw.uplinkMode=umEl.value;
   const l3El=document.getElementById('sw-l3');
   if(l3El)sw.role=l3El.checked?'l3':'switch';
   sw.notes=document.getElementById('sw-notes').value;

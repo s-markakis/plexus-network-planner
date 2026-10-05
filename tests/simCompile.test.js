@@ -157,7 +157,7 @@ describe('L3 / inter-VLAN routing', () => {
     p.settings.vlans.forEach((v) => (v.gateway = ''));
     const c = compileTopology(p);
     expect(c.net.devices.has('r:core')).toBe(false);
-    expect(c.warnings.some((w) => /no SVI\/gateway/.test(w))).toBe(true);
+    expect(c.warnings.some((w) => /no SVI\/routed interface/.test(w))).toBe(true);
   });
 });
 
@@ -230,5 +230,65 @@ describe('Phase 3b — CLI running-configs fold into the topology', () => {
       });
       expect(c.net.devices.has('h:a1')).toBe(true);
     }
+  });
+});
+
+describe('Phase 4b — routed uplinks + OSPF auto-convergence', () => {
+  // Two L3 switches, each with a LAN SVI + a /30 routed transit interface, joined
+  // by a routed uplink, both running OSPF. No static routes anywhere.
+  const siteA = () => cliConfig([
+    'en', 'conf t',
+    'interface vlan 10', 'ip address 10.0.10.1 255.255.255.0', 'exit',
+    'interface eth5', 'ip address 10.0.99.1 255.255.255.252', 'exit',
+    'router ospf 1', 'end',
+  ], 'cisco', 'SITE-A');
+  const siteB = () => cliConfig([
+    'en', 'conf t',
+    'interface vlan 20', 'ip address 10.0.20.1 255.255.255.0', 'exit',
+    'interface eth5', 'ip address 10.0.99.2 255.255.255.252', 'exit',
+    'router ospf 1', 'end',
+  ], 'cisco', 'SITE-B');
+
+  const project = (routed = true, ospf = true) => {
+    const a = siteA(); const b = siteB();
+    if (!ospf) { a.ospf = null; b.ospf = null; }
+    return {
+      settings: { vlans: [{ id: '10', subnet: '10.0.10.0/24' }, { id: '20', subnet: '10.0.20.0/24' }] },
+      floors: [{
+        SWS: [
+          { id: 'siteA', name: 'SITE-A', cli: a },
+          { id: 'siteB', name: 'SITE-B', cli: b, uplinkId: 'siteA', uplinkMode: routed ? 'routed' : 'trunk' },
+        ],
+        APS: [{ id: 'a1', swId: 'siteA', port: '1', vlan: '10', ip: '10.0.10.5' }],
+        CAMS: [{ id: 'c1', swId: 'siteB', port: '2', vlan: '20', ip: '10.0.20.5' }],
+      }],
+    };
+  };
+
+  it('builds a router per site with the routed transit interface', () => {
+    const c = compileTopology(project());
+    expect(c.net.devices.has('r:siteA')).toBe(true);
+    expect([...c.net.devices.get('r:siteA').ifaces.keys()]).toEqual(expect.arrayContaining(['svi10', 'eth5']));
+  });
+
+  it('OSPF converges so the two sites reach each other with no static routes', () => {
+    const c = compileTopology(project());
+    expect(c.ospfRouters.sort()).toEqual(['r:siteA', 'r:siteB']);
+    expect(ping(c.net, { from: 'h:a1', to: '10.0.20.5' }).ok).toBe(true);
+    expect(ping(c.net, { from: 'h:c1', to: '10.0.10.5' }).ok).toBe(true);
+  });
+
+  it('without OSPF the sites cannot reach each other (OSPF is what links them)', () => {
+    const c = compileTopology(project(true, false));
+    expect(ping(c.net, { from: 'h:a1', to: '10.0.20.5' }).ok).toBe(false);
+  });
+
+  it('warns on a routed uplink with no shared transit subnet', () => {
+    const p = project();
+    // break site B's transit subnet so it no longer matches A's /30
+    const b = p.floors[0].SWS[1].cli;
+    b.interfaces.eth5.ip = '10.0.88.2';
+    const c = compileTopology(p);
+    expect(c.warnings.some((w) => /no shared transit subnet/.test(w))).toBe(true);
   });
 });

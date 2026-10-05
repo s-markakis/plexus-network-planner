@@ -12,9 +12,18 @@
 // later schema addition (Phase 3/4), at which point this adapter grows a case.
 
 import { buildNet } from './sim.js';
+import { runOspf } from './ospf.js';
 import { ipToInt } from './network.js';
 
 const validIp = (s) => s != null && s !== '' && ipToInt(s) != null;
+const sameSubnet = (ipA, pA, ipB, pB) => {
+  if (pA !== pB) return false;
+  const a = ipToInt(ipA);
+  const b = ipToInt(ipB);
+  if (a == null || b == null) return false;
+  const mask = pA <= 0 ? 0 : (0xffffffff << (32 - pA)) >>> 0;
+  return ((a & mask) >>> 0) === ((b & mask) >>> 0);
+};
 
 function vendorOf(model = '') {
   const m = String(model).toLowerCase();
@@ -51,10 +60,25 @@ function cliRoutes(sw) {
     .filter((r) => r && typeof r.cidr === 'string' && /^\d+\.\d+\.\d+\.\d+\/\d+$/.test(r.cidr) && validIp(r.via))
     .map((r) => ({ cidr: r.cidr, via: r.via }));
 }
+// Routed L3 interfaces (addressed, no VLAN) — used for routed inter-switch links.
+function cliRoutedIfaces(sw) {
+  const cfg = sw && sw.cli;
+  if (!cfg || typeof cfg !== 'object' || !cfg.interfaces) return [];
+  const out = [];
+  for (const i of Object.values(cfg.interfaces)) {
+    if (i && i.vlan == null && validIp(i.ip) && Number.isFinite(i.prefix)) {
+      out.push({ name: i.name, ip: i.ip, prefix: i.prefix, up: i.shutdown !== true });
+    }
+  }
+  return out;
+}
+function cliOspfEnabled(sw) {
+  return !!(sw && sw.cli && sw.cli.ospf && sw.cli.ospf.enabled);
+}
 
 /**
  * @param {any} project
- * @returns {{net:any, spec:any, meta:Map<string,any>, warnings:string[]}}
+ * @returns {{net:any, spec:any, meta:Map<string,any>, warnings:string[], ospfRouters:string[]}}
  */
 export function compileTopology(project) {
   const warnings = [];
@@ -165,9 +189,10 @@ export function compileTopology(project) {
     links.push([`${hostId}/eth0`, `sw:${ep.swId}/${portName}`]);
   }
 
-  // Uplinks → trunk links between switches (carry every known VLAN).
+  // Uplinks → trunk links between switches (carry every known VLAN). A routed
+  // uplink (uplinkMode 'routed') is an L3 point-to-point handled after routers exist.
   for (const { sw } of switches) {
-    if (!sw.uplinkId) continue;
+    if (!sw.uplinkId || sw.uplinkMode === 'routed') continue;
     if (!swById.has(sw.uplinkId)) {
       warnings.push(`switch ${sw.name || sw.id}: uplink target ${sw.uplinkId} not found`);
       continue;
@@ -194,13 +219,17 @@ export function compileTopology(project) {
     if (!sviByOwner.has(ownerId)) sviByOwner.set(ownerId, []);
     sviByOwner.get(ownerId).push({ vid: Number(vid), ip: info.gateway, prefix: info.prefix });
   }
+  const routerIds = new Set(); // switch ids that became sim routers
+  const ospfRouterSimIds = new Set(); // r:<id> running OSPF
   for (const { sw, floorId } of switches) {
     const svis = sviByOwner.get(sw.id) || [];
+    const routed = cliRoutedIfaces(sw); // routed CLI ports (for routed uplinks / stubs)
     const routes = cliRoutes(sw);
-    const wantsL3 = sw.role === 'l3' || svis.length || routes.length;
+    const ospf = cliOspfEnabled(sw);
+    const wantsL3 = sw.role === 'l3' || svis.length || routed.length || routes.length || ospf;
     if (!wantsL3) continue;
-    if (!svis.length) {
-      warnings.push(`switch ${sw.name || sw.id}: L3 configured but no SVI/gateway — no routing added`);
+    if (!svis.length && !routed.length) {
+      warnings.push(`switch ${sw.name || sw.id}: L3 configured but no SVI/routed interface — no routing added`);
       continue;
     }
     const rId = `r:${sw.id}`;
@@ -211,10 +240,31 @@ export function compileTopology(project) {
       ifacesOf(sw.id).push({ name: sviPort, mode: 'access', vlan: s.vid });
       links.push([`${rId}/svi${s.vid}`, `sw:${sw.id}/${sviPort}`]);
     }
+    for (const r of routed) rIfaces.push({ name: r.name, ip: r.ip, prefix: r.prefix, up: r.up });
     const dev = { id: rId, name: `${sw.name || sw.id} (L3)`, kind: 'router', vendor: vendorOf(sw.model), ifaces: rIfaces };
     if (routes.length) dev.routes = routes; // CLI static routes
     devices.push(dev);
     meta.set(rId, { type: 'router', srcId: sw.id, name: sw.name || sw.id, fx: sw.fx, fy: sw.fy, floorId, ip: sw.ip });
+    routerIds.add(sw.id);
+    if (ospf) ospfRouterSimIds.add(rId);
+  }
+
+  // Routed uplinks → an L3 point-to-point between two switches' routers, using the
+  // pair of routed interfaces that share a subnet (a /30 transit, typically).
+  for (const { sw } of switches) {
+    if (sw.uplinkMode !== 'routed' || !sw.uplinkId) continue;
+    if (!routerIds.has(sw.id) || !swById.has(sw.uplinkId) || !routerIds.has(sw.uplinkId)) {
+      warnings.push(`routed uplink ${sw.name || sw.id} → ${sw.uplinkId}: both ends need a routed (L3) interface`);
+      continue;
+    }
+    const mine = cliRoutedIfaces(sw);
+    const peer = cliRoutedIfaces(swById.get(sw.uplinkId).sw);
+    const pair = mine.flatMap((a) => peer.map((b) => [a, b])).find(([a, b]) => sameSubnet(a.ip, a.prefix, b.ip, b.prefix));
+    if (!pair) {
+      warnings.push(`routed uplink ${sw.name || sw.id} → ${sw.uplinkId}: no shared transit subnet between their routed interfaces`);
+      continue;
+    }
+    links.push([`r:${sw.id}/${pair[0].name}`, `r:${sw.uplinkId}/${pair[1].name}`]);
   }
 
   // Switch devices (built last, after every access/trunk/SVI port is accrued).
@@ -225,7 +275,13 @@ export function compileTopology(project) {
   }
 
   const spec = { devices, links };
-  return { net: buildNet(spec), spec, meta, warnings };
+  const net = buildNet(spec);
+  // If any device runs OSPF, converge it so routes appear without hand-written
+  // statics. Only OSPF-enabled routers' interfaces participate.
+  if (ospfRouterSimIds.size) {
+    runOspf(net, { enabled: (dev, i) => ospfRouterSimIds.has(dev.id) && i.ipInt != null && i.up !== false });
+  }
+  return { net, spec, meta, warnings, ospfRouters: [...ospfRouterSimIds] };
 }
 
 // Convenience for the UI device picker: the pingable endpoints (anything with

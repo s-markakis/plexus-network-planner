@@ -15,10 +15,10 @@ import { ipToInt, intToIp } from './network.js';
 // ── Running config ───────────────────────────────────────────────────────────
 /**
  * @returns {{hostname:string, vendor:string,
- *   interfaces:Record<string,any>, routes:Array<any>, vlans:number[]}}
+ *   interfaces:Record<string,any>, routes:Array<any>, vlans:number[], ospf:any}}
  */
 export function newConfig({ hostname = '', vendor = 'cisco' } = {}) {
-  return { hostname, vendor, interfaces: {}, routes: [], vlans: [] };
+  return { hostname, vendor, interfaces: {}, routes: [], vlans: [], ospf: null };
 }
 
 function iface(config, name) {
@@ -92,6 +92,7 @@ function iosPrompt(config, ctx) {
   if (ctx.mode === 'config') return `${h}(config)#`;
   if (ctx.mode === 'config-if') return `${h}(config-if)#`;
   if (ctx.mode === 'config-vlan') return `${h}(config-vlan)#`;
+  if (ctx.mode === 'config-router') return `${h}(config-router)#`;
   return `${h}#`;
 }
 
@@ -123,7 +124,7 @@ function execIos(config, raw, ctx) {
   // Navigation works in any config sub-mode.
   if (lc === 'end') { ctx.mode = 'enable'; ctx.curIf = null; ctx.curVlan = null; return { output: [] }; }
   if (lc === 'exit') {
-    if (ctx.mode === 'config-if' || ctx.mode === 'config-vlan') { ctx.mode = 'config'; ctx.curIf = null; ctx.curVlan = null; }
+    if (ctx.mode === 'config-if' || ctx.mode === 'config-vlan' || ctx.mode === 'config-router') { ctx.mode = 'config'; ctx.curIf = null; ctx.curVlan = null; }
     else if (ctx.mode === 'config') ctx.mode = 'enable';
     else if (ctx.mode === 'enable') ctx.mode = 'exec';
     return { output: [] };
@@ -160,6 +161,13 @@ function execIos(config, raw, ctx) {
       if (!config.vlans.includes(id)) config.vlans.push(id);
       ctx.mode = 'config-vlan';
       ctx.curVlan = id;
+      return { output: [] };
+    }
+    // router ospf <process-id> → enable OSPF on this device
+    if (t[0].toLowerCase() === 'router' && (t[1] || '').toLowerCase() === 'ospf') {
+      if (!config.ospf) config.ospf = { enabled: true, networks: [] };
+      config.ospf.enabled = true;
+      ctx.mode = 'config-router';
       return { output: [] };
     }
     // ip route <net> <mask> <next-hop>
@@ -202,6 +210,16 @@ function execIos(config, raw, ctx) {
 
   if (ctx.mode === 'config-vlan') {
     if (t[0].toLowerCase() === 'name') return { output: [] }; // accepted, not modelled
+    return err('% Invalid input detected');
+  }
+
+  if (ctx.mode === 'config-router') {
+    if (t[0].toLowerCase() === 'network') {
+      if (!config.ospf.networks) config.ospf.networks = [];
+      config.ospf.networks.push(t.slice(1).join(' '));
+      return { output: [] };
+    }
+    if (t[0].toLowerCase() === 'passive-interface' || t[0].toLowerCase() === 'router-id') return { output: [] };
     return err('% Invalid input detected');
   }
   return err('% Invalid input detected');
@@ -276,6 +294,19 @@ function execRouterOS(config, line, _ctx) {
     for (const id of ids) if (!config.vlans.includes(id)) config.vlans.push(id);
     return { output: [] };
   }
+  // OSPF: /routing ospf instance add …  +  /routing ospf network add network=…/… area=…
+  if (path === '/routing ospf instance' && verb === 'add') {
+    if (!config.ospf) config.ospf = { enabled: true, networks: [] };
+    config.ospf.enabled = true;
+    return { output: [] };
+  }
+  if (path === '/routing ospf network' && verb === 'add') {
+    if (!config.ospf) config.ospf = { enabled: true, networks: [] };
+    if (!config.ospf.networks) config.ospf.networks = [];
+    if (kv.network) config.ospf.networks.push(kv.network);
+    return { output: [] };
+  }
+
   // A tagged VLAN subinterface: /interface vlan add name=v10 vlan-id=10 interface=ether1
   if (path === '/interface vlan' && verb === 'add' && kv.name && kv['vlan-id']) {
     const i = iface(config, kv.name);

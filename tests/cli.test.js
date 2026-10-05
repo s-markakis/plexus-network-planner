@@ -185,3 +185,22 @@ describe('config → sim device, end to end', () => {
     expect(dev.ifaces[0].up).toBe(false);
   });
 });
+
+describe('OSPF enablement', () => {
+  it('IOS: router ospf enables OSPF, enters config-router, records networks', () => {
+    const s = cisco();
+    run(s, ['en', 'conf t', 'router ospf 1', 'network 10.0.0.0 0.0.0.255 area 0']);
+    expect(s.config.ospf).toMatchObject({ enabled: true });
+    expect(s.config.ospf.networks).toContain('10.0.0.0 0.0.0.255 area 0');
+    expect(s.prompt()).toBe('R1(config-router)#');
+    s.exec('exit');
+    expect(s.prompt()).toBe('R1(config)#');
+  });
+  it('RouterOS: /routing ospf instance + network enable OSPF', () => {
+    const s = ros();
+    s.exec('/routing ospf instance add name=default router-id=1.1.1.1');
+    s.exec('/routing ospf network add network=10.0.0.0/24 area=backbone');
+    expect(s.config.ospf.enabled).toBe(true);
+    expect(s.config.ospf.networks).toContain('10.0.0.0/24');
+  });
+});
