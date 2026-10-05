@@ -30,6 +30,28 @@ function prefixOfSubnet(subnet = '') {
   return p >= 0 && p <= 32 ? p : null;
 }
 
+// A switch may carry a CLI running-config (sw.cli, shape from cli.js newConfig).
+// These read it defensively — a half-typed or malformed config must never throw.
+// SVIs = addressed interfaces that belong to a VLAN (the L3 gateway for it).
+function cliSvis(sw) {
+  const cfg = sw && sw.cli;
+  if (!cfg || typeof cfg !== 'object' || !cfg.interfaces) return [];
+  const out = [];
+  for (const i of Object.values(cfg.interfaces)) {
+    if (i && i.vlan != null && validIp(i.ip) && Number.isFinite(i.prefix)) {
+      out.push({ vlan: Number(i.vlan), ip: i.ip, prefix: i.prefix });
+    }
+  }
+  return out;
+}
+function cliRoutes(sw) {
+  const cfg = sw && sw.cli;
+  if (!cfg || !Array.isArray(cfg.routes)) return [];
+  return cfg.routes
+    .filter((r) => r && typeof r.cidr === 'string' && /^\d+\.\d+\.\d+\.\d+\/\d+$/.test(r.cidr) && validIp(r.via))
+    .map((r) => ({ cidr: r.cidr, via: r.via }));
+}
+
 /**
  * @param {any} project
  * @returns {{net:any, spec:any, meta:Map<string,any>, warnings:string[]}}
@@ -58,7 +80,6 @@ export function compileTopology(project) {
     }
     vlanInfo.set(String(v.id), { prefix: p, gateway });
   }
-  const allVlans = [...new Set([...vlanInfo.keys()].map(Number).concat(1))];
 
   // Gather switches + endpoints across every floor (the plan is multi-floor but
   // the network is one fabric). Device ids become sim-device keys, so a missing
@@ -85,6 +106,22 @@ export function compileTopology(project) {
     }
   }
   const swById = new Map(switches.map((s) => [s.sw.id, s]));
+
+  // Fold in per-device CLI configs (Phase 3b). A CLI SVI supplies a VLAN's
+  // gateway when settings didn't, and marks the switch that will host that SVI
+  // (settings-defined gateways win and are hosted by a role:'l3' switch). An
+  // unknown VLAN referenced only by CLI is registered so it still works.
+  const cliOwner = new Map(); // vlan id (string) → switch id hosting its SVI
+  for (const { sw } of switches) {
+    for (const svi of cliSvis(sw)) {
+      const vid = String(svi.vlan);
+      if (!vlanInfo.has(vid)) vlanInfo.set(vid, { prefix: svi.prefix, gateway: '' });
+      const info = vlanInfo.get(vid);
+      if (!info.gateway) info.gateway = svi.ip; // settings gateway wins; else CLI provides
+      if (!cliOwner.has(vid) && info.gateway === svi.ip) cliOwner.set(vid, sw.id);
+    }
+  }
+  const allVlans = [...new Set([...vlanInfo.keys()].map(Number).concat(1))];
 
   // Per-switch interface list, accumulated as we wire endpoints and uplinks.
   const swIfaces = new Map();
@@ -142,29 +179,41 @@ export function compileTopology(project) {
     links.push([`sw:${sw.id}/${near}`, `sw:${sw.uplinkId}/${far}`]);
   }
 
-  // L3 devices. A switch with role 'l3' also routes between VLANs: it becomes a
-  // sim router with one SVI per gateway'd VLAN, each SVI cabled to an internal
-  // access port on its own L2 switch (so the L3 switch both switches and routes,
-  // like a real Catalyst/CRS/RouterOS box). The first L3 device to claim a
-  // VLAN's gateway owns it, so two L3 switches can't fight over the same SVI IP.
-  const claimedGw = new Set();
+  // L3 devices. A switch routes between VLANs — becoming a sim router with one
+  // SVI per gateway'd VLAN, each cabled to an internal access port on its own L2
+  // switch (an L3 switch both switches and routes, like a Catalyst/CRS/RouterOS
+  // box) — when EITHER it is role:'l3' OR its CLI config defines SVIs/routes.
+  // Each gateway'd VLAN's SVI is hosted by the CLI switch that defined it, else
+  // by the first role:'l3' switch, so ownership is unambiguous.
+  const firstL3 = switches.find((s) => s.sw.role === 'l3');
+  const sviByOwner = new Map(); // switch id → [{ vid, ip, prefix }]
+  for (const [vid, info] of vlanInfo) {
+    if (!info.gateway) continue;
+    const ownerId = cliOwner.get(vid) || (firstL3 && firstL3.sw.id);
+    if (!ownerId) continue; // a gateway with no device able to host it
+    if (!sviByOwner.has(ownerId)) sviByOwner.set(ownerId, []);
+    sviByOwner.get(ownerId).push({ vid: Number(vid), ip: info.gateway, prefix: info.prefix });
+  }
   for (const { sw, floorId } of switches) {
-    if (sw.role !== 'l3') continue;
-    const rId = `r:${sw.id}`;
-    const rIfaces = [];
-    for (const [vid, info] of vlanInfo) {
-      if (!info.gateway || claimedGw.has(vid)) continue;
-      claimedGw.add(vid);
-      const sviPort = `l3_${vid}`;
-      rIfaces.push({ name: `svi${vid}`, ip: info.gateway, prefix: info.prefix });
-      ifacesOf(sw.id).push({ name: sviPort, mode: 'access', vlan: Number(vid) });
-      links.push([`${rId}/svi${vid}`, `sw:${sw.id}/${sviPort}`]);
-    }
-    if (!rIfaces.length) {
-      warnings.push(`switch ${sw.name || sw.id}: role is L3 but no VLAN has a gateway IP — no routing added`);
+    const svis = sviByOwner.get(sw.id) || [];
+    const routes = cliRoutes(sw);
+    const wantsL3 = sw.role === 'l3' || svis.length || routes.length;
+    if (!wantsL3) continue;
+    if (!svis.length) {
+      warnings.push(`switch ${sw.name || sw.id}: L3 configured but no SVI/gateway — no routing added`);
       continue;
     }
-    devices.push({ id: rId, name: `${sw.name || sw.id} (L3)`, kind: 'router', vendor: vendorOf(sw.model), ifaces: rIfaces });
+    const rId = `r:${sw.id}`;
+    const rIfaces = [];
+    for (const s of svis) {
+      rIfaces.push({ name: `svi${s.vid}`, ip: s.ip, prefix: s.prefix });
+      const sviPort = `l3_${s.vid}`;
+      ifacesOf(sw.id).push({ name: sviPort, mode: 'access', vlan: s.vid });
+      links.push([`${rId}/svi${s.vid}`, `sw:${sw.id}/${sviPort}`]);
+    }
+    const dev = { id: rId, name: `${sw.name || sw.id} (L3)`, kind: 'router', vendor: vendorOf(sw.model), ifaces: rIfaces };
+    if (routes.length) dev.routes = routes; // CLI static routes
+    devices.push(dev);
     meta.set(rId, { type: 'router', srcId: sw.id, name: sw.name || sw.id, fx: sw.fx, fy: sw.fy, floorId, ip: sw.ip });
   }
 
