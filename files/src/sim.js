@@ -68,6 +68,9 @@ export function buildNet(spec = {}) {
       routes: [], // {net, prefix, via:int|null, iface, kind:'connected'|'static'}
       arp: new Map(), // ipInt -> mac
       macTable: new Map(), // `${vlan}|${mac}` -> ifaceName  (switches only)
+      acls: Array.isArray(d.acls) ? d.acls : [], // packet-filter rules (see aclEval)
+      services: Array.isArray(d.services) ? d.services : [], // [{proto,port}] this host listens on
+      nat: d.nat || null, // { inside:[cidr...], outsideIface } edge PAT, or null
     };
     net.devices.set(d.id, dev);
 
@@ -305,22 +308,56 @@ function ifaceForIp(dev, ip) {
   return null;
 }
 
-// Forward `pkt` one device at a time. `pkt` = {srcIp, dstIp, ttl, type}.
-// Returns {status, hopIp?} — status 'delivered' | 'unreachable' | 'ttl-exceeded'.
-// `hops` guards against routing loops the TTL alone wouldn't (shouldn't) catch.
+// True when `ipInt` falls inside `cidr` ("any"/null matches everything).
+function cidrContains(ipInt, cidr) {
+  if (cidr == null || cidr === 'any') return true;
+  const c = parsePrefixCidr(cidr);
+  if (!c) return false;
+  return netOf(ipInt, c.prefix) === c.net;
+}
+
+// First-match packet-filter. Rules: {action:'permit'|'deny', proto?:'ip'|'icmp'|
+// 'tcp'|'udp', src?:cidr|'any', dst?:cidr|'any', dport?:number}. No match → permit
+// (add an explicit `deny any` rule for Cisco-style default-deny).
+function aclEval(rules, pkt) {
+  for (const r of rules) {
+    if (r.proto && r.proto !== 'ip' && r.proto !== 'any' && r.proto !== pkt.protocol) continue;
+    if (!cidrContains(pkt.srcIp, r.src)) continue;
+    if (!cidrContains(pkt.dstIp, r.dst)) continue;
+    if (r.dport != null && r.dport !== pkt.dport) continue;
+    return r.action === 'deny' ? 'deny' : 'permit';
+  }
+  return 'permit';
+}
+
+// Forward `pkt` one device at a time. `pkt` = {srcIp, dstIp, ttl, type, protocol,
+// dport?}. Returns {status, hopIp?} — status 'delivered' | 'unreachable' |
+// 'ttl-exceeded' | 'filtered' | 'closed'. `hops` guards routing loops.
 function forward(net, dev, pkt, events, hops = 0) {
   if (hops > MAX_HOPS) return { status: 'unreachable' };
+
+  // Inbound packet filter (ACL / firewall) on this device.
+  if (dev.acls && dev.acls.length && aclEval(dev.acls, pkt) === 'deny') {
+    events.push(ev('acl-drop', dev, null, { proto: pkt.protocol, dst: intToIp(pkt.dstIp), port: pkt.dport }));
+    return { status: 'filtered' };
+  }
 
   // Destined for this device?
   const mine = ownsIp(dev, pkt.dstIp);
   if (mine) {
     if (pkt.type === 'echo-request') {
       events.push(ev('icmp-echo', dev, mine, { from: intToIp(pkt.srcIp) }));
-      // Originate the echo-reply and route it back toward the sender.
-      const reply = { srcIp: pkt.dstIp, dstIp: pkt.srcIp, ttl: DEFAULT_TTL, type: 'echo-reply' };
+      const reply = { srcIp: pkt.dstIp, dstIp: pkt.srcIp, ttl: DEFAULT_TTL, type: 'echo-reply', protocol: 'icmp' };
       return forward(net, dev, reply, events, hops + 1);
     }
-    events.push(ev('icmp-reply', dev, mine, { from: intToIp(pkt.srcIp) }));
+    if (pkt.type === 'l4-request') {
+      const listening = (dev.services || []).some((s) => s.proto === pkt.protocol && s.port === pkt.dport);
+      events.push(ev(listening ? 'l4-open' : 'l4-closed', dev, mine, { proto: pkt.protocol, port: pkt.dport, from: intToIp(pkt.srcIp) }));
+      if (!listening) return { status: 'closed' };
+      const reply = { srcIp: pkt.dstIp, dstIp: pkt.srcIp, ttl: DEFAULT_TTL, type: 'l4-reply', protocol: pkt.protocol, dport: pkt.dport };
+      return forward(net, dev, reply, events, hops + 1);
+    }
+    events.push(ev(pkt.type === 'l4-reply' ? 'l4-reply' : 'icmp-reply', dev, mine, { from: intToIp(pkt.srcIp) }));
     return { status: 'delivered' };
   }
 
@@ -397,7 +434,28 @@ export function ping(net, opts) {
 
   const events = [];
   events.push(ev('host-send', src, src.ifaces.get(srcIfaceName), { to }));
-  const pkt = { srcIp, dstIp, ttl, type: 'echo-request' };
+  const pkt = { srcIp, dstIp, ttl, type: 'echo-request', protocol: 'icmp' };
+  const res = forward(net, src, pkt, events, 0);
+  return { ok: res.status === 'delivered', status: res.status, events };
+}
+
+// Probe an L4 service: does a tcp/udp connection from `from` to `to:port` succeed?
+// Returns { ok, status, events } where status is 'delivered' (open), 'closed'
+// (reached but nothing listening), 'filtered' (ACL drop), or an unreachable code.
+/** @param {{from:string, to:string, port:number, protocol?:string, ttl?:number}} opts */
+export function probe(net, opts) {
+  const { from, to, port, protocol = 'tcp', ttl = DEFAULT_TTL } = opts;
+  const src = net.devices.get(from);
+  if (!src) throw new Error(`no such device: ${from}`);
+  const dstIp = ipToInt(to);
+  if (dstIp == null) throw new Error(`bad destination ip: ${to}`);
+  const srcIfaceName = firstAddressedIface(src);
+  const srcIp = srcIfaceName ? src.ifaces.get(srcIfaceName).ipInt : null;
+  if (srcIp == null) throw new Error(`${from} has no addressed interface`);
+
+  const events = [];
+  events.push(ev('host-send', src, src.ifaces.get(srcIfaceName), { to, port, protocol }));
+  const pkt = { srcIp, dstIp, ttl, type: 'l4-request', protocol, dport: port };
   const res = forward(net, src, pkt, events, 0);
   return { ok: res.status === 'delivered', status: res.status, events };
 }
