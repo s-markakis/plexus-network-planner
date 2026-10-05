@@ -140,6 +140,16 @@ describe('MikroTik RouterOS', () => {
   it('ping returns a sentinel', () => {
     expect(ros().exec('/ping 10.0.0.9')).toMatchObject({ ping: '10.0.0.9' });
   });
+
+  it('/ip address print lists addresses (not routes) — matches real RouterOS columns', () => {
+    const s = ros();
+    s.exec('/ip address add address=10.10.10.1/24 interface=ether1');
+    s.exec('/ip route add dst-address=0.0.0.0/0 gateway=10.10.10.254');
+    const out = s.exec('/ip address print').output.join('\n');
+    expect(out).toMatch(/ADDRESS, NETWORK, INTERFACE/);
+    expect(out).toMatch(/10\.10\.10\.1\/24 {2}10\.10\.10\.0 {2}ether1/);
+    expect(out).not.toMatch(/0\.0\.0\.0\/0/); // the route must NOT appear here
+  });
 });
 
 describe('config → sim device, end to end', () => {

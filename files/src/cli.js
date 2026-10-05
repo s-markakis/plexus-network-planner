@@ -243,7 +243,7 @@ function execRouterOS(config, line, _ctx) {
       i.ip = m[1]; i.prefix = +m[2]; if (!i.mode) i.mode = 'routed';
       return { output: [] };
     }
-    if (verb === 'print') return { output: showIpRoute(config, 'addr') };
+    if (verb === 'print') return { output: showAddresses(config) };
   }
 
   if (path === '/ip route') {
@@ -296,6 +296,18 @@ function connectedRoutes(config) {
     }
   }
   return out;
+}
+
+// Real RouterOS `/ip address print` columns: ADDRESS, NETWORK, INTERFACE
+// (validated against RouterOS 7.24.4 on a hAP ax lite).
+function showAddresses(config) {
+  const rows = ['Columns: ADDRESS, NETWORK, INTERFACE'];
+  for (const i of Object.values(config.interfaces)) {
+    if (i.ip != null && i.prefix != null) {
+      rows.push(`${i.ip}/${i.prefix}  ${networkOf(i.ip, i.prefix)}  ${i.name}`);
+    }
+  }
+  return rows.length > 1 ? rows : ['% no addresses'];
 }
 
 function showIpRoute(config, _mode) {
