@@ -74,6 +74,7 @@ import {
 } from './src/imageStore.js';
 import {mountSimPanel} from './src/simUI.js';
 import {mountCliConsole} from './src/cliUI.js';
+import {bestAp} from './src/wireless.js';
 
 // AP_MODEL_GROUPS, AP_RANGE_M, SW_MODEL_GROUPS, AP_COLORS, WALL_MATERIAL_KEYS
 // all live in ./src/constants.js (single source of truth for the catalogs).
@@ -192,7 +193,8 @@ const HINTS={
   ruler:'Click two points to measure · Esc to clear',
   wall:'Click two points to draw a wall · Shift for 45° · Esc to cancel',
   survey:'Click where you are standing — the desktop app samples the live WiFi signal there',
-  sim: 'Pick a source and destination, then Ping or Traceroute to simulate the planned network'
+  sim: 'Pick a source and destination, then Ping or Traceroute to simulate the planned network',
+  client:'Click to drop a wireless client — it associates to the best-signal AP automatically'
 };
 
 // Image store (IndexedDB-backed) lives in ./src/imageStore.js. We import
@@ -254,6 +256,7 @@ const DZS=()=>F().DZS;
 const SWS=()=>F().SWS;
 const WALLS=()=>F().WALLS||(F().WALLS=[]);
 const CAMS=()=>F().CAMS||(F().CAMS=[]);
+const CLIENTS=()=>F().CLIENTS||(F().CLIENTS=[]);
 const ANNOS=()=>F().ANNOS||(F().ANNOS=[]);
 const SAMPLES=()=>F().SAMPLES||(F().SAMPLES=[]);
 const REVS=()=>(typeof window!=='undefined'&&Array.isArray(PROJECT_REVISIONS)?PROJECT_REVISIONS:[]);
@@ -2048,9 +2051,12 @@ function setMode(m){
   if(m!=='wall'){wallStart=null;wallHover=null;renderWallPreview();}
   // Clear annotation drag when leaving annotation mode
   if(m!=='anno'){annoStart=null;annoHover=null;renderAnnoPreview();}
-  ['add','sel','dz','sw','cam','ruler','wall','anno','survey','sim'].forEach(mm=>document.getElementById('btn-'+mm)?.classList.toggle('active',mm===m));
-  viewport.className=m==='sel'?'':m==='dz'?'cur-cell':m==='sw'?'cur-cell':m==='cam'?'cur-cell':'cur-cross';
+  ['add','sel','dz','sw','cam','client','ruler','wall','anno','survey','sim'].forEach(mm=>document.getElementById('btn-'+mm)?.classList.toggle('active',mm===m));
+  viewport.className=m==='sel'?'':(m==='dz'||m==='sw'||m==='cam'||m==='client')?'cur-cell':'cur-cross';
   toggleSimPanel(m==='sim');
+  // In client mode, let clicks fall through AP coverage rings so a client can be
+  // dropped inside coverage (where it actually associates). CSS gates on this.
+  document.body.classList.toggle('mode-client',m==='client');
   // Show/hide the annotation sub-mode chooser (text / arrow / dim).
   const subBar=document.getElementById('anno-sub-bar');
   if(subBar)subBar.style.display=(m==='anno')?'flex':'none';
@@ -2077,7 +2083,7 @@ function toggleSimPanel(show){
     _simPanel=mountSimPanel({
       root:document.getElementById('sim-panel-body'),
       getProject:simProject,
-      onFocus:m=>{const type=m.type==='camera'?'cam':(m.type==='switch'||m.type==='router')?'sw':'ap';sel(m.srcId,type,{zoom:true});},
+      onFocus:m=>{const type=m.type==='camera'?'cam':(m.type==='switch'||m.type==='router')?'sw':m.type==='client'?'client':'ap';sel(m.srcId,type,{zoom:true});},
       onAnimate:animateSimPath,
     });
   }
@@ -2161,7 +2167,7 @@ function closeCliConsole(){const p=document.getElementById('cli-panel');if(p)p.s
 // ═══ MAP CLICK ════════════════════════════════════
 viewport.addEventListener('click',e=>{
   if(panning||spaceDown||e.button!==0)return;
-  if(e.target.closest('.ap-grp,.dz-grp,.sw-grp'))return;
+  if(e.target.closest('.ap-grp,.dz-grp,.sw-grp,.client-grp'))return;
   if(!mapImg.naturalWidth){toast('Upload a map image first');return;}
   const raw=vpToImg(e.clientX,e.clientY);
   const {x,y}=snapPt(raw.x,raw.y);
@@ -2212,6 +2218,12 @@ viewport.addEventListener('click',e=>{
       ip:'',mac:'',swId:'',port:'',vlan:'',notes:'',color:'',locked:false,
     });
     sel(id,'cam');setMode('sel');render();renderList();toast('Camera placed — set heading in panel');
+  }else if(mode==='client'){
+    snapshot();
+    const id='cl'+nid++;
+    const num=nextNameSuffix(CLIENTS(),/^Client-(\d+)/);
+    CLIENTS().push({id,name:'Client-'+num,fx,fy,ip:'dhcp',vlan:'',locked:false});
+    sel(id,'client');setMode('sel');render();renderList();toast('Wireless client placed — associates to the best AP by signal');
   }else if(mode==='ruler'){
     if(!rulerStart){
       rulerStart={x,y};rulerEnd=null;rulerHover={x,y};
@@ -2273,6 +2285,7 @@ function getItemCenter(type,id){
   if(type==='ap'){const ap=APS().find(a=>a.id===id);return ap?{x:ap.fx*w,y:ap.fy*h}:null;}
   if(type==='sw'){const sw=SWS().find(a=>a.id===id);return sw?{x:sw.fx*w,y:sw.fy*h}:null;}
   if(type==='cam'){const c=CAMS().find(a=>a.id===id);return c?{x:c.fx*w,y:c.fy*h}:null;}
+  if(type==='client'){const c=CLIENTS().find(a=>a.id===id);return c?{x:c.fx*w,y:c.fy*h}:null;}
   if(type==='dz'){const dz=DZS().find(a=>a.id===id);return dz?{x:dz.fx*w,y:dz.fy*h}:null;}
   if(type==='wall'){const wl=WALLS().find(a=>a.id===id);if(!wl)return null;const p=_wallPx(wl);return {x:(p.x1+p.x2)/2,y:(p.y1+p.y2)/2};}
   return null;
@@ -2285,6 +2298,7 @@ function getItemBounds(type,id){
   if(type==='dz'){const dz=DZS().find(a=>a.id===id);return dz?{x:dz.fx*w-dz.r,y:dz.fy*h-dz.r,w:dz.r*2,h:dz.r*2}:null;}
   if(type==='sw'){const sw=SWS().find(a=>a.id===id);if(!sw)return null;const sz=sw.size||22;return {x:sw.fx*w-sz,y:sw.fy*h-sz*.6,w:sz*2,h:sz*1.2};}
   if(type==='cam'){const c=CAMS().find(a=>a.id===id);if(!c)return null;const r=c.range||80;return {x:c.fx*w-r,y:c.fy*h-r,w:r*2,h:r*2};}
+  if(type==='client'){const c=CLIENTS().find(a=>a.id===id);if(!c)return null;return {x:c.fx*w-12,y:c.fy*h-12,w:24,h:24};}
   if(type==='wall'){const wl=WALLS().find(a=>a.id===id);if(!wl)return null;const p=_wallPx(wl);const x=Math.min(p.x1,p.x2),y=Math.min(p.y1,p.y2);return {x,y,w:Math.abs(p.x2-p.x1)+1,h:Math.abs(p.y2-p.y1)+1};}
   return null;
 }
@@ -4310,7 +4324,51 @@ function renderGrid(){
   gridLayer.appendChild(g);
 }
 
-function render(){_resetThemeCache();renderGrid();renderHeat();renderRoaming();renderOL();renderWalls();renderCables();renderSWs();renderAPs();renderCAMs();renderDZs();renderChannelOverlap();renderAnnotations();renderSamples();renderAnnoPreview();renderRuler();updateCnt();updateApStickReadout();updateVlanLegend();}
+function render(){_resetThemeCache();renderGrid();renderHeat();renderRoaming();renderOL();renderWalls();renderCables();renderSWs();renderAPs();renderCAMs();renderClients();renderDZs();renderChannelOverlap();renderAnnotations();renderSamples();renderAnnoPreview();renderRuler();updateCnt();updateApStickReadout();updateVlanLegend();}
+
+// Wireless clients: a dot per client with a dashed line to the AP it associates
+// to (strongest wall-aware signal), labelled with the RSSI — the RF→sim bridge
+// made visible. Clients are selectable; placement/edit/delete follow the usual flow.
+function renderClients(){
+  const layer=document.getElementById('client-layer');if(!layer)return;
+  layer.innerHTML='';
+  const w=mapImg.naturalWidth,h=mapImg.naturalHeight;if(!w||!h)return;
+  const aps=APS(),walls=WALLS();
+  CLIENTS().forEach(cl=>{
+    if(!Number.isFinite(cl.fx)||!Number.isFinite(cl.fy))return;
+    const cx=cl.fx*w,cy=cl.fy*h;
+    const assoc=bestAp(cl,aps,walls,w,h,{model:SETTINGS.propagationModel,metersPerPx:(scaleM||100)/100});
+    const g=mk('g');g.setAttribute('class','client-grp');g.dataset.id=cl.id;g.style.pointerEvents='all';
+    if(assoc&&Number.isFinite(assoc.ap.fx)){
+      const ln=mk('line');ln.setAttribute('x1',cx);ln.setAttribute('y1',cy);ln.setAttribute('x2',assoc.ap.fx*w);ln.setAttribute('y2',assoc.ap.fy*h);ln.setAttribute('class','client-link');g.appendChild(ln);
+    }
+    const isSel=isSelected(cl.id,'client');
+    const dot=mk('circle');dot.setAttribute('cx',cx);dot.setAttribute('cy',cy);dot.setAttribute('r',8);dot.setAttribute('class','client-dot'+(isSel?' sel':''));g.appendChild(dot);
+    const lbl=mk('text');lbl.setAttribute('x',cx);lbl.setAttribute('y',cy-12);lbl.setAttribute('class','client-lbl');lbl.setAttribute('text-anchor','middle');
+    lbl.textContent=cl.name+(assoc?` · ${Math.round(assoc.dbm)} dBm`:' · no AP');g.appendChild(lbl);
+    g.addEventListener('pointerdown',e=>{e.stopPropagation();if(e.shiftKey&&mode==='sel'){toggleSelection(cl.id,'client');return;}sel(cl.id,'client');if(!cl.locked){const img=vpToImg(e.clientX,e.clientY);dragOffX=cl.fx*w-img.x;dragOffY=cl.fy*h-img.y;dragId=cl.id;dragType='client';}});
+    layer.appendChild(g);
+  });
+}
+function renderClientPanel(){
+  const cl=CLIENTS().find(a=>a.id===selId);if(!cl)return;
+  document.getElementById('rp-head').textContent='Edit Wireless Client';
+  rpBody.innerHTML=`
+    <div class="ep-section">Identity</div>
+    <div class="ep-row"><label class="ep-lbl">Name</label><input class="ep-in" id="cl-name" value="${esc(cl.name)}" data-input-action="upd-client"/></div>
+    <div class="ep-row"><label class="ep-lbl">VLAN</label><input class="ep-in ep-mono" id="cl-vlan" value="${esc(cl.vlan||'')}" data-input-action="upd-client" placeholder="(inherit from AP)"/></div>
+    <div class="ep-row"><label class="ep-lbl">IP</label><input class="ep-in ep-mono" id="cl-ip" value="${esc(cl.ip||'dhcp')}" data-input-action="upd-client" placeholder="dhcp or 10.0.0.x"/></div>
+    <div class="ep-row" style="font-size:11px;opacity:.7">Associates to the strongest-signal AP automatically. Press <kbd>M</kbd> to ping from it in the simulator.</div>
+    <label class="ep-check"><input type="checkbox" ${cl.locked?'checked':''} data-change-action="toggle-lock"/><span>Lock position</span></label>
+    <button class="btn ep-del" data-action="ask-del">✕ Delete Client</button>`;
+}
+function updClient(){
+  const cl=CLIENTS().find(a=>a.id===selId);if(!cl)return;snapshotSoon();
+  const n=document.getElementById('cl-name');if(n)cl.name=n.value||cl.name;
+  const v=document.getElementById('cl-vlan');if(v)cl.vlan=v.value.trim();
+  const ip=document.getElementById('cl-ip');if(ip)cl.ip=ip.value.trim()||'dhcp';
+  render();renderList();
+}
 // Populate the map legend with a colour chip per registered VLAN (only when
 // "colour by VLAN" is active, so it matches what's on the map).
 function updateVlanLegend(){
@@ -4338,6 +4396,7 @@ function doDrag(cx,cy){
   else if(dragType==='dz')item=DZS().find(a=>a.id===dragId);
   else if(dragType==='sw')item=SWS().find(a=>a.id===dragId);
   else if(dragType==='cam')item=CAMS().find(a=>a.id===dragId);
+  else if(dragType==='client')item=CLIENTS().find(a=>a.id===dragId);
   if(!item)return;
   item.fx=fx;item.fy=fy;
   // For APs with walls the coverage *shape* depends on position, so we still
@@ -4351,7 +4410,7 @@ function doDrag(cx,cy){
   }
   // Camera drags always do a full re-render so the cone updates with the
   // new position. Other types use a cheap transform on the existing group.
-  if(dragType==='cam'){render();return;}
+  if(dragType==='cam'||dragType==='client'){render();return;} // re-render so the association line follows
   const layer=dragType==='ap'?apLayer:dragType==='dz'?dzLayer:swLayer;
   const grp=layer.querySelector(`[data-id="${dragId}"]`);
   if(grp){
@@ -4751,6 +4810,7 @@ function renderRP(){
   else if(selType==='dz')renderDZPanel();
   else if(selType==='sw')renderSWPanel();
   else if(selType==='cam')renderCAMPanel();
+  else if(selType==='client')renderClientPanel();
   else if(selType==='wall')renderWallPanel();
 }
 
@@ -5288,7 +5348,7 @@ function doDelete(target){
   if(!target)return;
   const {id,type}=target;
   snapshot();
-  const list=type==='ap'?APS():type==='dz'?DZS():type==='sw'?SWS():type==='cam'?CAMS():type==='wall'?WALLS():null;
+  const list=type==='ap'?APS():type==='dz'?DZS():type==='sw'?SWS():type==='cam'?CAMS():type==='client'?CLIENTS():type==='wall'?WALLS():null;
   if(!list)return;
   const idx=list.findIndex(a=>a.id===id);
   if(idx<0)return;  // already deleted; bail silently
@@ -6006,6 +6066,7 @@ document.addEventListener('input',e=>{
   else if(a==='upd-dz-r')updDZR(t.value);
   else if(a==='upd-wall-notes'){const w=WALLS().find(x=>x.id===selId);if(w){snapshotSoon();w.notes=t.value;}}
   else if(a==='upd-sw')updSW();
+  else if(a==='upd-client')updClient();
   else if(a==='upd-creds')updCreds();
   else if(a==='upd-sw-port')updSwPort(t);
   else if(a==='upd-sw-size')updSWSize(t.value);
@@ -6081,6 +6142,7 @@ document.addEventListener('keydown',e=>{
   if(e.key==='l'||e.key==='L'){setMode('wall');return;}
   if(e.key==='n'||e.key==='N'){setMode('anno');return;}
   if(e.key==='m'||e.key==='M'){setMode('sim');return;}
+  if(e.key==='k'||e.key==='K'){setMode('client');return;}
   if(e.key==='p'||e.key==='P'){togglePresent();return;}
   // Toggles
   if(e.key==='o'||e.key==='O'){toggleOL();return;}

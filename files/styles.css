@@ -1304,6 +1304,14 @@ body.theme-dark #heat-canvas{mix-blend-mode:screen;opacity:.55}
 /* Animated PDU on the map */
 .sim-anim-path{fill:none;stroke:#1565c0;stroke-width:2;stroke-dasharray:6 5;opacity:.5}
 .sim-anim-dot{fill:#1565c0;stroke:#fff;stroke-width:1.5;filter:drop-shadow(0 0 4px rgba(21,101,192,.9))}
+/* Wireless clients */
+.client-grp{cursor:pointer}
+.client-dot{fill:#7b3fe4;stroke:#fff;stroke-width:1.5}
+.client-dot.sel{stroke:#000;stroke-width:2.5}
+.client-link{stroke:#7b3fe4;stroke-width:1.5;stroke-dasharray:4 4;opacity:.55}
+.client-lbl{fill:var(--ink-85);font-family:'Share Tech Mono',monospace;font-size:11px;paint-order:stroke;stroke:var(--bg);stroke-width:3px}
+/* While dropping a wireless client, AP coverage rings must not eat the click. */
+body.mode-client .ap-outer,body.mode-client .ap-inner,body.mode-client .ap-outer-m,body.mode-client .ap-inner-m,body.mode-client .ap-outer-w,body.mode-client .ap-inner-w,body.mode-client .ap-sel-outer,body.mode-client .ap-sel-inner{pointer-events:none}
 
 /* ── CLI console panel ────────────────────────────────────────────────────── */
 .cli-panel{

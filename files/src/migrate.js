@@ -208,6 +208,14 @@ export function migrateProject(data){
       if(typeof s.fy!=='number')s.fy=0;
       if(typeof s.rssi!=='number')s.rssi=-95;
     });
+    // v11: wireless clients (associate to the best AP by signal in the sim).
+    if(!Array.isArray(f.CLIENTS))f.CLIENTS=[];
+    f.CLIENTS.forEach(c=>{
+      if(typeof c.name!=='string')c.name='Client';
+      if(typeof c.ip!=='string')c.ip='dhcp';
+      if(typeof c.vlan!=='string')c.vlan='';
+      if(typeof c.locked!=='boolean')c.locked=false;
+    });
   });
   delete data.scaleM;
   data.version=PROJECT_VERSION;
@@ -220,7 +228,7 @@ export function migrateProject(data){
 export function syncNidFromFloors(floors){
   let maxNum=0;
   for(const f of floors){
-    for(const list of [f.APS,f.DZS,f.SWS,f.WALLS,f.CAMS,f.ANNOS,f.SAMPLES]){
+    for(const list of [f.APS,f.DZS,f.SWS,f.WALLS,f.CAMS,f.CLIENTS,f.ANNOS,f.SAMPLES]){
       if(!Array.isArray(list))continue;
       for(const item of list){
         if(!item.id)continue;
