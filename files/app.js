@@ -2091,6 +2091,18 @@ function setUiMode(m){
   else{const cb=document.getElementById('btn-'+mode);if(!cb||cb.hidden)setMode('sel');}
 }
 
+// Select a drawing tool by keyboard, switching workspace mode first if the tool
+// belongs to another mode — so shortcuts can't leave the UI in an inconsistent
+// state (e.g. the sim panel open while in Design, or placing APs while simulating).
+function selectTool(m){
+  const btn=document.getElementById('btn-'+m);
+  if(btn&&btn.dataset.modes){
+    const modes=btn.dataset.modes.split(/\s+/);
+    if(!modes.includes(uiMode))setUiMode(modes[0]);
+  }
+  setMode(m);
+}
+
 // ═══ TOOLBAR DROPDOWN MENUS ════════════════════════
 // Collapse rarely-used clusters (exports, map layers) behind one button each.
 function toggleMenu(id){
@@ -6169,17 +6181,17 @@ document.addEventListener('keydown',e=>{
     else askDel();
     return;
   }
-  // Mode switches (matches buttons)
-  if(e.key==='a'||e.key==='A'){setMode('add');return;}
-  if(e.key==='s'||e.key==='S'){setMode('sel');return;}
-  if(e.key==='d'||e.key==='D'){setMode('dz');return;}
-  if(e.key==='w'||e.key==='W'){setMode('sw');return;}
-  if(e.key==='c'||e.key==='C'){setMode('cam');return;}
-  if(e.key==='r'||e.key==='R'){setMode('ruler');return;}
-  if(e.key==='l'||e.key==='L'){setMode('wall');return;}
-  if(e.key==='n'||e.key==='N'){setMode('anno');return;}
-  if(e.key==='m'||e.key==='M'){setMode('sim');return;}
-  if(e.key==='k'||e.key==='K'){setMode('client');return;}
+  // Tool shortcuts — mode-aware (switch workspace mode to match the tool).
+  if(e.key==='a'||e.key==='A'){selectTool('add');return;}
+  if(e.key==='s'||e.key==='S'){selectTool('sel');return;}
+  if(e.key==='d'||e.key==='D'){selectTool('dz');return;}
+  if(e.key==='w'||e.key==='W'){selectTool('sw');return;}
+  if(e.key==='c'||e.key==='C'){selectTool('cam');return;}
+  if(e.key==='r'||e.key==='R'){selectTool('ruler');return;}
+  if(e.key==='l'||e.key==='L'){selectTool('wall');return;}
+  if(e.key==='n'||e.key==='N'){selectTool('anno');return;}
+  if(e.key==='m'||e.key==='M'){selectTool('sim');return;}
+  if(e.key==='k'||e.key==='K'){selectTool('client');return;}
   if(e.key==='p'||e.key==='P'){togglePresent();return;}
   // Toggles
   if(e.key==='o'||e.key==='O'){toggleOL();return;}

@@ -42,23 +42,23 @@ function toTarget(h, host) {
 
 // Match one device {name, ip} to an ssh-config host. Precedence: HostName equals
 // the device IP → an exact (non-wildcard) alias equals the device name → the
-// device IP appears as a Host pattern. Returns a target or null.
+// device IP appears as a Host pattern. Returns a target or null. Never returns a
+// target with an empty host: an alias-only block (no HostName) falls back to the
+// alias itself (what `ssh` would resolve) or the device IP.
 export function matchDeviceToHost(device, hosts) {
+  const rawName = device && device.name ? String(device.name).trim() : '';
+  const name = rawName.toLowerCase();
   const ip = device && device.ip ? String(device.ip).trim() : '';
-  const name = device && device.name ? String(device.name).trim().toLowerCase() : '';
-  if (ip) {
-    const byIp = hosts.find((h) => h.hostName === ip);
-    if (byIp) return toTarget(byIp, ip);
-  }
-  if (name) {
-    const byName = hosts.find((h) => h.patterns.some((p) => !hasWild(p) && p.toLowerCase() === name));
-    if (byName) return toTarget(byName, byName.hostName || ip);
-  }
-  if (ip) {
-    const byPatIp = hosts.find((h) => h.patterns.some((p) => !hasWild(p) && p === ip));
-    if (byPatIp) return toTarget(byPatIp, byPatIp.hostName || ip);
-  }
-  return null;
+  let m = null;
+  let fallback = '';
+  if (ip && (m = hosts.find((h) => h.hostName === ip))) fallback = ip;
+  // alias match: with no HostName, prefer the device's own IP (netssh connects
+  // directly), then the alias itself — never an empty host.
+  else if (name && (m = hosts.find((h) => h.patterns.some((p) => !hasWild(p) && p.toLowerCase() === name)))) fallback = ip || rawName;
+  else if (ip && (m = hosts.find((h) => h.patterns.some((p) => !hasWild(p) && p === ip)))) fallback = ip;
+  if (!m) return null;
+  const t = toTarget(m, fallback);
+  return t.host ? t : null;
 }
 
 function vendorForNetssh(model = '') {

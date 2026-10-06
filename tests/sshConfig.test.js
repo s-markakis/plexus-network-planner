@@ -62,3 +62,56 @@ describe('importSshTargets', () => {
     expect(unmatched.map((u) => u.id)).toEqual(['sw3']);
   });
 });
+
+describe('ssh-config parser edge cases (adversarial)', () => {
+  it('handles Key=Value syntax', () => {
+    const h = parseSshConfig('Host=villa\n  HostName=10.0.0.1\n  User=admin');
+    expect(h[0]).toMatchObject({ patterns: ['villa'], hostName: '10.0.0.1', user: 'admin' });
+  });
+  it('is case-insensitive on keywords', () => {
+    const h = parseSshConfig('HOST core\n  HostName 10.0.0.2\n  USER root\n  IDENTITYFILE ~/.ssh/k');
+    expect(h[0]).toMatchObject({ hostName: '10.0.0.2', user: 'root', identityFile: '~/.ssh/k' });
+  });
+  it('takes the first IdentityFile when several are listed', () => {
+    const h = parseSshConfig('Host a\n IdentityFile ~/.ssh/first\n IdentityFile ~/.ssh/second');
+    expect(h[0].identityFile).toBe('~/.ssh/first');
+  });
+  it('matches a concrete alias in a mixed wildcard block', () => {
+    const h = parseSshConfig('Host edge *.lan\n HostName 10.0.0.3\n User op');
+    expect(matchDeviceToHost({ name: 'edge', ip: '' }, h)).toMatchObject({ host: '10.0.0.3', user: 'op' });
+    expect(matchDeviceToHost({ name: 'anything.lan', ip: '' }, h)).toBeNull(); // wildcard never matches
+  });
+});
+
+describe('matchDeviceToHost robustness', () => {
+  it('a device with neither name nor ip matches nothing', () => {
+    const h = parseSshConfig('Host x\n HostName 1.2.3.4');
+    expect(matchDeviceToHost({}, h)).toBeNull();
+    expect(matchDeviceToHost({ name: '', ip: '' }, h)).toBeNull();
+  });
+  it('never returns a target with no host (alias-only block, no device IP)', () => {
+    const h = parseSshConfig('Host aliasonly\n User admin'); // no HostName, no resolvable address
+    const t = matchDeviceToHost({ name: 'aliasonly', ip: '' }, h);
+    // must not hand back a connect target with host null/empty
+    expect(t === null || (t && t.host)).toBeTruthy();
+  });
+  it('an alias-only block still works if the device carries an IP', () => {
+    const h = parseSshConfig('Host core-sw\n User admin\n IdentityFile ~/.ssh/k');
+    const t = matchDeviceToHost({ name: 'core-sw', ip: '10.9.9.9' }, h);
+    expect(t).toMatchObject({ host: '10.9.9.9', user: 'admin' });
+  });
+});
+
+describe('importSshTargets robustness', () => {
+  it('skips devices with no id and tolerates a null device list', () => {
+    const h = parseSshConfig('Host a\n HostName 10.0.0.1');
+    expect(() => importSshTargets(null, h)).not.toThrow();
+    const r = importSshTargets([null, {}, { id: 'ok', ip: '10.0.0.1' }], h);
+    expect(r.assigned.map((a) => a.id)).toEqual(['ok']);
+  });
+  it('tolerates an empty / missing config', () => {
+    const r = importSshTargets([{ id: 'a', ip: '1.1.1.1' }], parseSshConfig(''));
+    expect(r.assigned).toEqual([]);
+    expect(r.unmatched.map((u) => u.id)).toEqual(['a']);
+  });
+});
