@@ -14,6 +14,7 @@
 import { buildNet } from './sim.js';
 import { runOspf } from './ospf.js';
 import { normName } from './dns.js';
+import { bestAp } from './wireless.js';
 import { ipToInt, nextFreeIp } from './network.js';
 
 const validIp = (s) => s != null && s !== '' && ipToInt(s) != null;
@@ -135,6 +136,32 @@ export function compileTopology(project) {
         endpoints.push({ ep, type, floorId: f.id });
       }
     }
+    // Wireless clients associate to their best-signal AP (wall-aware RF), then
+    // join that AP's switch + VLAN. Needs the floor's image pixel dimensions.
+    for (const cl of f.CLIENTS || []) {
+      if (!cl || !cl.id) { warnings.push(`client ${(cl && cl.name) || '(unnamed)'}: missing id — skipped`); continue; }
+      if (seenEp.has(cl.id)) { warnings.push(`client ${cl.name || cl.id}: duplicate id ${cl.id} — skipped`); continue; }
+      seenEp.add(cl.id);
+      if (!Number.isFinite(f.imgW) || !Number.isFinite(f.imgH)) {
+        warnings.push(`client ${cl.name || cl.id}: floor has no image size for RF association — skipped`);
+        continue;
+      }
+      const assoc = bestAp(cl, f.APS || [], f.WALLS || [], f.imgW, f.imgH, {
+        model: project?.settings?.propagationModel,
+        metersPerPx: Number.isFinite(f.scaleM) ? f.scaleM / 100 : undefined,
+      });
+      if (!assoc || !assoc.ap.swId) {
+        warnings.push(`client ${cl.name || cl.id}: no in-range AP on a switch — not associated`);
+        continue;
+      }
+      endpoints.push({
+        ep: { ...cl, swId: assoc.ap.swId, vlan: cl.vlan || assoc.ap.vlan || '1', ip: cl.ip || 'dhcp' },
+        type: 'client',
+        floorId: f.id,
+        rssi: Math.round(assoc.dbm),
+        apName: assoc.ap.name,
+      });
+    }
   }
   const swById = new Map(switches.map((s) => [s.sw.id, s]));
 
@@ -174,7 +201,7 @@ export function compileTopology(project) {
   for (const [vid, info] of vlanInfo) if (info.gateway) useIp(vid, info.gateway);
 
   // Endpoints → host devices on switch access ports.
-  for (const { ep, type, floorId } of endpoints) {
+  for (const { ep, type, floorId, rssi, apName } of endpoints) {
     const label = ep.name || ep.id;
     if (!ep.swId || !swById.has(ep.swId)) {
       warnings.push(`${type} ${label}: not attached to a known switch — skipped`);
@@ -210,7 +237,7 @@ export function compileTopology(project) {
     if (info?.gateway) host.gateway = info.gateway; // default route toward the L3 device
     if (Array.isArray(ep.services) && ep.services.length) host.services = ep.services; // listening ports
     devices.push(host);
-    meta.set(hostId, { type, srcId: ep.id, name: label, fx: ep.fx, fy: ep.fy, floorId, ip: ipAddr, vlan, dhcp: wantsDhcp });
+    meta.set(hostId, { type, srcId: ep.id, name: label, fx: ep.fx, fy: ep.fy, floorId, ip: ipAddr, vlan, dhcp: wantsDhcp, ...(rssi != null ? { rssi, apName } : {}) });
     ifacesOf(ep.swId).push({ name: portName, mode: 'access', vlan });
     links.push([`${hostId}/eth0`, `sw:${ep.swId}/${portName}`]);
   }
@@ -328,7 +355,7 @@ export function compileTopology(project) {
 export function pingableDevices(compiled) {
   const out = [];
   for (const [simId, m] of compiled.meta) {
-    if (m.ip && (m.type === 'ap' || m.type === 'camera')) {
+    if (m.ip && (m.type === 'ap' || m.type === 'camera' || m.type === 'client')) {
       out.push({ simId, name: m.name, ip: m.ip, type: m.type, vlan: m.vlan });
     }
   }

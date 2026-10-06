@@ -2076,7 +2076,7 @@ function toggleSimPanel(show){
   if(show&&!_simPanel){
     _simPanel=mountSimPanel({
       root:document.getElementById('sim-panel-body'),
-      getProject:()=>({settings:SETTINGS,floors:FLOORS}),
+      getProject:simProject,
       onFocus:m=>{const type=m.type==='camera'?'cam':(m.type==='switch'||m.type==='router')?'sw':'ap';sel(m.srcId,type,{zoom:true});},
       onAnimate:animateSimPath,
     });
@@ -2084,6 +2084,15 @@ function toggleSimPanel(show){
   if(show&&_simPanel)_simPanel.refresh();
   if(!show)clearSimAnim();
   panel.style.display=show?'flex':'none';
+}
+
+// The project as the simulator sees it: the current floor carries its loaded
+// image's pixel size so wireless clients can associate by RF. Shallow-cloned so
+// we never persist imgW/imgH into the saved project.
+function simProject(){
+  const w=mapImg.naturalWidth,h=mapImg.naturalHeight;
+  if(!w)return {settings:SETTINGS,floors:FLOORS};
+  return {settings:SETTINGS,floors:FLOORS.map((f,i)=>i===curFloor?{...f,imgW:w,imgH:h}:f)};
 }
 
 // Animate a "PDU" dot along the packet's path on the map. `points` are
@@ -2141,7 +2150,7 @@ function openCliConsole(){
   const con=mountCliConsole({
     root:body,
     getDevice:()=>sw,
-    getProject:()=>({settings:SETTINGS,floors:FLOORS}),
+    getProject:simProject,
     onConfigChange:()=>autosave(),
   });
   panel.style.display='flex';
