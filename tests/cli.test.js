@@ -304,3 +304,11 @@ describe('NAT via CLI', () => {
     expect(dev.nat.inside).toContain('10.0.0.1/24');
   });
 });
+
+describe('dot1q subinterfaces (router-on-a-stick)', () => {
+  it('a subinterface with encapsulation dot1q becomes a routed VLAN gateway', () => {
+    const s = cisco();
+    run(s, ['en', 'conf t', 'interface Gi0/0.10', 'encapsulation dot1q 10', 'ip address 10.0.10.1 255.255.255.0']);
+    expect(s.config.interfaces['Gi0/0.10']).toMatchObject({ vlan: 10, ip: '10.0.10.1', mode: 'routed' });
+  });
+});

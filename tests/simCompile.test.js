@@ -408,3 +408,18 @@ describe('auto internet-cloud', () => {
     expect([...c.net.devices.keys()].some((k) => k.startsWith('cloud:'))).toBe(false); // 10.0.99.1 is owned by core
   });
 });
+
+describe('router-on-a-stick inter-VLAN routing', () => {
+  it('dot1q subinterfaces route between VLANs', () => {
+    const cli = cliConfig([
+      'en', 'conf t',
+      'interface Gi0/0.10', 'encapsulation dot1q 10', 'ip address 10.0.10.1 255.255.255.0', 'exit',
+      'interface Gi0/0.20', 'encapsulation dot1q 20', 'ip address 10.0.20.1 255.255.255.0', 'end',
+    ]);
+    const c = compileTopology({
+      settings: { vlans: [{ id: '10', subnet: '10.0.10.0/24' }, { id: '20', subnet: '10.0.20.0/24' }] },
+      floors: [{ SWS: [{ id: 'core', cli }], APS: [{ id: 'a1', swId: 'core', port: '1', vlan: '10', ip: '10.0.10.5' }], CAMS: [{ id: 'c1', swId: 'core', port: '2', vlan: '20', ip: '10.0.20.5' }] }],
+    });
+    expect(ping(c.net, { from: 'h:a1', to: '10.0.20.5' }).ok).toBe(true);
+  });
+});

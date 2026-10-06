@@ -298,6 +298,13 @@ function execIos(config, raw, ctx) {
     if (lc === 'no ip address') { i.ip = null; i.prefix = null; return { output: [] }; }
     if (lc === 'ip nat inside') { i.natRole = 'inside'; return { output: [] }; }
     if (lc === 'ip nat outside') { i.natRole = 'outside'; return { output: [] }; }
+    // Router-on-a-stick: `encapsulation dot1q <vlan>` on a subinterface (e.g.
+    // Gi0/0.10) makes it a routed VLAN interface — the SVI-equivalent gateway.
+    if (t[0].toLowerCase() === 'encapsulation' && (t[1] || '').toLowerCase() === 'dot1q' && /^\d+$/.test(t[2] || '')) {
+      i.vlan = Number(t[2]);
+      i.mode = 'routed';
+      return { output: [] };
+    }
     if (t[0].toLowerCase() === 'switchport') {
       const sub = (t[1] || '').toLowerCase();
       if (sub === 'mode' && (t[2] === 'access' || t[2] === 'trunk')) { i.mode = t[2]; return { output: [] }; }
