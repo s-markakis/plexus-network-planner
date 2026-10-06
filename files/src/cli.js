@@ -15,10 +15,23 @@ import { ipToInt, intToIp } from './network.js';
 // ── Running config ───────────────────────────────────────────────────────────
 /**
  * @returns {{hostname:string, vendor:string,
- *   interfaces:Record<string,any>, routes:Array<any>, vlans:number[], ospf:any, acls:Array<any>}}
+ *   interfaces:Record<string,any>, routes:Array<any>, vlans:number[], ospf:any, acls:Array<any>, startup:any}}
  */
 export function newConfig({ hostname = '', vendor = 'cisco' } = {}) {
-  return { hostname, vendor, interfaces: {}, routes: [], vlans: [], ospf: null, acls: [] };
+  return { hostname, vendor, interfaces: {}, routes: [], vlans: [], ospf: null, acls: [], startup: null };
+}
+
+// Snapshot/restore the persistable part of a running-config (for startup-config).
+function snapshotConfig(c) {
+  return JSON.parse(JSON.stringify({ hostname: c.hostname, interfaces: c.interfaces, routes: c.routes, vlans: c.vlans, ospf: c.ospf, acls: c.acls }));
+}
+function restoreConfig(c, snap) {
+  c.hostname = snap.hostname;
+  c.interfaces = JSON.parse(JSON.stringify(snap.interfaces || {}));
+  c.routes = JSON.parse(JSON.stringify(snap.routes || []));
+  c.vlans = JSON.parse(JSON.stringify(snap.vlans || []));
+  c.ospf = snap.ospf ? JSON.parse(JSON.stringify(snap.ospf)) : null;
+  c.acls = JSON.parse(JSON.stringify(snap.acls || []));
 }
 
 // ── ACL address helpers (shared by both dialects) ───────────────────────────
@@ -188,6 +201,17 @@ function execIos(config, raw, ctx) {
       return { output: ['Enter configuration commands, one per line.'] };
     }
     if (lc === 'show running-config') return { output: showRunIos(config) };
+    if (lc === 'copy running-config startup-config' || lc === 'copy run start' || lc === 'write memory' || lc === 'write' || lc === 'wr') {
+      config.startup = snapshotConfig(config);
+      return { output: ['Building configuration...', '[OK]'] };
+    }
+    if (lc === 'show startup-config' || lc === 'show start') {
+      return { output: config.startup ? showRunIos(config.startup) : ['% No startup-config present (use "copy run start")'] };
+    }
+    if (lc === 'reload') {
+      if (config.startup) { restoreConfig(config, config.startup); return { output: ['Reloading — running-config reverted to startup-config.'] }; }
+      return { output: ['% No startup-config; running-config unchanged'] };
+    }
     if (lc === 'show ip route') return { output: showIpRoute(config) };
     if (lc === 'show ip interface brief') return { output: showIpIntBrief(config) };
     if (lc === 'show vlan') return { output: showVlan(config) };

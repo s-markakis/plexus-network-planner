@@ -232,3 +232,25 @@ describe('ACL / firewall commands', () => {
     expect(configToDevice(s.config, { id: 'r' }).acls).toHaveLength(1);
   });
 });
+
+describe('startup-config vs running-config', () => {
+  it('copy run start saves, reload reverts unsaved changes', () => {
+    const s = cisco();
+    run(s, ['en', 'conf t', 'interface Gi0/0', 'ip address 10.0.0.1 255.255.255.0', 'end']);
+    s.exec('copy run start');
+    // make an unsaved change
+    run(s, ['conf t', 'interface Gi0/1', 'ip address 10.0.1.1 255.255.255.0', 'end']);
+    expect(s.config.interfaces['Gi0/1']).toBeTruthy();
+    s.exec('reload');
+    // reverted: Gi0/1 gone, Gi0/0 (saved) kept
+    expect(s.config.interfaces['Gi0/1']).toBeUndefined();
+    expect(s.config.interfaces['Gi0/0']).toMatchObject({ ip: '10.0.0.1' });
+  });
+  it('show startup-config reports none until saved', () => {
+    const s = cisco();
+    expect(s.exec('show startup-config').output.join('\n')).toMatch(/No startup-config/);
+    run(s, ['en', 'conf t', 'hostname R9', 'end']);
+    s.exec('wr');
+    expect(s.exec('show startup-config').output.join('\n')).toMatch(/hostname R9/);
+  });
+});
