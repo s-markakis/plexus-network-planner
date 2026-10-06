@@ -1351,3 +1351,17 @@ body.mode-client .ap-outer,body.mode-client .ap-inner,body.mode-client .ap-outer
   border:1px solid var(--ink-20);background:var(--surface-2);color:var(--ink);
   font-family:'Share Tech Mono',monospace;font-size:12px;
 }
+
+/* ── Workspace mode switcher (Design / Simulate / Operate) ─────────────────── */
+.mode-switch{display:inline-flex;gap:2px;background:var(--surface-2);border:1px solid var(--hair);border-radius:var(--r-2);padding:2px;margin:0 6px}
+.mode-tab{border:none;background:none;color:var(--ink-55);font-size:12px;font-weight:600;padding:4px 12px;border-radius:var(--r-1);cursor:pointer;white-space:nowrap;transition:background var(--t-fast) var(--ease),color var(--t-fast) var(--ease)}
+.mode-tab:hover{color:var(--ink-85)}
+.mode-tab.active{background:var(--bg);color:var(--ink);box-shadow:var(--shadow-1)}
+.mode-tab-operate{color:#b23030}
+.mode-tab-operate.active{background:#b23030;color:#fff;box-shadow:none}
+/* A mode group is layout-transparent until its mode is inactive, then it hides. */
+.toolgroup{display:contents}
+.toolgroup[hidden]{display:none}
+/* Operate mode: unmistakable "real devices" chrome. */
+body[data-uimode="operate"] .shell{box-shadow:inset 0 3px 0 #b23030}
+body[data-uimode="operate"] .topbar-meta{border-bottom-color:#b23030}

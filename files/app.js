@@ -2071,6 +2071,26 @@ function setMode(m){
   }
 }
 
+// ═══ WORKSPACE MODE (Design / Simulate / Operate) ══
+// A top-level mode that reorganizes the toolbar: controls tagged with data-modes
+// only show in their modes, which both declutters the chrome and separates safe
+// work (Design + Simulate, a fake copy) from real operation (Operate, live SSH).
+let uiMode='design';
+let _operateConfirmed=false;
+function setUiMode(m){
+  if(m==='operate'&&!_operateConfirmed){
+    if(!window.confirm('Operate mode connects to REAL devices over SSH — actions affect production gear. Continue?'))return;
+    _operateConfirmed=true;
+  }
+  uiMode=m;
+  document.body.dataset.uimode=m;
+  document.querySelectorAll('[data-modes]').forEach(el=>{el.hidden=!el.dataset.modes.split(/\s+/).includes(m);});
+  document.querySelectorAll('[data-uimode-btn]').forEach(b=>b.classList.toggle('active',b.dataset.uimodeBtn===m));
+  // Pick a sensible tool for the mode, and never leave a now-hidden tool active.
+  if(m==='simulate'){setMode('sim');}
+  else{const cb=document.getElementById('btn-'+mode);if(!cb||cb.hidden)setMode('sel');}
+}
+
 // ═══ PACKET SIMULATION PANEL ══════════════════════
 // Lazily mounted on first entry to sim mode. getProject reads the live globals
 // (reassigned on load/undo), so the panel always compiles the current plan.
@@ -5976,6 +5996,7 @@ const CLICK_ACTIONS={
   'ask-del':       ()=>askDel(),
   'open-console':  ()=>openCliConsole(),
   'close-console': ()=>closeCliConsole(),
+  'set-uimode':    (arg)=>setUiMode(arg),
   'quick-del':     (_,e,t)=>{e.stopPropagation();qDel(t.dataset.id,t.dataset.type);},
   'sb-search-clear':()=>{clearSearch();},
 };
@@ -6558,7 +6579,12 @@ if(typeof window!=='undefined'&&window.plexusNative){
   if(sv)sv.style.display='';
   const un=document.getElementById('btn-unifi');
   if(un)un.style.display='';
+  // Operate mode (real-device SSH) is desktop-only — reveal its tab there.
+  const op=document.getElementById('mode-operate');
+  if(op)op.style.display='';
 }
+// Apply the initial workspace mode (hides Simulate/Operate-only controls in Design).
+if(typeof document!=='undefined')setUiMode('design');
 
 // Small delay to let browser lay out the image, then offer to restore.
 // If the URL has a #p=... payload, that takes priority — autosave restore

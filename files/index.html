@@ -17,10 +17,16 @@
   <!-- ROW 1 — Meta & actions: branding, file ops, undo/redo, commit actions, help -->
   <div class="topbar topbar-meta">
     <span class="brand" id="brand-lbl">Plexus Planner</span>
+    <div class="mode-switch" role="tablist" aria-label="Workspace mode">
+      <button class="mode-tab active" data-action="set-uimode" data-arg="design" data-uimode-btn="design" title="Plan the network">◳ Design</button>
+      <button class="mode-tab" data-action="set-uimode" data-arg="simulate" data-uimode-btn="simulate" title="Practice on a simulated copy — no real devices">⇄ Simulate</button>
+      <button class="mode-tab mode-tab-operate" data-action="set-uimode" data-arg="operate" data-uimode-btn="operate" id="mode-operate" title="Connect to real devices (desktop)" style="display:none">⚡ Operate</button>
+    </div>
     <div class="tsep"></div>
     <button class="btn" data-action="new-project" title="Start a fresh project">✦ New</button>
     <button class="btn" data-action="open-upload">↑ Upload Map</button>
     <input type="file" id="file-up" accept="image/*,.svg,.pdf,application/pdf" style="display:none" data-change-action="upload-map"/>
+    <span class="toolgroup" data-modes="design">
     <button class="btn" data-action="open-svg" title="Import walls from an SVG floor-plan">↺ Walls SVG</button>
     <input type="file" id="svg-up" accept=".svg,image/svg+xml" style="display:none" data-change-action="import-svg-walls"/>
     <button class="btn" data-action="open-dxf" title="Import walls from a DXF (LINE/POLYLINE)">↺ DXF</button>
@@ -30,6 +36,7 @@
     <input type="file" id="esx-up" accept=".esx,.zip" style="display:none" data-change-action="import-esx"/>
     <button class="btn" data-action="open-survey" title="Import RSSI survey samples from a CSV">↺ Survey CSV</button>
     <input type="file" id="survey-up" accept=".csv,text/csv" style="display:none" data-change-action="import-survey-csv"/>
+    </span>
     <button class="btn" data-action="save">💾 Save</button>
     <button class="btn" data-action="open-load">📂 Load</button>
     <button class="btn" data-action="share-link" title="Copy a shareable URL of the current project (images not included)">🔗 Share</button>
@@ -43,6 +50,7 @@
     <div class="status"><span class="sdot"></span><span id="ap-cnt">0</span> APs · <span id="fl-cnt">0</span> floors</div>
     <div class="tsep"></div>
     <button class="btn btn-primary" id="btn-pres" data-action="toggle-present" title="Presentation mode (P)">▶ Present</button>
+    <span class="toolgroup" data-modes="design">
     <button class="btn btn-primary" data-action="export" title="Export HTML report">↓ Export</button>
     <button class="btn btn-primary" data-action="pdf" title="Export PDF">⎙ PDF</button>
     <button class="btn" data-action="export-bom" title="Export Bill of Materials (CSV)">≡ BoM</button>
@@ -51,6 +59,7 @@
     <button class="btn" data-action="show-inventory" title="As-built inventory, rollout status & organization tools">▤ Inventory</button>
     <button class="btn" data-action="handover-pack" title="Zip the HTML summary + every CSV deliverable">⇩ Handover</button>
     <button class="btn" data-action="export-esx" title="Export the project as an Ekahau .esx (best-effort)">⇈ ESX</button>
+    </span>
     <button class="btn" id="btn-unifi" data-action="show-unifi" title="Pull as-built data from / push the channel plan to a UniFi controller (desktop app)" style="display:none">⇅ UniFi</button>
     <button class="btn btn-icon-only" id="btn-theme" data-action="toggle-theme" title="Toggle dark mode" aria-label="Toggle theme">☾</button>
     <button class="btn btn-icon-only" data-action="show-revisions" title="Project revisions" aria-label="Revisions">⟲</button>
@@ -63,23 +72,24 @@
   <div class="topbar topbar-tools">
     <!-- Mode toolstrip (icon-only) -->
     <div class="toolstrip" role="toolbar" aria-label="Drawing tools">
-      <button class="btn-tool active" id="btn-add" data-action="set-mode" data-arg="add" title="Add AP (A)" aria-label="Add AP">+</button>
+      <button class="btn-tool active" id="btn-add" data-action="set-mode" data-arg="add" data-modes="design" title="Add AP (A)" aria-label="Add AP">+</button>
       <button class="btn-tool" id="btn-sel" data-action="set-mode" data-arg="sel" title="Select (S)" aria-label="Select">↖</button>
-      <button class="btn-tool" id="btn-dz" data-action="set-mode" data-arg="dz" title="Dead Zone (D)" aria-label="Dead Zone">⚠</button>
-      <button class="btn-tool" id="btn-sw" data-action="set-mode" data-arg="sw" title="Switch/Router (W)" aria-label="Switch / Router">⊞</button>
-      <button class="btn-tool" id="btn-cam" data-action="set-mode" data-arg="cam" title="Camera (C)" aria-label="Camera">◉</button>
-      <button class="btn-tool" id="btn-client" data-action="set-mode" data-arg="client" title="Wireless client (K)" aria-label="Wireless client">📱</button>
-      <button class="btn-tool" id="btn-ruler" data-action="set-mode" data-arg="ruler" title="Ruler (R)" aria-label="Ruler">↔</button>
-      <button class="btn-tool" id="btn-wall" data-action="set-mode" data-arg="wall" title="Wall (L)" aria-label="Wall">▌</button>
-      <button class="btn-tool" id="btn-anno" data-action="set-mode" data-arg="anno" title="Annotation (N)" aria-label="Annotation">✎</button>
-      <button class="btn-tool" id="btn-sim" data-action="set-mode" data-arg="sim" title="Packet simulation (M)" aria-label="Packet simulation">⇄</button>
-      <button class="btn-tool" id="btn-survey" data-action="set-mode" data-arg="survey" title="Live WiFi survey — click the map where you stand (desktop app)" aria-label="Live survey" style="display:none">📶</button>
+      <button class="btn-tool" id="btn-dz" data-action="set-mode" data-arg="dz" data-modes="design" title="Dead Zone (D)" aria-label="Dead Zone">⚠</button>
+      <button class="btn-tool" id="btn-sw" data-action="set-mode" data-arg="sw" data-modes="design simulate operate" title="Switch/Router (W)" aria-label="Switch / Router">⊞</button>
+      <button class="btn-tool" id="btn-cam" data-action="set-mode" data-arg="cam" data-modes="design" title="Camera (C)" aria-label="Camera">◉</button>
+      <button class="btn-tool" id="btn-client" data-action="set-mode" data-arg="client" data-modes="simulate" title="Wireless client (K)" aria-label="Wireless client">📱</button>
+      <button class="btn-tool" id="btn-ruler" data-action="set-mode" data-arg="ruler" data-modes="design" title="Ruler (R)" aria-label="Ruler">↔</button>
+      <button class="btn-tool" id="btn-wall" data-action="set-mode" data-arg="wall" data-modes="design" title="Wall (L)" aria-label="Wall">▌</button>
+      <button class="btn-tool" id="btn-anno" data-action="set-mode" data-arg="anno" data-modes="design" title="Annotation (N)" aria-label="Annotation">✎</button>
+      <button class="btn-tool" id="btn-sim" data-action="set-mode" data-arg="sim" data-modes="simulate" title="Packet simulation (M)" aria-label="Packet simulation">⇄</button>
+      <button class="btn-tool" id="btn-survey" data-action="set-mode" data-arg="survey" data-modes="design" title="Live WiFi survey — click the map where you stand (desktop app)" aria-label="Live survey" style="display:none">📶</button>
     </div>
     <div class="anno-sub-bar" id="anno-sub-bar" style="display:none" role="group" aria-label="Annotation type">
       <button class="btn-tool active" data-action="anno-sub" data-arg="text" data-anno-sub="text" title="Text label" aria-label="Text label">T</button>
       <button class="btn-tool" data-action="anno-sub" data-arg="arrow" data-anno-sub="arrow" title="Arrow" aria-label="Arrow">→</button>
       <button class="btn-tool" data-action="anno-sub" data-arg="dim" data-anno-sub="dim" title="Dimension line" aria-label="Dimension line">↔</button>
     </div>
+    <span class="toolgroup" data-modes="design">
     <div class="tsep"></div>
 
     <!-- View toggles -->
@@ -123,6 +133,7 @@
     <button class="btn" data-action="auto-assign-sw" title="Assign APs/cameras to nearest switch">⚯ Auto-cable</button>
     <button class="btn" data-action="show-topology" title="Switch uplink tree & port usage">⊟ Topology</button>
     <button class="btn" data-action="show-validation" title="Validate network wiring & PoE">✓ Validate</button>
+    </span>
 
     <div class="topbar-spacer"></div>
 
