@@ -13,6 +13,7 @@
 
 import { buildNet } from './sim.js';
 import { runOspf } from './ospf.js';
+import { runRip } from './rip.js';
 import { normName } from './dns.js';
 import { bestAp } from './wireless.js';
 import { ipToInt, nextFreeIp } from './network.js';
@@ -77,6 +78,9 @@ function cliRoutedIfaces(sw) {
 function cliOspfEnabled(sw) {
   return !!(sw && sw.cli && sw.cli.ospf && sw.cli.ospf.enabled);
 }
+function cliRipEnabled(sw) {
+  return !!(sw && sw.cli && sw.cli.rip && sw.cli.rip.enabled);
+}
 // Packet-filter rules from a CLI config (access-list / firewall filter).
 function cliAcls(sw) {
   const cfg = sw && sw.cli;
@@ -86,7 +90,7 @@ function cliAcls(sw) {
 
 /**
  * @param {any} project
- * @returns {{net:any, spec:any, meta:Map<string,any>, warnings:string[], ospfRouters:string[], dns:Record<string,string>}}
+ * @returns {{net:any, spec:any, meta:Map<string,any>, warnings:string[], ospfRouters:string[], ripRouters:string[], dns:Record<string,string>}}
  */
 export function compileTopology(project) {
   const warnings = [];
@@ -274,12 +278,14 @@ export function compileTopology(project) {
   }
   const routerIds = new Set(); // switch ids that became sim routers
   const ospfRouterSimIds = new Set(); // r:<id> running OSPF
+  const ripRouterSimIds = new Set(); // r:<id> running RIP
   for (const { sw, floorId } of switches) {
     const svis = sviByOwner.get(sw.id) || [];
     const routed = cliRoutedIfaces(sw); // routed CLI ports (for routed uplinks / stubs)
     const routes = cliRoutes(sw);
     const ospf = cliOspfEnabled(sw);
-    const wantsL3 = sw.role === 'l3' || svis.length || routed.length || routes.length || ospf;
+    const rip = cliRipEnabled(sw);
+    const wantsL3 = sw.role === 'l3' || svis.length || routed.length || routes.length || ospf || rip;
     if (!wantsL3) continue;
     if (!svis.length && !routed.length) {
       warnings.push(`switch ${sw.name || sw.id}: L3 configured but no SVI/routed interface — no routing added`);
@@ -302,6 +308,7 @@ export function compileTopology(project) {
     meta.set(rId, { type: 'router', srcId: sw.id, name: sw.name || sw.id, fx: sw.fx, fy: sw.fy, floorId, ip: sw.ip });
     routerIds.add(sw.id);
     if (ospf) ospfRouterSimIds.add(rId);
+    if (rip) ripRouterSimIds.add(rId);
   }
 
   // Routed uplinks → an L3 point-to-point between two switches' routers, using the
@@ -347,7 +354,10 @@ export function compileTopology(project) {
   if (ospfRouterSimIds.size) {
     runOspf(net, { enabled: (dev, i) => ospfRouterSimIds.has(dev.id) && i.ipInt != null && i.up !== false });
   }
-  return { net, spec, meta, warnings, ospfRouters: [...ospfRouterSimIds], dns };
+  if (ripRouterSimIds.size) {
+    runRip(net, { enabled: (dev, i) => ripRouterSimIds.has(dev.id) && i.ipInt != null && i.up !== false });
+  }
+  return { net, spec, meta, warnings, ospfRouters: [...ospfRouterSimIds], ripRouters: [...ripRouterSimIds], dns };
 }
 
 // Convenience for the UI device picker: the pingable endpoints (anything with

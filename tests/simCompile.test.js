@@ -362,3 +362,20 @@ describe('DHCP lease assignment + services', () => {
     expect(probe(c.net, { from: 'h:d1', to: '10.0.10.50', port: 22 }).status).toBe('closed');
   });
 });
+
+describe('RIP auto-convergence from CLI', () => {
+  it('two sites running RIP reach each other with no static routes', () => {
+    const siteA = cliConfig(['en', 'conf t', 'interface vlan 10', 'ip address 10.0.10.1 255.255.255.0', 'exit', 'interface eth5', 'ip address 10.0.99.1 255.255.255.252', 'exit', 'router rip', 'end'], 'cisco', 'A');
+    const siteB = cliConfig(['en', 'conf t', 'interface vlan 20', 'ip address 10.0.20.1 255.255.255.0', 'exit', 'interface eth5', 'ip address 10.0.99.2 255.255.255.252', 'exit', 'router rip', 'end'], 'cisco', 'B');
+    const c = compileTopology({
+      settings: { vlans: [{ id: '10', subnet: '10.0.10.0/24' }, { id: '20', subnet: '10.0.20.0/24' }] },
+      floors: [{
+        SWS: [{ id: 'siteA', name: 'A', cli: siteA }, { id: 'siteB', name: 'B', cli: siteB, uplinkId: 'siteA', uplinkMode: 'routed' }],
+        APS: [{ id: 'a1', swId: 'siteA', port: '1', vlan: '10', ip: '10.0.10.5' }],
+        CAMS: [{ id: 'c1', swId: 'siteB', port: '2', vlan: '20', ip: '10.0.20.5' }],
+      }],
+    });
+    expect(c.ripRouters.sort()).toEqual(['r:siteA', 'r:siteB']);
+    expect(ping(c.net, { from: 'h:a1', to: '10.0.20.5' }).ok).toBe(true);
+  });
+});

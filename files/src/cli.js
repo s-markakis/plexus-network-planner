@@ -15,10 +15,10 @@ import { ipToInt, intToIp } from './network.js';
 // ── Running config ───────────────────────────────────────────────────────────
 /**
  * @returns {{hostname:string, vendor:string,
- *   interfaces:Record<string,any>, routes:Array<any>, vlans:number[], ospf:any, acls:Array<any>, startup:any}}
+ *   interfaces:Record<string,any>, routes:Array<any>, vlans:number[], ospf:any, rip:any, acls:Array<any>, startup:any}}
  */
 export function newConfig({ hostname = '', vendor = 'cisco' } = {}) {
-  return { hostname, vendor, interfaces: {}, routes: [], vlans: [], ospf: null, acls: [], startup: null };
+  return { hostname, vendor, interfaces: {}, routes: [], vlans: [], ospf: null, rip: null, acls: [], startup: null };
 }
 
 // Snapshot/restore the persistable part of a running-config (for startup-config).
@@ -238,11 +238,19 @@ function execIos(config, raw, ctx) {
       ctx.curVlan = id;
       return { output: [] };
     }
-    // router ospf <process-id> → enable OSPF on this device
+    // router ospf <id> / router rip → enable that IGP and enter config-router.
     if (t[0].toLowerCase() === 'router' && (t[1] || '').toLowerCase() === 'ospf') {
       if (!config.ospf) config.ospf = { enabled: true, networks: [] };
       config.ospf.enabled = true;
       ctx.mode = 'config-router';
+      ctx.routerProto = 'ospf';
+      return { output: [] };
+    }
+    if (t[0].toLowerCase() === 'router' && (t[1] || '').toLowerCase() === 'rip') {
+      if (!config.rip) config.rip = { enabled: true, networks: [] };
+      config.rip.enabled = true;
+      ctx.mode = 'config-router';
+      ctx.routerProto = 'rip';
       return { output: [] };
     }
     // ip route <net> <mask> <next-hop>
@@ -299,12 +307,13 @@ function execIos(config, raw, ctx) {
   }
 
   if (ctx.mode === 'config-router') {
-    if (t[0].toLowerCase() === 'network') {
-      if (!config.ospf.networks) config.ospf.networks = [];
-      config.ospf.networks.push(t.slice(1).join(' '));
+    const proto = ctx.routerProto === 'rip' ? config.rip : config.ospf;
+    if (t[0].toLowerCase() === 'network' && proto) {
+      if (!proto.networks) proto.networks = [];
+      proto.networks.push(t.slice(1).join(' '));
       return { output: [] };
     }
-    if (t[0].toLowerCase() === 'passive-interface' || t[0].toLowerCase() === 'router-id') return { output: [] };
+    if (['passive-interface', 'router-id', 'version', 'no'].includes(t[0].toLowerCase())) return { output: [] };
     return err('% Invalid input detected');
   }
   return err('% Invalid input detected');
@@ -402,6 +411,17 @@ function execRouterOS(config, line, _ctx) {
     if (!config.ospf) config.ospf = { enabled: true, networks: [] };
     if (!config.ospf.networks) config.ospf.networks = [];
     if (kv.network) config.ospf.networks.push(kv.network);
+    return { output: [] };
+  }
+  if ((path === '/routing rip instance' || path === '/routing rip') && verb === 'add') {
+    if (!config.rip) config.rip = { enabled: true, networks: [] };
+    config.rip.enabled = true;
+    return { output: [] };
+  }
+  if (path === '/routing rip network' && verb === 'add') {
+    if (!config.rip) config.rip = { enabled: true, networks: [] };
+    if (!config.rip.networks) config.rip.networks = [];
+    if (kv.network) config.rip.networks.push(kv.network);
     return { output: [] };
   }
 

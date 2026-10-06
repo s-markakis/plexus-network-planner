@@ -254,3 +254,19 @@ describe('startup-config vs running-config', () => {
     expect(s.exec('show startup-config').output.join('\n')).toMatch(/hostname R9/);
   });
 });
+
+describe('RIP enablement', () => {
+  it('IOS router rip enables RIP and keeps networks separate from OSPF', () => {
+    const s = cisco();
+    run(s, ['en', 'conf t', 'router ospf 1', 'network 10.0.0.0 0.0.0.255 area 0', 'exit', 'router rip', 'network 10.0.1.0']);
+    expect(s.config.ospf.enabled).toBe(true);
+    expect(s.config.rip.enabled).toBe(true);
+    expect(s.config.ospf.networks).toContain('10.0.0.0 0.0.0.255 area 0');
+    expect(s.config.rip.networks).toContain('10.0.1.0');
+  });
+  it('RouterOS /routing rip enables RIP', () => {
+    const s = ros();
+    s.exec('/routing rip instance add name=default');
+    expect(s.config.rip.enabled).toBe(true);
+  });
+});
