@@ -343,10 +343,12 @@ function forward(net, dev, pkt, events, hops = 0) {
     return { status: 'filtered' };
   }
 
-  // NAT de-translation: a reply addressed to this edge router's outside IP is
+  // NAT de-translation: a *reply* addressed to this edge router's outside IP is
   // rewritten back to the remembered inside host, then routed inward (single-flow
-  // PAT, enough for the interactive sim).
-  if (dev.nat && dev._natSession && pkt.dstIp === dev._natSession.transIp) {
+  // PAT). Only reply traffic is de-NAT'd — a request sent to the router's own
+  // outside IP (e.g. pinging the WAN interface) must still be delivered to it.
+  if (dev.nat && dev._natSession && pkt.dstIp === dev._natSession.transIp &&
+      (pkt.type === 'echo-reply' || pkt.type === 'l4-reply')) {
     events.push(ev('nat-in', dev, null, { from: intToIp(pkt.dstIp), to: intToIp(dev._natSession.origIp) }));
     pkt.dstIp = dev._natSession.origIp;
   }
