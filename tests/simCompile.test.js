@@ -379,3 +379,32 @@ describe('RIP auto-convergence from CLI', () => {
     expect(ping(c.net, { from: 'h:a1', to: '10.0.20.5' }).ok).toBe(true);
   });
 });
+
+describe('auto internet-cloud', () => {
+  it('a default route to an unowned ISP gateway makes the internet reachable', () => {
+    const cli = cliConfig([
+      'en', 'conf t',
+      'interface vlan 10', 'ip address 10.0.10.1 255.255.255.0', 'exit',
+      'interface wan', 'ip address 203.0.113.2 255.255.255.252', 'exit',
+      'ip route 0.0.0.0 0.0.0.0 203.0.113.1', 'end',
+    ]);
+    const c = compileTopology({
+      settings: { vlans: [{ id: '10', subnet: '10.0.10.0/24' }] },
+      floors: [{ SWS: [{ id: 'core', cli }], APS: [{ id: 'pc', swId: 'core', port: '1', vlan: '10', ip: '10.0.10.5' }], CAMS: [] }],
+    });
+    // a cloud was synthesized at the ISP gateway
+    expect([...c.net.devices.keys()].some((k) => k.startsWith('cloud:'))).toBe(true);
+    expect(ping(c.net, { from: 'h:pc', to: '8.8.8.8' }).ok).toBe(true);
+  });
+
+  it('a default route to an owned next-hop does NOT synthesize a cloud', () => {
+    // two L3 switches: site routes default to the core's real transit IP
+    const site = cliConfig(['en', 'conf t', 'interface vlan 10', 'ip address 10.0.10.1 255.255.255.0', 'exit', 'interface t', 'ip address 10.0.99.2 255.255.255.252', 'exit', 'ip route 0.0.0.0 0.0.0.0 10.0.99.1', 'end'], 'cisco', 'SITE');
+    const core = cliConfig(['en', 'conf t', 'interface t', 'ip address 10.0.99.1 255.255.255.252', 'exit', 'interface vlan 20', 'ip address 10.0.20.1 255.255.255.0', 'end'], 'cisco', 'CORE');
+    const c = compileTopology({
+      settings: { vlans: [{ id: '10', subnet: '10.0.10.0/24' }, { id: '20', subnet: '10.0.20.0/24' }] },
+      floors: [{ SWS: [{ id: 'site', cli: site, uplinkId: 'core', uplinkMode: 'routed' }, { id: 'core', cli: core }], APS: [], CAMS: [] }],
+    });
+    expect([...c.net.devices.keys()].some((k) => k.startsWith('cloud:'))).toBe(false); // 10.0.99.1 is owned by core
+  });
+});

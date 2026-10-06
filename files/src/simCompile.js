@@ -369,6 +369,25 @@ export function compileTopology(project) {
     if (rec && rec.name && validIp(rec.ip)) dns[normName(rec.name)] = rec.ip;
   }
 
+  // Auto internet-cloud: when a router has a default route (0.0.0.0/0) to a
+  // next-hop that no device owns and that sits on one of its routed interfaces,
+  // synthesize an "Internet" cloud there — so `ip route 0.0.0.0 0.0.0.0 <isp>`
+  // just works (ping any public IP), NAT included. No GUI device needed.
+  const allIps = new Set();
+  for (const d of devices) for (const i of d.ifaces || []) if (i.ip) allIps.add(i.ip);
+  let cloudN = 0;
+  for (const d of /** @type {any[]} */ (devices.filter((x) => x.kind === 'router'))) {
+    for (const r of d.routes || []) {
+      if (r.cidr !== '0.0.0.0/0' || !r.via || allIps.has(r.via)) continue;
+      const egress = (d.ifaces || []).find((i) => i.ip && i.prefix != null && sameSubnet(i.ip, i.prefix, r.via, i.prefix));
+      if (!egress) continue;
+      const cid = `cloud:${d.id}:${cloudN++}`;
+      devices.push({ id: cid, name: 'Internet', kind: 'cloud', ifaces: [{ name: 'w', ip: r.via, prefix: egress.prefix }], routes: [{ cidr: '0.0.0.0/0', via: egress.ip }] });
+      links.push([`${cid}/w`, `${d.id}/${egress.name}`]);
+      meta.set(cid, { type: 'cloud', name: 'Internet', ip: r.via });
+    }
+  }
+
   const spec = { devices, links };
   const net = buildNet(spec);
   // If any device runs OSPF, converge it so routes appear without hand-written
