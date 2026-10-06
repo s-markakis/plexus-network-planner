@@ -2078,10 +2078,52 @@ function toggleSimPanel(show){
       root:document.getElementById('sim-panel-body'),
       getProject:()=>({settings:SETTINGS,floors:FLOORS}),
       onFocus:m=>{const type=m.type==='camera'?'cam':(m.type==='switch'||m.type==='router')?'sw':'ap';sel(m.srcId,type,{zoom:true});},
+      onAnimate:animateSimPath,
     });
   }
   if(show&&_simPanel)_simPanel.refresh();
+  if(!show)clearSimAnim();
   panel.style.display=show?'flex':'none';
+}
+
+// Animate a "PDU" dot along the packet's path on the map. `points` are
+// {fx,fy,name} waypoints (fractional image coords, from the sim event stream).
+let _animRAF=null,_animTimer=null;
+function clearSimAnim(){
+  if(_animRAF)cancelAnimationFrame(_animRAF);
+  if(_animTimer)clearTimeout(_animTimer);
+  _animRAF=null;_animTimer=null;
+  const layer=document.getElementById('sim-anim-layer');
+  if(layer)layer.innerHTML='';
+}
+function animateSimPath(points){
+  const svg=document.getElementById('sl');
+  const w=mapImg.naturalWidth,h=mapImg.naturalHeight;
+  if(!svg||!w||!h||!points||points.length<2)return;
+  let layer=document.getElementById('sim-anim-layer');
+  if(!layer){layer=mk('g');layer.setAttribute('id','sim-anim-layer');layer.style.pointerEvents='none';svg.appendChild(layer);}
+  clearSimAnim();
+  const pts=points.map(p=>({x:p.fx*w,y:p.fy*h}));
+  const poly=mk('polyline');
+  poly.setAttribute('points',pts.map(p=>`${p.x},${p.y}`).join(' '));
+  poly.setAttribute('class','sim-anim-path');
+  layer.appendChild(poly);
+  const dot=mk('circle');
+  dot.setAttribute('r',Math.max(6,w*0.006));
+  dot.setAttribute('class','sim-anim-dot');
+  dot.setAttribute('cx',pts[0].x);dot.setAttribute('cy',pts[0].y);
+  layer.appendChild(dot);
+  const segMs=420;let seg=0,t0=null;
+  function frame(ts){
+    if(t0==null)t0=ts;
+    const f=Math.min(1,(ts-t0)/segMs);
+    const a=pts[seg],b=pts[seg+1];
+    dot.setAttribute('cx',a.x+(b.x-a.x)*f);
+    dot.setAttribute('cy',a.y+(b.y-a.y)*f);
+    if(f>=1){seg++;t0=null;if(seg>=pts.length-1){_animTimer=setTimeout(clearSimAnim,700);return;}}
+    _animRAF=requestAnimationFrame(frame);
+  }
+  _animRAF=requestAnimationFrame(frame);
 }
 
 // ═══ CLI CONSOLE (per switch/router) ══════════════

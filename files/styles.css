@@ -1296,6 +1296,14 @@ body.theme-dark #heat-canvas{mix-blend-mode:screen;opacity:.55}
 .sim-log li.active{background:var(--ink-12);font-weight:600}
 .sim-log li.ok{color:#1b7f3b}
 .sim-stepbar{display:flex;gap:8px;justify-content:space-between}
+.sim-inspect{display:flex;flex-direction:column;gap:2px;max-height:150px;overflow:auto}
+.sim-inspect:empty{display:none}
+.sim-insp-row{display:flex;justify-content:space-between;gap:10px;font-family:'Share Tech Mono',monospace;font-size:11px;padding:2px 6px;border-radius:4px;background:var(--surface-2)}
+.sim-insp-k{color:var(--ink-55)}
+.sim-insp-v{color:var(--ink-85);text-align:right;word-break:break-all}
+/* Animated PDU on the map */
+.sim-anim-path{fill:none;stroke:#1565c0;stroke-width:2;stroke-dasharray:6 5;opacity:.5}
+.sim-anim-dot{fill:#1565c0;stroke:#fff;stroke-width:1.5;filter:drop-shadow(0 0 4px rgba(21,101,192,.9))}
 
 /* ── CLI console panel ────────────────────────────────────────────────────── */
 .cli-panel{

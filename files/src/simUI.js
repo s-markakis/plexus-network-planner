@@ -45,8 +45,30 @@ export function summarizePing(res) {
   return {
     ok: res.ok,
     label: STATUS_LABEL[res.status] || res.status,
-    lines: res.events.map((e) => ({ text: describeEvent(e), dev: e.dev })),
+    lines: res.events.map((e) => ({ text: describeEvent(e), dev: e.dev, ev: e })),
   };
+}
+
+// Inspector: an event's fields as labelled rows, newest-relevant first. Mirrors
+// Packet Tracer's PDU envelope using whatever the engine captured for that step.
+export function describePdu(e) {
+  if (!e) return [];
+  const rows = [['Step', e.kind]];
+  if (e.devName) rows.push(['Device', e.devName]);
+  if (e.iface) rows.push(['Interface', e.iface]);
+  if (e.vlan != null) rows.push(['VLAN', String(e.vlan)]);
+  if (e.mac) rows.push(['MAC', e.mac]);
+  if (e.dstMac) rows.push(['Dst MAC', e.dstMac]);
+  if (e.who) rows.push(['ARP who-has', e.who]);
+  if (e.ip) rows.push(['IP', e.ip]);
+  if (e.dst) rows.push(['Dst IP', e.dst]);
+  if (e.via) rows.push(['Via', e.via]);
+  if (e.routeKind) rows.push(['Route', e.routeKind]);
+  if (e.proto) rows.push(['Protocol', e.proto]);
+  if (e.port != null) rows.push(['Port', String(e.port)]);
+  if (e.from) rows.push(['From', e.from]);
+  if (e.to) rows.push(['To', e.to]);
+  return rows;
 }
 
 export function summarizeTrace(hops) {
@@ -63,10 +85,11 @@ function optionLabel(d) {
 // ── DOM mount ──────────────────────────────────────────────────────────────
 
 // Build the panel into `root`. `getProject()` returns the live project object
-// ({settings, floors}); `onFocus(meta)` is called to highlight a device on the
-// map (meta carries srcId + type). Returns { refresh } so callers can rebuild
-// the device lists when the plan changes.
-export function mountSimPanel({ root, getProject, onFocus }) {
+// ({settings, floors}); `onFocus(meta)` highlights a device on the map;
+// `onAnimate(points)` animates the packet across the canvas. Returns { refresh }.
+/** @param {{root:any, getProject:Function, onFocus?:Function, onAnimate?:Function}} opts */
+export function mountSimPanel(opts) {
+  const { root, getProject, onFocus, onAnimate } = opts;
   const doc = root.ownerDocument;
   const el = (tag, attrs = {}, kids = []) => {
     const n = doc.createElement(tag);
@@ -86,11 +109,13 @@ export function mountSimPanel({ root, getProject, onFocus }) {
   const traceBtn = el('button', { class: 'btn', text: 'Traceroute' });
   const verdict = el('div', { class: 'sim-verdict' });
   const log = el('ol', { class: 'sim-log' });
+  const inspect = el('div', { class: 'sim-inspect' });
   const stepBar = el('div', { class: 'sim-stepbar' });
   const prevBtn = el('button', { class: 'btn btn-ghost', text: '◀ Prev' });
   const nextBtn = el('button', { class: 'btn btn-ghost', text: 'Step ▶' });
+  const playBtn = el('button', { class: 'btn', text: '▶ Play' });
 
-  stepBar.append(prevBtn, nextBtn);
+  stepBar.append(prevBtn, nextBtn, playBtn);
   root.innerHTML = '';
   root.append(
     status,
@@ -99,11 +124,14 @@ export function mountSimPanel({ root, getProject, onFocus }) {
     el('div', { class: 'sim-row sim-actions' }, [pingBtn, traceBtn]),
     verdict,
     log,
+    inspect,
     stepBar
   );
 
   let compiled = null;
   let lineEls = []; // <li> per step, for highlighting
+  let lineData = []; // the summary line objects {text, dev, ev} parallel to lineEls
+  let pathMeta = []; // ordered {fx, fy, name} waypoints for canvas animation
   let metaById = new Map(); // sim id -> source meta, for onFocus
   let cursor = -1;
 
@@ -149,6 +177,8 @@ export function mountSimPanel({ root, getProject, onFocus }) {
     verdict.textContent = summary.label;
     verdict.className = 'sim-verdict ' + (summary.ok ? 'ok' : 'bad');
     log.innerHTML = '';
+    inspect.innerHTML = '';
+    lineData = summary.lines;
     lineEls = summary.lines.map((ln, i) => {
       const li = doc.createElement('li');
       li.textContent = ln.text;
@@ -157,7 +187,28 @@ export function mountSimPanel({ root, getProject, onFocus }) {
       log.appendChild(li);
       return li;
     });
+    // Waypoints for the canvas animation: each step's device position, de-duped.
+    pathMeta = [];
+    for (const ln of summary.lines) {
+      const m = ln.dev && metaById.get(ln.dev);
+      if (!m || !Number.isFinite(m.fx) || !Number.isFinite(m.fy)) continue;
+      const last = pathMeta[pathMeta.length - 1];
+      if (last && last.fx === m.fx && last.fy === m.fy) continue;
+      pathMeta.push({ fx: m.fx, fy: m.fy, name: m.name });
+    }
     cursor = -1;
+  }
+
+  function renderInspector(ev) {
+    inspect.innerHTML = '';
+    for (const [k, v] of describePdu(ev)) {
+      const row = doc.createElement('div');
+      row.className = 'sim-insp-row';
+      const kk = doc.createElement('span'); kk.className = 'sim-insp-k'; kk.textContent = k;
+      const vv = doc.createElement('span'); vv.className = 'sim-insp-v'; vv.textContent = v;
+      row.append(kk, vv);
+      inspect.appendChild(row);
+    }
   }
 
   function focusStep(i) {
@@ -167,7 +218,12 @@ export function mountSimPanel({ root, getProject, onFocus }) {
     const devId = lineEls[i].dataset.dev;
     const m = devId && metaById.get(devId);
     if (m && typeof onFocus === 'function') onFocus(m);
+    if (lineData[i]) renderInspector(lineData[i].ev);
     try { lineEls[i].scrollIntoView({ block: 'nearest' }); } catch { /* non-browser env */ }
+  }
+
+  function play() {
+    if (typeof onAnimate === 'function' && pathMeta.length) onAnimate(pathMeta);
   }
 
   function runPing() {
@@ -177,6 +233,7 @@ export function mountSimPanel({ root, getProject, onFocus }) {
     const toIp = toSel.selectedOptions[0].dataset.ip;
     const res = ping(compiled.net, { from: fromSel.value, to: toIp });
     renderLines(summarizePing(res));
+    play(); // auto-animate the packet across the map
   }
 
   function runTrace() {
@@ -202,6 +259,7 @@ export function mountSimPanel({ root, getProject, onFocus }) {
   traceBtn.addEventListener('click', runTrace);
   nextBtn.addEventListener('click', () => focusStep(Math.min(cursor + 1, lineEls.length - 1)));
   prevBtn.addEventListener('click', () => focusStep(Math.max(cursor - 1, 0)));
+  playBtn.addEventListener('click', play);
 
   refresh();
   return { refresh, el: root };

@@ -2,6 +2,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import {
   describeEvent,
+  describePdu,
   summarizePing,
   summarizeTrace,
   mountSimPanel,
@@ -144,5 +145,44 @@ describe('simUI robustness (DOM)', () => {
     mountSimPanel({ root, getProject: () => ({ settings: { vlans: [] }, floors: [] }), onFocus: () => {} });
     expect(pick(root, '#sim-from').options.length).toBe(0);
     expect(() => root.querySelectorAll('button')[0].click()).not.toThrow();
+  });
+});
+
+describe('describePdu', () => {
+  it('formats the fields an event carries', () => {
+    const rows = describePdu({ kind: 'l2-flood', devName: 'SW1', vlan: 10, dstMac: 'ff:ff:ff:ff:ff:ff' });
+    expect(rows).toContainEqual(['Device', 'SW1']);
+    expect(rows).toContainEqual(['VLAN', '10']);
+    expect(rows[0]).toEqual(['Step', 'l2-flood']);
+  });
+  it('is empty for a null event', () => expect(describePdu(null)).toEqual([]));
+});
+
+describe('sim panel animation + inspector', () => {
+  /** @returns {HTMLSelectElement} */
+  const pick = (root, id) => root.querySelector(id);
+
+  it('auto-animates after a ping — onAnimate receives the waypoints', () => {
+    const root = document.createElement('div');
+    document.body.appendChild(root);
+    const onAnimate = vi.fn();
+    mountSimPanel({ root, getProject: () => buildSampleProject(), onFocus() {}, onAnimate });
+    pick(root, '#sim-from').value = 'h:ap14';
+    pick(root, '#sim-to').value = 'h:ap15';
+    root.querySelectorAll('button')[0].click(); // Ping
+    expect(onAnimate).toHaveBeenCalled();
+    expect(onAnimate.mock.calls[0][0].length).toBeGreaterThan(1);
+    expect(onAnimate.mock.calls[0][0][0]).toHaveProperty('fx');
+  });
+
+  it('clicking a log step renders the PDU inspector', () => {
+    const root = document.createElement('div');
+    document.body.appendChild(root);
+    mountSimPanel({ root, getProject: () => buildSampleProject(), onFocus() {}, onAnimate() {} });
+    pick(root, '#sim-from').value = 'h:ap14';
+    pick(root, '#sim-to').value = 'h:ap15';
+    root.querySelectorAll('button')[0].click();
+    root.querySelector('.sim-log li').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    expect(root.querySelectorAll('.sim-insp-row').length).toBeGreaterThan(0);
   });
 });
