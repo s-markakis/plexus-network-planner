@@ -13,6 +13,7 @@
 
 import { buildNet } from './sim.js';
 import { runOspf } from './ospf.js';
+import { normName } from './dns.js';
 import { ipToInt } from './network.js';
 
 const validIp = (s) => s != null && s !== '' && ipToInt(s) != null;
@@ -84,7 +85,7 @@ function cliAcls(sw) {
 
 /**
  * @param {any} project
- * @returns {{net:any, spec:any, meta:Map<string,any>, warnings:string[], ospfRouters:string[]}}
+ * @returns {{net:any, spec:any, meta:Map<string,any>, warnings:string[], ospfRouters:string[], dns:Record<string,string>}}
  */
 export function compileTopology(project) {
   const warnings = [];
@@ -282,6 +283,17 @@ export function compileTopology(project) {
     meta.set(simId, { type: 'switch', srcId: sw.id, name: sw.name || sw.id, fx: sw.fx, fy: sw.fy, floorId, ip: sw.ip });
   }
 
+  // DNS zone: every named device with an IP resolves by name for free; explicit
+  // settings.dns records win over the auto-entries.
+  /** @type {Record<string,string>} */
+  const dns = {};
+  for (const m of meta.values()) {
+    if (m.ip && m.name) dns[normName(m.name)] = m.ip;
+  }
+  for (const rec of project?.settings?.dns || []) {
+    if (rec && rec.name && validIp(rec.ip)) dns[normName(rec.name)] = rec.ip;
+  }
+
   const spec = { devices, links };
   const net = buildNet(spec);
   // If any device runs OSPF, converge it so routes appear without hand-written
@@ -289,7 +301,7 @@ export function compileTopology(project) {
   if (ospfRouterSimIds.size) {
     runOspf(net, { enabled: (dev, i) => ospfRouterSimIds.has(dev.id) && i.ipInt != null && i.up !== false });
   }
-  return { net, spec, meta, warnings, ospfRouters: [...ospfRouterSimIds] };
+  return { net, spec, meta, warnings, ospfRouters: [...ospfRouterSimIds], dns };
 }
 
 // Convenience for the UI device picker: the pingable endpoints (anything with

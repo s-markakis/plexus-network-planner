@@ -89,6 +89,32 @@ describe('mountCliConsole (DOM)', () => {
     expect(root.textContent).toMatch(/Reply from 10\.0\.20\.5/);
   });
 
+  it('ping resolves a device name via DNS and shows the IP', () => {
+    const device = { id: 'core', name: 'CORE', model: 'Catalyst 9300' };
+    const project = {
+      settings: { vlans: [{ id: '10', subnet: '10.0.10.0/24' }, { id: '20', subnet: '10.0.20.0/24' }] },
+      floors: [{
+        SWS: [device],
+        APS: [{ id: 'a1', name: 'AP-01', swId: 'core', port: '1', vlan: '10', ip: '10.0.10.5' }],
+        CAMS: [{ id: 'c1', name: 'CAM-01', swId: 'core', port: '2', vlan: '20', ip: '10.0.20.5' }],
+      }],
+    };
+    const { root, type } = setup(device, project);
+    ['enable', 'configure terminal',
+      'interface vlan 10', 'ip address 10.0.10.1 255.255.255.0', 'exit',
+      'interface vlan 20', 'ip address 10.0.20.1 255.255.255.0', 'end',
+      'ping CAM-01'].forEach(type);
+    expect(root.textContent).toMatch(/Reply from CAM-01 \[10\.0\.20\.5\]/);
+  });
+
+  it('ping an unknown name reports it cannot resolve', () => {
+    const device = { id: 'core', name: 'CORE', model: 'Catalyst 9300' };
+    const project = { settings: { vlans: [] }, floors: [{ SWS: [device], APS: [], CAMS: [] }] };
+    const { root, type } = setup(device, project);
+    ['enable', 'ping nonexistent-host'].forEach(type);
+    expect(root.textContent).toMatch(/can't resolve host nonexistent-host/);
+  });
+
   it('ping from a switch with no routed interface reports no source', () => {
     const device = { id: 'sw', name: 'SW', model: 'USW-24' };
     const project = { settings: { vlans: [] }, floors: [{ SWS: [device], APS: [], CAMS: [] }] };

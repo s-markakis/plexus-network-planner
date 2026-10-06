@@ -10,6 +10,7 @@
 
 import { newConfig, makeSession } from './cli.js';
 import { compileTopology } from './simCompile.js';
+import { resolve } from './dns.js';
 import { ping } from './sim.js';
 
 export function guessVendor(model = '') {
@@ -21,10 +22,13 @@ export function guessVendor(model = '') {
 // Pure: turn a sim ping result into one terminal line. `result` is null when the
 // device has no routed interface to source the ping from.
 export function pingSummary(result, target) {
+  if (result && result.unresolved) return `% can't resolve host ${target}`;
   if (!result) return `% no routed interface to source a ping from`;
-  if (result.ok) return `Reply from ${target}: echo reply received`;
-  if (result.status === 'ttl-exceeded') return `${target}: TTL expired in transit`;
-  return `${target}: destination host unreachable`;
+  const dst = result.ip ? `${target} [${result.ip}]` : target;
+  if (result.ok) return `Reply from ${dst}: echo reply received`;
+  if (result.status === 'filtered') return `${dst}: blocked by a firewall rule`;
+  if (result.status === 'ttl-exceeded') return `${dst}: TTL expired in transit`;
+  return `${dst}: destination host unreachable`;
 }
 
 // Mount the console into `root`.
@@ -85,9 +89,12 @@ export function mountCliConsole({ root, getDevice, getProject, onConfigChange })
   function execPing(target) {
     let compiled;
     try { compiled = compileTopology(getProject()); } catch { return null; }
+    const ip = resolve(compiled.dns, target); // resolves an IP or a device name
+    if (!ip) return { unresolved: true };
     const rid = `r:${dev.id}`;
     if (!compiled.net.devices.has(rid)) return null;
-    return ping(compiled.net, { from: rid, to: target });
+    const r = ping(compiled.net, { from: rid, to: ip });
+    return { ...r, ip };
   }
 
   function submit(raw) {
