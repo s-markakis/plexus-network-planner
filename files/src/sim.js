@@ -167,6 +167,7 @@ export function resetRuntime(net) {
   for (const dev of net.devices.values()) {
     dev.arp.clear();
     dev.macTable.clear();
+    dev._natSession = null;
   }
 }
 
@@ -342,6 +343,14 @@ function forward(net, dev, pkt, events, hops = 0) {
     return { status: 'filtered' };
   }
 
+  // NAT de-translation: a reply addressed to this edge router's outside IP is
+  // rewritten back to the remembered inside host, then routed inward (single-flow
+  // PAT, enough for the interactive sim).
+  if (dev.nat && dev._natSession && pkt.dstIp === dev._natSession.transIp) {
+    events.push(ev('nat-in', dev, null, { from: intToIp(pkt.dstIp), to: intToIp(dev._natSession.origIp) }));
+    pkt.dstIp = dev._natSession.origIp;
+  }
+
   // An "internet cloud" answers any request addressed past it. Replies route back
   // out its own default route (it isn't re-triggered — only requests match here).
   if (dev.kind === 'cloud' && (pkt.type === 'echo-request' || pkt.type === 'l4-request')) {
@@ -403,6 +412,14 @@ function forward(net, dev, pkt, events, hops = 0) {
       events.push(ev('ttl-expired', dev, null, { dst: intToIp(pkt.dstIp) }));
       return { status: 'ttl-exceeded', hopIp: ownHopIp(dev) };
     }
+  }
+
+  // NAT (PAT) on the way out the outside interface: translate an inside source
+  // to this router's outside IP and remember it for the return.
+  if (dev.nat && egressName === dev.nat.outside && (dev.nat.inside || []).some((c) => cidrContains(pkt.srcIp, c))) {
+    dev._natSession = { origIp: pkt.srcIp, transIp: egress.ipInt };
+    events.push(ev('nat-out', dev, egress, { from: intToIp(pkt.srcIp), to: intToIp(egress.ipInt) }));
+    pkt.srcIp = egress.ipInt;
   }
 
   const mac = arpResolve(net, dev, egressName, nextHopIp, events);
@@ -506,6 +523,7 @@ export function traceroute(net, opts) {
 // ── Event helper ─────────────────────────────────────────────────────────────
 // One animation/trace step. Kept small and serialisable so the UI can replay it.
 let _seq = 0;
+/** @returns {any} An event carries dynamic detail fields beyond the fixed ones. */
 function ev(kind, dev, iface, detail = {}) {
   return {
     seq: _seq++,

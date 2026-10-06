@@ -64,3 +64,45 @@ describe('fault injection + reconvergence', () => {
     expect(ping(net, { from: 'pc1', to: '10.0.3.10' }).ok).toBe(false);
   });
 });
+
+describe('NAT / PAT', () => {
+  function natEdge() {
+    return buildNet({
+      devices: [
+        { id: 'pc1', kind: 'host', ifaces: [{ name: 'e', ip: '10.0.0.10', prefix: 24 }], gateway: '10.0.0.1' },
+        { id: 'edge', kind: 'router', nat: { inside: ['10.0.0.0/24'], outside: 'wan' },
+          ifaces: [{ name: 'lan', ip: '10.0.0.1', prefix: 24 }, { name: 'wan', ip: '203.0.113.2', prefix: 30 }],
+          routes: [{ cidr: '0.0.0.0/0', via: '203.0.113.1' }] },
+        { id: 'net', kind: 'cloud', ifaces: [{ name: 'w', ip: '203.0.113.1', prefix: 30 }], routes: [{ cidr: '10.0.0.0/24', via: '203.0.113.2' }] },
+      ],
+      links: [['pc1/e', 'edge/lan'], ['edge/wan', 'net/w']],
+    });
+  }
+
+  it('translates the inside source to the edge public IP and back', () => {
+    const net = natEdge();
+    const r = ping(net, { from: 'pc1', to: '8.8.8.8' });
+    expect(r.ok).toBe(true);
+    expect(r.events.some((e) => e.kind === 'nat-out' && e.to === '203.0.113.2')).toBe(true);
+    expect(r.events.some((e) => e.kind === 'nat-in')).toBe(true);
+    // the cloud saw the public (translated) source, never the private 10.0.0.10
+    const cloudReply = r.events.find((e) => e.kind === 'cloud-reply');
+    expect(cloudReply.from).toBe('203.0.113.2');
+  });
+
+  it('does not translate traffic that stays inside', () => {
+    const net = buildNet({
+      devices: [
+        { id: 'pc1', kind: 'host', ifaces: [{ name: 'e', ip: '10.0.0.10', prefix: 24 }], gateway: '10.0.0.1' },
+        { id: 'pc2', kind: 'host', ifaces: [{ name: 'e', ip: '10.0.0.20', prefix: 24 }] },
+        { id: 'edge', kind: 'router', nat: { inside: ['10.0.0.0/24'], outside: 'wan' },
+          ifaces: [{ name: 'lan', ip: '10.0.0.1', prefix: 24 }, { name: 'wan', ip: '203.0.113.2', prefix: 30 }] },
+        { id: 'sw', kind: 'switch', ifaces: [{ name: 'a', mode: 'access', vlan: 1 }, { name: 'b', mode: 'access', vlan: 1 }, { name: 'c', mode: 'access', vlan: 1 }] },
+      ],
+      links: [['pc1/e', 'sw/a'], ['pc2/e', 'sw/b'], ['sw/c', 'edge/lan']],
+    });
+    const r = ping(net, { from: 'pc1', to: '10.0.0.20' });
+    expect(r.ok).toBe(true);
+    expect(r.events.some((e) => e.kind === 'nat-out')).toBe(false); // same subnet, never hits the edge's WAN
+  });
+});
