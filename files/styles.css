@@ -1365,3 +1365,10 @@ body.mode-client .ap-outer,body.mode-client .ap-inner,body.mode-client .ap-outer
 /* Operate mode: unmistakable "real devices" chrome. */
 body[data-uimode="operate"] .shell{box-shadow:inset 0 3px 0 #b23030}
 body[data-uimode="operate"] .topbar-meta{border-bottom-color:#b23030}
+/* ── Toolbar dropdown menus (Export ▾, Layers ▾) ───────────────────────────── */
+.dropdown{position:relative;display:inline-block}
+.dropdown-menu{position:absolute;top:calc(100% + 4px);left:0;z-index:100;display:none;flex-direction:column;gap:3px;min-width:190px;padding:6px;background:var(--surface);border:1px solid var(--hair);border-radius:var(--r-2);box-shadow:var(--shadow-2)}
+.dropdown-menu.open{display:flex}
+.dropdown-menu .btn,.dropdown-menu .toggle{width:100%;justify-content:flex-start;text-align:left}
+.dropdown-menu .heat-mode-cluster{display:flex;gap:4px;width:100%}
+.dropdown-menu .heat-pill{flex:1}

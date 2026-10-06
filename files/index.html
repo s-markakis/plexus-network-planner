@@ -50,16 +50,19 @@
     <div class="status"><span class="sdot"></span><span id="ap-cnt">0</span> APs · <span id="fl-cnt">0</span> floors</div>
     <div class="tsep"></div>
     <button class="btn btn-primary" id="btn-pres" data-action="toggle-present" title="Presentation mode (P)">▶ Present</button>
-    <span class="toolgroup" data-modes="design">
-    <button class="btn btn-primary" data-action="export" title="Export HTML report">↓ Export</button>
-    <button class="btn btn-primary" data-action="pdf" title="Export PDF">⎙ PDF</button>
-    <button class="btn" data-action="export-bom" title="Export Bill of Materials (CSV)">≡ BoM</button>
-    <button class="btn" data-action="export-cables" title="Export cable schedule (CSV)">∼ Cables CSV</button>
-    <button class="btn" data-action="install-sheets" title="Per-AP install sheets PDF">⎙ Install sheets</button>
-    <button class="btn" data-action="show-inventory" title="As-built inventory, rollout status & organization tools">▤ Inventory</button>
-    <button class="btn" data-action="handover-pack" title="Zip the HTML summary + every CSV deliverable">⇩ Handover</button>
-    <button class="btn" data-action="export-esx" title="Export the project as an Ekahau .esx (best-effort)">⇈ ESX</button>
-    </span>
+    <span class="toolgroup" data-modes="design"><span class="dropdown">
+    <button class="btn btn-primary" data-action="toggle-menu" data-arg="export-menu" title="Exports, reports & deliverables">↓ Export ▾</button>
+    <div class="dropdown-menu" id="export-menu">
+      <button class="btn" data-action="export" title="Export HTML report">↓ HTML report</button>
+      <button class="btn" data-action="pdf" title="Export PDF">⎙ PDF</button>
+      <button class="btn" data-action="export-bom" title="Export Bill of Materials (CSV)">≡ Bill of Materials</button>
+      <button class="btn" data-action="export-cables" title="Export cable schedule (CSV)">∼ Cable schedule</button>
+      <button class="btn" data-action="install-sheets" title="Per-AP install sheets PDF">⎙ Install sheets</button>
+      <button class="btn" data-action="show-inventory" title="As-built inventory, rollout status & organization tools">▤ Inventory</button>
+      <button class="btn" data-action="handover-pack" title="Zip the HTML summary + every CSV deliverable">⇩ Handover pack</button>
+      <button class="btn" data-action="export-esx" title="Export the project as an Ekahau .esx (best-effort)">⇈ Ekahau .esx</button>
+    </div>
+    </span></span>
     <button class="btn" id="btn-unifi" data-action="show-unifi" title="Pull as-built data from / push the channel plan to a UniFi controller (desktop app)" style="display:none">⇅ UniFi</button>
     <button class="btn btn-icon-only" id="btn-theme" data-action="toggle-theme" title="Toggle dark mode" aria-label="Toggle theme">☾</button>
     <button class="btn btn-icon-only" data-action="show-revisions" title="Project revisions" aria-label="Revisions">⟲</button>
@@ -92,7 +95,10 @@
     <span class="toolgroup" data-modes="design">
     <div class="tsep"></div>
 
-    <!-- View toggles -->
+    <!-- View toggles → collapsed into a Layers menu -->
+    <span class="dropdown">
+    <button class="btn" data-action="toggle-menu" data-arg="layers-menu" title="Map layers">▤ Layers ▾</button>
+    <div class="dropdown-menu" id="layers-menu">
     <button class="toggle active" id="btn-cov" data-action="toggle-coverage" title="Show/hide coverage rings (V)">
       <span class="toggle-lbl">Coverage</span>
       <span class="toggle-switch" aria-hidden="true"></span>
@@ -125,6 +131,8 @@
       <button class="heat-pill" data-action="cycle-heatmap-mode" id="heat-mode-pill" title="Cycle heatmap metric" aria-label="Cycle heatmap metric">RSSI (dBm)</button>
       <button class="heat-pill" data-action="cycle-heatmap-band" id="heat-band-pill" title="Cycle heatmap band filter" aria-label="Cycle heatmap band filter">All</button>
     </div>
+    </div>
+    </span>
     <div class="tsep"></div>
     <button class="btn" data-action="auto-place" title="Auto-place APs to reach target coverage">✦ Auto-place</button>
     <button class="btn" data-action="auto-channel" title="Auto-assign channels (graph coloring)">⌁ Auto-channel</button>

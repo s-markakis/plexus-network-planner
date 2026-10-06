@@ -2091,6 +2091,21 @@ function setUiMode(m){
   else{const cb=document.getElementById('btn-'+mode);if(!cb||cb.hidden)setMode('sel');}
 }
 
+// ═══ TOOLBAR DROPDOWN MENUS ════════════════════════
+// Collapse rarely-used clusters (exports, map layers) behind one button each.
+function toggleMenu(id){
+  const m=document.getElementById(id);if(!m)return;
+  const open=m.classList.contains('open');
+  document.querySelectorAll('.dropdown-menu.open').forEach(x=>x.classList.remove('open'));
+  if(!open)m.classList.add('open');
+}
+if(typeof document!=='undefined'){
+  // Close any open menu on an outside click.
+  document.addEventListener('click',e=>{
+    if(!e.target.closest('.dropdown'))document.querySelectorAll('.dropdown-menu.open').forEach(x=>x.classList.remove('open'));
+  });
+}
+
 // ═══ PACKET SIMULATION PANEL ══════════════════════
 // Lazily mounted on first entry to sim mode. getProject reads the live globals
 // (reassigned on load/undo), so the panel always compiles the current plan.
@@ -5997,6 +6012,7 @@ const CLICK_ACTIONS={
   'open-console':  ()=>openCliConsole(),
   'close-console': ()=>closeCliConsole(),
   'set-uimode':    (arg)=>setUiMode(arg),
+  'toggle-menu':   (arg,e)=>{if(e)e.stopPropagation();toggleMenu(arg);},
   'quick-del':     (_,e,t)=>{e.stopPropagation();qDel(t.dataset.id,t.dataset.type);},
   'sb-search-clear':()=>{clearSearch();},
 };
