@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { compileTopology, pingableDevices } from '../files/src/simCompile.js';
-import { ping } from '../files/src/sim.js';
+import { ping, probe } from '../files/src/sim.js';
 import { buildSampleProject } from '../files/src/sampleProject.js';
 import { newConfig, makeSession } from '../files/src/cli.js';
 
@@ -313,5 +313,52 @@ describe('CLI firewall folds into the topology', () => {
     expect(r.ok).toBe(false);
     expect(r.status).toBe('filtered');
     expect(c.net.devices.get('r:core').acls).toHaveLength(1);
+  });
+});
+
+describe('DHCP lease assignment + services', () => {
+  const base = (eps) => ({
+    settings: { vlans: [{ id: '10', subnet: '10.0.10.0/24', gateway: '10.0.10.1' }] },
+    floors: [{ SWS: [{ id: 'core', role: 'l3' }], APS: eps, CAMS: [] }],
+  });
+
+  it('assigns a lease from the VLAN subnet to a dhcp endpoint, avoiding collisions', () => {
+    const c = compileTopology(base([
+      { id: 'static', swId: 'core', port: '1', vlan: '10', ip: '10.0.10.100' },
+      { id: 'd1', swId: 'core', port: '2', vlan: '10', ip: 'dhcp' },
+      { id: 'd2', swId: 'core', port: '3', vlan: '10', dhcp: true },
+    ]));
+    expect(c.net.devices.get('h:d1').ifaces.get('eth0').ipInt).not.toBeNull();
+    const leased = ['h:d1', 'h:d2'].map((id) => [...c.net.devices.get(id).ifaces.values()][0].ipInt);
+    expect(leased[0]).not.toBeNull();
+    expect(leased[0]).not.toBe(leased[1]); // distinct leases
+    // leases don't collide with the static .100 or the gateway .1
+    const list = pingableDevices(c).map((d) => d.ip);
+    expect(new Set(list).size).toBe(list.length);
+  });
+
+  it('a DHCP host reaches a static host in the same subnet', () => {
+    const c = compileTopology(base([
+      { id: 'srv', swId: 'core', port: '1', vlan: '10', ip: '10.0.10.50' },
+      { id: 'd1', swId: 'core', port: '2', vlan: '10', ip: 'dhcp' },
+    ]));
+    expect(ping(c.net, { from: 'h:d1', to: '10.0.10.50' }).ok).toBe(true);
+  });
+
+  it('warns when DHCP has no subnet to lease from', () => {
+    const c = compileTopology({
+      settings: { vlans: [] },
+      floors: [{ SWS: [{ id: 'core' }], APS: [{ id: 'd1', swId: 'core', port: '1', vlan: '10', ip: 'dhcp' }], CAMS: [] }],
+    });
+    expect(c.warnings.some((w) => /DHCP needs a VLAN subnet/.test(w))).toBe(true);
+  });
+
+  it('an endpoint can declare listening services for L4 probe', () => {
+    const c = compileTopology(base([
+      { id: 'srv', swId: 'core', port: '1', vlan: '10', ip: '10.0.10.50', services: [{ proto: 'tcp', port: 443 }] },
+      { id: 'd1', swId: 'core', port: '2', vlan: '10', ip: '10.0.10.51' },
+    ]));
+    expect(probe(c.net, { from: 'h:d1', to: '10.0.10.50', port: 443 }).ok).toBe(true);
+    expect(probe(c.net, { from: 'h:d1', to: '10.0.10.50', port: 22 }).status).toBe('closed');
   });
 });

@@ -14,7 +14,7 @@
 import { buildNet } from './sim.js';
 import { runOspf } from './ospf.js';
 import { normName } from './dns.js';
-import { ipToInt } from './network.js';
+import { ipToInt, nextFreeIp } from './network.js';
 
 const validIp = (s) => s != null && s !== '' && ipToInt(s) != null;
 const sameSubnet = (ipA, pA, ipB, pB) => {
@@ -109,7 +109,7 @@ export function compileTopology(project) {
       warnings.push(`VLAN ${v.id}: invalid gateway IP ${gateway} — ignored`);
       gateway = '';
     }
-    vlanInfo.set(String(v.id), { prefix: p, gateway });
+    vlanInfo.set(String(v.id), { prefix: p, gateway, cidr: String(v.subnet).trim() });
   }
 
   // Gather switches + endpoints across every floor (the plan is multi-floor but
@@ -162,6 +162,17 @@ export function compileTopology(project) {
   };
   const hasPort = (id, name) => ifacesOf(id).some((i) => i.name === name);
 
+  // DHCP: seed the per-VLAN used-address set with static endpoint IPs and VLAN
+  // gateways, so leases handed out below never collide.
+  const usedByVlan = new Map(); // vlan id (string) → Set(ip)
+  const useIp = (vid, ip) => {
+    const k = String(vid);
+    if (!usedByVlan.has(k)) usedByVlan.set(k, new Set());
+    usedByVlan.get(k).add(ip);
+  };
+  for (const { ep } of endpoints) if (validIp(ep.ip)) useIp(ep.vlan, ep.ip);
+  for (const [vid, info] of vlanInfo) if (info.gateway) useIp(vid, info.gateway);
+
   // Endpoints → host devices on switch access ports.
   for (const { ep, type, floorId } of endpoints) {
     const label = ep.name || ep.id;
@@ -169,29 +180,37 @@ export function compileTopology(project) {
       warnings.push(`${type} ${label}: not attached to a known switch — skipped`);
       continue;
     }
-    if (!ep.ip) {
-      warnings.push(`${type} ${label}: no IP — skipped`);
-      continue;
-    }
-    if (!validIp(ep.ip)) {
-      warnings.push(`${type} ${label}: invalid IP ${ep.ip} — skipped`);
-      continue;
-    }
     const vlan = ep.vlan && Number.isFinite(Number(ep.vlan)) ? Number(ep.vlan) : 1;
     const info = vlanInfo.get(String(ep.vlan));
     const prefix = info?.prefix ?? 24;
+    // Resolve the address: static, or a DHCP lease from the VLAN subnet.
+    let ipAddr = ep.ip;
+    const wantsDhcp = ep.ip === 'dhcp' || (ep.dhcp === true && !validIp(ep.ip));
+    if (wantsDhcp) {
+      if (!info || !info.cidr) { warnings.push(`${type} ${label}: DHCP needs a VLAN subnet — skipped`); continue; }
+      ipAddr = nextFreeIp(info.cidr, [...(usedByVlan.get(String(ep.vlan)) || [])]);
+      if (!ipAddr) { warnings.push(`${type} ${label}: DHCP pool for VLAN ${ep.vlan} exhausted — skipped`); continue; }
+      useIp(ep.vlan, ipAddr);
+    } else if (!ep.ip) {
+      warnings.push(`${type} ${label}: no IP — skipped`);
+      continue;
+    } else if (!validIp(ep.ip)) {
+      warnings.push(`${type} ${label}: invalid IP ${ep.ip} — skipped`);
+      continue;
+    }
     const portName = `p${ep.port || `-${ep.id}`}`;
     if (hasPort(ep.swId, portName)) {
       warnings.push(`${type} ${label}: port ${ep.port} on ${ep.swId} already used — skipped`);
       continue;
     }
     const hostId = `h:${ep.id}`;
-    const iface = { name: 'eth0', ip: ep.ip, prefix };
+    const iface = { name: 'eth0', ip: ipAddr, prefix };
     if (ep.mac) iface.mac = ep.mac;
     const host = { id: hostId, name: label, kind: 'host', vendor: vendorOf(ep.model), ifaces: [iface] };
     if (info?.gateway) host.gateway = info.gateway; // default route toward the L3 device
+    if (Array.isArray(ep.services) && ep.services.length) host.services = ep.services; // listening ports
     devices.push(host);
-    meta.set(hostId, { type, srcId: ep.id, name: label, fx: ep.fx, fy: ep.fy, floorId, ip: ep.ip, vlan });
+    meta.set(hostId, { type, srcId: ep.id, name: label, fx: ep.fx, fy: ep.fy, floorId, ip: ipAddr, vlan, dhcp: wantsDhcp });
     ifacesOf(ep.swId).push({ name: portName, mode: 'access', vlan });
     links.push([`${hostId}/eth0`, `sw:${ep.swId}/${portName}`]);
   }
