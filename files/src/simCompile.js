@@ -75,6 +75,12 @@ function cliRoutedIfaces(sw) {
 function cliOspfEnabled(sw) {
   return !!(sw && sw.cli && sw.cli.ospf && sw.cli.ospf.enabled);
 }
+// Packet-filter rules from a CLI config (access-list / firewall filter).
+function cliAcls(sw) {
+  const cfg = sw && sw.cli;
+  if (!cfg || !Array.isArray(cfg.acls)) return [];
+  return cfg.acls.filter((r) => r && (r.action === 'permit' || r.action === 'deny'));
+}
 
 /**
  * @param {any} project
@@ -243,6 +249,8 @@ export function compileTopology(project) {
     for (const r of routed) rIfaces.push({ name: r.name, ip: r.ip, prefix: r.prefix, up: r.up });
     const dev = { id: rId, name: `${sw.name || sw.id} (L3)`, kind: 'router', vendor: vendorOf(sw.model), ifaces: rIfaces };
     if (routes.length) dev.routes = routes; // CLI static routes
+    const acls = cliAcls(sw);
+    if (acls.length) dev.acls = acls; // CLI firewall / access-list
     devices.push(dev);
     meta.set(rId, { type: 'router', srcId: sw.id, name: sw.name || sw.id, fx: sw.fx, fy: sw.fy, floorId, ip: sw.ip });
     routerIds.add(sw.id);

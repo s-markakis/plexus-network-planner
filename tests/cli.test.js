@@ -204,3 +204,31 @@ describe('OSPF enablement', () => {
     expect(s.config.ospf.networks).toContain('10.0.0.0/24');
   });
 });
+
+describe('ACL / firewall commands', () => {
+  it('IOS access-list builds engine rules (host + eq port)', () => {
+    const s = cisco();
+    run(s, ['en', 'conf t',
+      'access-list 101 deny tcp any host 10.0.1.10 eq 22',
+      'access-list 101 permit ip any any']);
+    expect(s.config.acls).toEqual([
+      { action: 'deny', proto: 'tcp', src: 'any', dst: '10.0.1.10/32', dport: 22 },
+      { action: 'permit', proto: 'ip', src: 'any', dst: 'any', dport: null },
+    ]);
+  });
+  it('IOS wildcard mask converts to a prefix', () => {
+    const s = cisco();
+    run(s, ['en', 'conf t', 'access-list 10 deny icmp 10.0.0.0 0.0.0.255 10.0.1.0 0.0.0.255']);
+    expect(s.config.acls[0]).toMatchObject({ src: '10.0.0.0/24', dst: '10.0.1.0/24', proto: 'icmp' });
+  });
+  it('RouterOS firewall filter builds engine rules', () => {
+    const s = ros();
+    s.exec('/ip firewall filter add chain=forward action=drop protocol=tcp dst-address=10.0.1.0/24 dst-port=22');
+    expect(s.config.acls[0]).toEqual({ action: 'deny', proto: 'tcp', src: 'any', dst: '10.0.1.0/24', dport: 22 });
+  });
+  it('configToDevice carries ACLs into the sim device', () => {
+    const s = cisco();
+    run(s, ['en', 'conf t', 'access-list 1 deny ip any any']);
+    expect(configToDevice(s.config, { id: 'r' }).acls).toHaveLength(1);
+  });
+});

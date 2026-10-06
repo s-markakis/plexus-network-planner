@@ -15,10 +15,60 @@ import { ipToInt, intToIp } from './network.js';
 // ── Running config ───────────────────────────────────────────────────────────
 /**
  * @returns {{hostname:string, vendor:string,
- *   interfaces:Record<string,any>, routes:Array<any>, vlans:number[], ospf:any}}
+ *   interfaces:Record<string,any>, routes:Array<any>, vlans:number[], ospf:any, acls:Array<any>}}
  */
 export function newConfig({ hostname = '', vendor = 'cisco' } = {}) {
-  return { hostname, vendor, interfaces: {}, routes: [], vlans: [], ospf: null };
+  return { hostname, vendor, interfaces: {}, routes: [], vlans: [], ospf: null, acls: [] };
+}
+
+// ── ACL address helpers (shared by both dialects) ───────────────────────────
+// Normalise an address spec to 'any' or '<ip>/<prefix>' so the engine's
+// cidrContains can match it (a bare host IP becomes /32).
+function normAddr(s) {
+  if (!s || s === 'any' || s === '0.0.0.0/0') return 'any';
+  if (/^\d+\.\d+\.\d+\.\d+$/.test(s)) return `${s}/32`;
+  return s;
+}
+function portNum(s) {
+  const n = parseInt(s, 10);
+  if (Number.isFinite(n)) return n;
+  const named = { www: 80, http: 80, https: 443, ssh: 22, telnet: 23, domain: 53, ftp: 21, smtp: 25 };
+  return named[String(s).toLowerCase()] ?? null;
+}
+// Cisco wildcard mask (inverted) → prefix length. 0.0.0.255 → 24.
+function wildcardToPrefix(wc) {
+  const n = ipToInt(wc);
+  if (n == null) return null;
+  return maskToPrefix(intToIp((~n) >>> 0));
+}
+// Parse one Cisco address operand starting at tok[i]; returns [spec, nextIndex].
+function parseAclAddr(tok, i) {
+  const w = (tok[i] || '').toLowerCase();
+  if (w === 'any') return ['any', i + 1];
+  if (w === 'host' && tok[i + 1]) return [normAddr(tok[i + 1]), i + 2];
+  if (/^\d+\.\d+\.\d+\.\d+$/.test(tok[i] || '') && /^\d+\.\d+\.\d+\.\d+$/.test(tok[i + 1] || '')) {
+    const p = wildcardToPrefix(tok[i + 1]);
+    if (p == null) return [null, i];
+    return [`${tok[i]}/${p}`, i + 2];
+  }
+  return [null, i];
+}
+// `access-list <n> {permit|deny} <proto> <src> <dst> [eq <port>]` → engine rule.
+function parseIosAcl(tok) {
+  const action = (tok[1] || '').toLowerCase();
+  if (action !== 'permit' && action !== 'deny') return null;
+  const proto = (tok[2] || '').toLowerCase();
+  if (!['ip', 'icmp', 'tcp', 'udp'].includes(proto)) return null;
+  let i = 3;
+  const [src, ni] = parseAclAddr(tok, i);
+  if (!src) return null;
+  i = ni;
+  const [dst, nj] = parseAclAddr(tok, i);
+  if (!dst) return null;
+  i = nj;
+  let dport = null;
+  if ((tok[i] || '').toLowerCase() === 'eq' && tok[i + 1]) dport = portNum(tok[i + 1]);
+  return { action, proto, src, dst, dport };
 }
 
 function iface(config, name) {
@@ -178,6 +228,16 @@ function execIos(config, raw, ctx) {
       config.routes.push({ cidr: `${networkOf(net, prefix)}/${prefix}`, via });
       return { output: [] };
     }
+    // access-list <n> permit|deny <proto> <src> <dst> [eq <port>] — device-wide
+    // filter in the sim (interface binding via `ip access-group` is accepted but
+    // not scoped, since the engine filters per device).
+    if (t[0].toLowerCase() === 'access-list' && t.length >= 5) {
+      const rule = parseIosAcl(t.slice(1));
+      if (!rule) return err('% Invalid input detected');
+      config.acls.push(rule);
+      return { output: [] };
+    }
+    if (t[0].toLowerCase() === 'ip' && (t[1] || '').toLowerCase() === 'access-group') return { output: [] };
     if (t[0].toLowerCase() === 'no' && (t[1] || '').toLowerCase() === 'ip' && (t[2] || '').toLowerCase() === 'route') {
       const prefix = maskToPrefix(t[4]);
       const cidr = `${networkOf(t[3], prefix)}/${prefix}`;
@@ -294,6 +354,19 @@ function execRouterOS(config, line, _ctx) {
     for (const id of ids) if (!config.vlans.includes(id)) config.vlans.push(id);
     return { output: [] };
   }
+  // Firewall: /ip firewall filter add chain=forward action=drop|accept protocol=…
+  //           src-address=…/… dst-address=…/… dst-port=…
+  if (path === '/ip firewall filter' && verb === 'add') {
+    config.acls.push({
+      action: kv.action === 'drop' || kv.action === 'reject' ? 'deny' : 'permit',
+      proto: kv.protocol || 'ip',
+      src: normAddr(kv['src-address']),
+      dst: normAddr(kv['dst-address']),
+      dport: kv['dst-port'] ? portNum(kv['dst-port']) : null,
+    });
+    return { output: [] };
+  }
+
   // OSPF: /routing ospf instance add …  +  /routing ospf network add network=…/… area=…
   if (path === '/routing ospf instance' && verb === 'add') {
     if (!config.ospf) config.ospf = { enabled: true, networks: [] };
@@ -400,5 +473,6 @@ export function configToDevice(config, opts = {}) {
     vendor: config.vendor,
     ifaces,
     routes: config.routes.map((r) => ({ cidr: r.cidr, via: r.via })),
+    acls: Array.isArray(config.acls) ? config.acls.slice() : [],
   };
 }

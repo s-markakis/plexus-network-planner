@@ -292,3 +292,26 @@ describe('Phase 4b — routed uplinks + OSPF auto-convergence', () => {
     expect(c.warnings.some((w) => /no shared transit subnet/.test(w))).toBe(true);
   });
 });
+
+describe('CLI firewall folds into the topology', () => {
+  it('a deny rule blocks matching inter-VLAN traffic (filtered)', () => {
+    const cli = cliConfig([
+      'en', 'conf t',
+      'interface vlan 10', 'ip address 10.0.10.1 255.255.255.0', 'exit',
+      'interface vlan 20', 'ip address 10.0.20.1 255.255.255.0', 'exit',
+      'access-list 101 deny icmp 10.0.10.0 0.0.0.255 10.0.20.0 0.0.0.255', 'end',
+    ]);
+    const c = compileTopology({
+      settings: { vlans: [{ id: '10', subnet: '10.0.10.0/24' }, { id: '20', subnet: '10.0.20.0/24' }] },
+      floors: [{
+        SWS: [{ id: 'core', cli }],
+        APS: [{ id: 'a1', swId: 'core', port: '1', vlan: '10', ip: '10.0.10.5' }],
+        CAMS: [{ id: 'c1', swId: 'core', port: '2', vlan: '20', ip: '10.0.20.5' }],
+      }],
+    });
+    const r = ping(c.net, { from: 'h:a1', to: '10.0.20.5' });
+    expect(r.ok).toBe(false);
+    expect(r.status).toBe('filtered');
+    expect(c.net.devices.get('r:core').acls).toHaveLength(1);
+  });
+});
