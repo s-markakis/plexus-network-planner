@@ -66,6 +66,7 @@ import {parseDxf} from './src/dxf.js';
 import {importEsx,buildEsxZip} from './src/esx.js';
 import {CAM_RES_HPX,DORI_LEVELS,doriDistancesM,cameraBitrateMbps,storageGb} from './src/cameras.js';
 import {buildSampleProject} from './src/sampleProject.js';
+import {sshTarget,sshCommand} from './src/sshConnect.js';
 import {
   idbPutImage, idbGetImage, idbDeleteImage,
   newImgId as _newImgId,
@@ -4621,6 +4622,7 @@ function credsBlock(dev){
     <div class="ep-row"><label class="ep-lbl">Port</label><input class="ep-in ep-mono" id="cred-port" value="${esc(c.port||'')}" data-input-action="upd-creds" placeholder="443"/></div>
     <div class="ep-row"><label class="ep-lbl">Username</label><input class="ep-in" id="cred-user" value="${esc(c.user||'')}" data-input-action="upd-creds" autocomplete="off"/></div>
     <div class="ep-row"><label class="ep-lbl">Password</label><input class="ep-in ep-mono" id="cred-pass" type="password" value="${esc(c.pass||'')}" data-input-action="upd-creds" autocomplete="new-password"/><button class="btn" style="flex:0 0 auto;padding:4px 8px" data-action="toggle-pass" title="Show / hide password">👁</button></div>
+    <div class="ep-row"><label class="ep-lbl">SSH key</label><input class="ep-in ep-mono" id="cred-key" value="${esc(c.key||'')}" data-input-action="upd-creds" placeholder="~/.ssh/id_ed25519 (optional)"/></div>
     <div class="ep-row"><a href="#" data-action="open-mgmt" style="font-size:11px">↗ Open management UI</a></div>
     <div class="ep-row" style="font-size:10px;opacity:.55">Saved in the project file only — excluded from Share links and PDF/HTML reports.</div>`;
 }
@@ -4633,9 +4635,10 @@ function updCreds(){
   const port=(g('cred-port')?.value||'').trim();
   const user=g('cred-user')?.value||'';
   const pass=g('cred-pass')?.value||'';
+  const key=(g('cred-key')?.value||'').trim();
   // Keep the object only while something is set, so blank creds don't bloat saves.
-  if(proto==='https'&&!host&&!port&&!user&&!pass)delete d.creds;
-  else d.creds={proto,host,port,user,pass};
+  if(proto==='https'&&!host&&!port&&!user&&!pass&&!key)delete d.creds;
+  else d.creds={proto,host,port,user,pass,key};
 }
 function togglePass(){
   const el=document.getElementById('cred-pass');if(!el)return;
@@ -4649,6 +4652,27 @@ function openMgmt(){
   if(!host){toast('No host or IP set');return;}
   if(proto!=='http'&&proto!=='https'){toast('Open supports HTTP/HTTPS only — use an SSH client for '+proto.toUpperCase());return;}
   window.open(`${proto}://${host}${port?':'+port:''}`,'_blank','noopener');
+}
+// Right-click → Connect via SSH. On the desktop build this pops the real OS
+// terminal running `ssh` to the device (main process validates + launches);
+// in the web build there's no terminal to open, so we copy a ready-to-run
+// command instead. Structured target only — the raw command is never what the
+// native side runs.
+function connectSsh(item){
+  const t=sshTarget(item);
+  if(!t){toast('No host or IP set for SSH');return;}
+  const native=window.plexusNative&&window.plexusNative.openSshTerminal;
+  if(native){
+    Promise.resolve(native({host:t.host,user:t.user,port:t.port,key:t.key})).then(res=>{
+      if(res&&res.ok)toast('Opening terminal → '+(t.user?t.user+'@':'')+t.host);
+      else toast('SSH: '+((res&&res.error)||'could not open terminal'));
+    }).catch(err=>toast('SSH: '+((err&&err.message)||err)));
+    return;
+  }
+  const cmd=sshCommand(item);
+  if(cmd&&navigator.clipboard&&navigator.clipboard.writeText){
+    navigator.clipboard.writeText(cmd).then(()=>toast('SSH command copied: '+cmd)).catch(()=>toast(cmd));
+  }else if(cmd){toast(cmd);}
 }
 
 // Shared device-image preview + per-device image-URL override. Used by the AP,
@@ -5540,6 +5564,11 @@ function openItemContextMenu(type,id,clientX,clientY){
     items.push({label:'Duplicate',key:'Ctrl+D',action:()=>duplicateSelected()});
   }
   items.push({label:item.locked?'Unlock':'Lock',key:'Ctrl+L',action:()=>toggleLock()});
+  // Connect via SSH — only when the device resolves to a host (creds host/IP).
+  if(sshCommand(item)){
+    items.push('-');
+    items.push({label:'Connect via SSH',action:()=>connectSsh(item)});
+  }
   items.push('-');
   items.push({label:'Delete',key:'Del',danger:true,action:()=>{qDel(id,type);}});
   showContextMenu(clientX,clientY,items);

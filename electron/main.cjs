@@ -302,6 +302,157 @@ ipcMain.handle('survey:sample', async () => {
   }
 });
 
+// ── netssh bridge ────────────────────────────────────────────────────────────
+// Click-to-connect drives the user's own `netssh` broker (persistent SSH shells
+// for Cisco/MikroTik) over the CLI. Private keys never touch Plexus: netssh reads
+// the key by path (--key) the renderer imported from ~/.ssh/config. Passwords, if
+// any, go via the NETSSH_PASSWORD env of the child, never on argv.
+const os = require('node:os');
+const fs = require('node:fs');
+
+function netsshBin() {
+  const candidates = [
+    process.env.NETSSH_BIN,
+    path.join(os.homedir(), 'Downloads/netssh/.venv/bin/netssh'),
+    '/Volumes/PandorasBox/code/noctis/netssh/.venv/bin/netssh',
+    'netssh',
+  ].filter(Boolean);
+  for (const c of candidates) {
+    if (c === 'netssh') return c; // last resort: rely on PATH
+    try { if (fs.existsSync(c)) return c; } catch { /* ignore */ }
+  }
+  return null;
+}
+
+function runNetssh(args, { password, json = true } = {}) {
+  return new Promise((resolve) => {
+    const bin = netsshBin();
+    if (!bin) return resolve({ ok: false, error: 'netssh not found — install it or set NETSSH_BIN' });
+    const env = { ...process.env };
+    if (password) env.NETSSH_PASSWORD = password;
+    execFile(bin, args, { env, timeout: 60000, maxBuffer: 4 * 1024 * 1024 }, (err, stdout, stderr) => {
+      const out = String(stdout || '').trim();
+      if (json) {
+        try { return resolve(JSON.parse(out)); } catch { /* fall through */ }
+        return resolve({ ok: false, error: String(stderr || (err && err.message) || 'netssh error').trim(), raw: out });
+      }
+      resolve({ ok: !err, output: out, error: String(stderr || '').trim() });
+    });
+  });
+}
+
+ipcMain.handle('netssh:available', async () => ({ available: !!netsshBin() }));
+ipcMain.handle('netssh:open', async (_e, t = {}) => {
+  const args = ['open', String(t.host || ''), '-u', String(t.user || 'admin'), '-V', t.vendor || 'generic', '--json'];
+  if (t.port) args.push('-p', String(t.port));
+  if (t.identityFile) args.push('--key', String(t.identityFile));
+  if (t.knownHosts) args.push('--known-hosts', String(t.knownHosts));
+  if (t.readOnly) args.push('--read-only');
+  if (t.name) args.push('--name', String(t.name));
+  return runNetssh(args, { password: t.password });
+});
+ipcMain.handle('netssh:run', async (_e, { sid, command, timeout } = {}) => {
+  const args = ['run', String(sid), String(command), '--json'];
+  if (timeout) args.push('-t', String(timeout));
+  return runNetssh(args, { json: true });
+});
+ipcMain.handle('netssh:sendRaw', async (_e, { sid, data, newline } = {}) => {
+  const args = ['send-raw', String(sid), String(data)];
+  if (newline) args.push('-n');
+  return runNetssh(args, { json: false });
+});
+ipcMain.handle('netssh:close', async (_e, { sid } = {}) => runNetssh(['close', String(sid)], { json: false }));
+ipcMain.handle('netssh:sessions', async () => runNetssh(['sessions', '--json']));
+
+// ── Open a real terminal running `ssh` to a device (right-click → Connect) ───
+// A BOUNDED capability, deliberately not the arbitrary-command netssh bridge:
+// the renderer sends only structured fields and the main process rebuilds the
+// argv here after strict validation, because a loaded project file is untrusted
+// input — a malicious host/user/key from a shared .plexus file must never reach
+// a shell. Fail closed on anything that isn't a clean hostname/IP, user, port
+// or key path. No password is ever accepted (key- or agent-auth only).
+const SSH_HOST_RE = /^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,253}[A-Za-z0-9])?$/;
+const SSH_USER_RE = /^[A-Za-z0-9._+-]{1,64}$/;
+const SSH_KEY_RE  = /^[A-Za-z0-9._~/-]{1,256}$/;
+
+function buildSshArgv(t = {}) {
+  const host = String(t.host || '').trim();
+  if (!SSH_HOST_RE.test(host)) return { ok: false, error: 'Invalid SSH host' };
+  const argv = ['ssh'];
+  if (t.key != null && String(t.key).trim() !== '') {
+    let key = String(t.key).trim();
+    if (!SSH_KEY_RE.test(key)) return { ok: false, error: 'Invalid key path' };
+    // Expand a leading ~ to the real home dir so the path still resolves when
+    // the token is shell-quoted (single quotes would otherwise suppress ~).
+    if (key.startsWith('~/')) key = os.homedir() + key.slice(1);
+    argv.push('-i', key);
+  }
+  if (t.port != null && String(t.port) !== '' && Number(t.port) !== 22) {
+    const port = Number(t.port);
+    if (!Number.isInteger(port) || port < 1 || port > 65535) return { ok: false, error: 'Invalid port' };
+    argv.push('-p', String(port));
+  }
+  let user = '';
+  if (t.user != null && String(t.user).trim() !== '') {
+    user = String(t.user).trim();
+    if (!SSH_USER_RE.test(user)) return { ok: false, error: 'Invalid username' };
+  }
+  argv.push(user ? `${user}@${host}` : host);
+  return { ok: true, argv };
+}
+
+// Single-quote a token for /bin/sh. The validators above already forbid single
+// quotes, so this only has to wrap — the escape is defence in depth.
+const shQuote = (s) => `'${String(s).replace(/'/g, "'\\''")}'`;
+
+function openSshTerminal(t) {
+  const built = buildSshArgv(t);
+  if (!built.ok) return Promise.resolve(built);
+  return new Promise((resolve) => {
+    const ok = () => resolve({ ok: true });
+    const fail = (err) => resolve({ ok: false, error: String((err && err.message) || err) });
+
+    if (process.platform === 'darwin') {
+      // macOS: Terminal.app via AppleScript. The shell command is single-quoted
+      // + charset-validated; only \ and " need escaping for the AppleScript literal.
+      const cmd = built.argv.map(shQuote).join(' ');
+      const script = `tell application "Terminal"\nactivate\ndo script "${cmd.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"\nend tell`;
+      execFile('osascript', ['-e', script], { timeout: 10000 }, (err) => (err ? fail(err) : ok()));
+
+    } else if (process.platform === 'linux') {
+      // Linux: try the common terminal emulators in order; keep the window open
+      // after ssh exits by dropping into an interactive shell. The ssh command is
+      // single-quoted + charset-validated before it reaches bash -lc.
+      const cmd = built.argv.map(shQuote).join(' ');
+      const line = `${cmd}; exec "${process.env.SHELL || '/bin/bash'}"`;
+      const tries = [
+        ['x-terminal-emulator', ['-e', 'bash', '-lc', line]],
+        ['gnome-terminal', ['--', 'bash', '-lc', line]],
+        ['konsole', ['-e', 'bash', '-lc', line]],
+        ['xterm', ['-e', 'bash', '-lc', line]],
+      ];
+      (function next(i) {
+        if (i >= tries.length) return resolve({ ok: false, error: 'No supported terminal emulator found (install gnome-terminal, konsole or xterm)' });
+        execFile(tries[i][0], tries[i][1], { timeout: 10000 }, (err) => (err ? next(i + 1) : ok()));
+      })(0);
+
+    } else if (process.platform === 'win32') {
+      // Windows: open a new console window running ssh (OpenSSH client ships with
+      // Windows 10+). Tokens are charset-validated (no cmd metacharacters), so they
+      // pass straight through; `cmd /k` keeps the window open after ssh exits.
+      execFile('cmd', ['/c', 'start', '', 'cmd', '/k', ...built.argv], { timeout: 10000 }, (err) => {
+        if (!err) return ok();
+        execFile('wt', ['new-tab', ...built.argv], { timeout: 10000 }, (err2) => (err2 ? fail(err2) : ok()));
+      });
+
+    } else {
+      resolve({ ok: false, error: `Opening a terminal is not supported on ${process.platform}` });
+    }
+  });
+}
+
+ipcMain.handle('ssh:open-terminal', async (_e, t = {}) => openSshTerminal(t));
+
 // Windows groups taskbar buttons and resolves the running app's icon by its
 // AppUserModelID. It must match the appId electron-builder bakes into the
 // installed shortcut (com.plexus.networkplanner); otherwise Windows can't tie

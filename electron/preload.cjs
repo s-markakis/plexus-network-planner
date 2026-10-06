@@ -13,4 +13,8 @@ contextBridge.exposeInMainWorld('plexusNative', {
   // One-shot WiFi RSSI sample of the machine's current connection, for the
   // live click-to-survey mode.
   wifiSample: () => ipcRenderer.invoke('survey:sample'),
+  // Right-click → Connect via SSH: pop the OS terminal running `ssh` to a
+  // device. Structured fields only ({host,user,port,key}); the main process
+  // validates and rebuilds the argv (never a raw command string from here).
+  openSshTerminal: (target) => ipcRenderer.invoke('ssh:open-terminal', target),
 });
