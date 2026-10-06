@@ -2085,6 +2085,9 @@ function setUiMode(m){
   }
   uiMode=m;
   document.body.dataset.uimode=m;
+  // Entering Operate with plaintext passwords in the file is a leak risk — nudge
+  // toward the encrypted-creds vault (Settings → Credentials passphrase).
+  if(m==='operate'&&!_credPass&&_hasPlaintextCreds())toast('⚠ Stored passwords are unencrypted — set a Credentials passphrase in Settings to protect this project file.');
   document.querySelectorAll('[data-modes]').forEach(el=>{el.hidden=!el.dataset.modes.split(/\s+/).includes(m);});
   document.querySelectorAll('[data-uimode-btn]').forEach(b=>b.classList.toggle('active',b.dataset.uimodeBtn===m));
   // Pick a sensible tool for the mode, and never leave a now-hidden tool active.
@@ -5313,6 +5316,24 @@ function updSWSize(v){
 }
 
 // ═══ LEFT LIST ════════════════════════════════════
+// A small key marker on devices that carry an SSH login, so what's connectable
+// shows at a glance in the list. Only proto 'ssh' (https/other creds aren't).
+function credBadge(d){
+  const c=d&&d.creds;
+  if(!c||c.proto!=='ssh')return '';
+  const who=`${c.user?c.user+'@':''}${c.host||d.ip||''}`;
+  return `<span class="li-ssh" title="SSH ${esc(who)}" style="font-size:10px;margin-left:4px;opacity:.65">🔑</span>`;
+}
+// True if any device stores a plaintext password and no credentials passphrase
+// is set — used to nudge toward the encrypted-creds vault on entering Operate.
+function _hasPlaintextCreds(){
+  for(const f of FLOORS){
+    for(const key of ['APS','SWS','CAMS']){
+      for(const d of (f[key]||[])){if(d&&d.creds&&d.creds.pass)return true;}
+    }
+  }
+  return false;
+}
 function renderList(){
   leftList.innerHTML='';
   const apN=APS().length,swN=SWS().length,dzN=DZS().length,wN=WALLS().length,cmN=CAMS().length;
@@ -5359,7 +5380,7 @@ function renderList(){
       const sigDots={strong:'●●●',medium:'●●○',weak:'●○○'}[ap.sig||'strong'];
       const sigClass={strong:'sig-s',medium:'sig-m',weak:'sig-w'}[ap.sig||'strong'];
       const dotStyle=ap.color?` style="background:${esc(ap.color)}"`:'';
-      d.innerHTML=`<div class="li-dot"${dotStyle}></div><div class="li-info"><div class="li-name">${esc(ap.name)}<span class="li-status" style="background:${statusMeta(ap).color}" title="${esc(statusMeta(ap).label)}"></span></div><div class="li-sub">${esc(ap.model||'U6 Pro')}</div></div><span class="li-sig ${sigClass}">${sigDots}</span>${ap.locked?'<span class="li-lock">🔒</span>':''}<button class="li-del" data-action="quick-del" data-id="${ap.id}" data-type="ap">✕</button>`;
+      d.innerHTML=`<div class="li-dot"${dotStyle}></div><div class="li-info"><div class="li-name">${esc(ap.name)}<span class="li-status" style="background:${statusMeta(ap).color}" title="${esc(statusMeta(ap).label)}"></span>${credBadge(ap)}</div><div class="li-sub">${esc(ap.model||'U6 Pro')}</div></div><span class="li-sig ${sigClass}">${sigDots}</span>${ap.locked?'<span class="li-lock">🔒</span>':''}<button class="li-del" data-action="quick-del" data-id="${ap.id}" data-type="ap">✕</button>`;
       d.addEventListener('click',e=>{if(e.target.closest('.li-del'))return;sel(ap.id,'ap',{zoom:true});setMode('sel');});leftList.appendChild(d);
     });
   }
@@ -5367,7 +5388,7 @@ function renderList(){
     const h=document.createElement('div');h.className='sec-lbl';h.textContent='Switches/Routers';leftList.appendChild(h);
     filteredSWs.forEach(sw=>{
       const d=document.createElement('div');d.className='list-item sw-item'+(sw.id===selId?' active':'');
-      d.innerHTML=`<span style="font-size:12px">⊞</span><div class="li-info"><div class="li-name">${esc(sw.name)}<span class="li-status" style="background:${statusMeta(sw).color}" title="${esc(statusMeta(sw).label)}"></span></div><div class="li-sub">${esc(sw.model||'')}</div></div><button class="li-del" data-action="quick-del" data-id="${sw.id}" data-type="sw">✕</button>`;
+      d.innerHTML=`<span style="font-size:12px">⊞</span><div class="li-info"><div class="li-name">${esc(sw.name)}<span class="li-status" style="background:${statusMeta(sw).color}" title="${esc(statusMeta(sw).label)}"></span>${credBadge(sw)}</div><div class="li-sub">${esc(sw.model||'')}</div></div><button class="li-del" data-action="quick-del" data-id="${sw.id}" data-type="sw">✕</button>`;
       d.addEventListener('click',e=>{if(e.target.closest('.li-del'))return;sel(sw.id,'sw',{zoom:true});setMode('sel');});leftList.appendChild(d);
     });
   }
@@ -5376,7 +5397,7 @@ function renderList(){
     filteredCAMs.forEach(c=>{
       const d=document.createElement('div');d.className='list-item cam-item'+(c.id===selId?' active':'')+(c.locked?' locked':'');
       const dotStyle=c.color?` style="background:${esc(c.color)}"`:'';
-      d.innerHTML=`<div class="li-dot"${dotStyle}></div><div class="li-info"><div class="li-name">${esc(c.name)}<span class="li-status" style="background:${statusMeta(c).color}" title="${esc(statusMeta(c).label)}"></span></div><div class="li-sub">${esc(c.model||'')} · ${esc(c.resolution||'')}</div></div>${c.locked?'<span class="li-lock">🔒</span>':''}<button class="li-del" data-action="quick-del" data-id="${c.id}" data-type="cam">✕</button>`;
+      d.innerHTML=`<div class="li-dot"${dotStyle}></div><div class="li-info"><div class="li-name">${esc(c.name)}<span class="li-status" style="background:${statusMeta(c).color}" title="${esc(statusMeta(c).label)}"></span>${credBadge(c)}</div><div class="li-sub">${esc(c.model||'')} · ${esc(c.resolution||'')}</div></div>${c.locked?'<span class="li-lock">🔒</span>':''}<button class="li-del" data-action="quick-del" data-id="${c.id}" data-type="cam">✕</button>`;
       d.addEventListener('click',e=>{if(e.target.closest('.li-del'))return;sel(c.id,'cam',{zoom:true});setMode('sel');});leftList.appendChild(d);
     });
   }

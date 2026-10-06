@@ -1,6 +1,6 @@
 {
   "name": "plexus-network-planner",
-  "version": "3.6.0",
+  "version": "3.7.0",
   "description": "Plexus — professional WiFi + IP camera + switch/network site planner that runs in the browser. Wall-aware ray-cast coverage, SNR/throughput/MCS heatmaps, auto channel and Tx-power planning, regulatory regions + DFS, floor-to-floor RF leakage, survey CSV import, switch/PoE/topology planning, multi-floor PDF + BoM/cable-schedule exports.",
   "private": false,
   "type": "module",
