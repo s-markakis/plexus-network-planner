@@ -10,6 +10,7 @@
 
 import { newConfig, makeSession } from './cli.js';
 import { compileTopology } from './simCompile.js';
+import { ospfNeighbors } from './ospf.js';
 import { resolve } from './dns.js';
 import { ping } from './sim.js';
 
@@ -97,10 +98,22 @@ export function mountCliConsole({ root, getDevice, getProject, onConfigChange })
     return { ...r, ip };
   }
 
+  function execShow(what) {
+    if (what !== 'ospf-neighbor') return ['% unsupported show'];
+    let compiled;
+    try { compiled = compileTopology(getProject()); } catch { return ['% simulation error']; }
+    const rid = `r:${dev.id}`;
+    if (!compiled.ospfRouters || !compiled.ospfRouters.includes(rid)) return ['% OSPF is not running on this device'];
+    const peers = ospfNeighbors(compiled.net, rid).filter((n) => compiled.ospfRouters.includes(n.id));
+    if (!peers.length) return ['% no OSPF neighbors'];
+    return ['Neighbor ID       Address         State', ...peers.map((n) => `${String(n.id).padEnd(17)} ${String(n.ip).padEnd(15)} FULL`)];
+  }
+
   function submit(raw) {
     print([`${session.prompt()} ${raw}`], 'cli-cmd');
     const res = session.exec(raw);
     if (res.ping) print([pingSummary(execPing(res.ping), res.ping)], 'cli-std');
+    else if (res.show) print(execShow(res.show), 'cli-std');
     else if (res.output && res.output.length) print(res.output, res.error ? 'cli-err' : 'cli-std');
     else if (res.error) print(['% error'], 'cli-err');
     if (typeof onConfigChange === 'function') onConfigChange();

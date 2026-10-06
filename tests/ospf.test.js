@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { buildNet, ping } from '../files/src/sim.js';
-import { runOspf } from '../files/src/ospf.js';
+import { runOspf, ospfNeighbors } from '../files/src/ospf.js';
 
 // pc1 — r1 — r2 — pc2, routers joined by a /30 transit, NO static routes.
 function twoRouter() {
@@ -105,5 +105,21 @@ describe('runOspf', () => {
       links: [],
     });
     expect(runOspf(net)).toMatchObject({ routers: 0, installed: 0 });
+  });
+});
+
+describe('ospfNeighbors', () => {
+  it('lists the router sharing a transit subnet', () => {
+    const net = twoRouter();
+    const n = ospfNeighbors(net, 'r1');
+    expect(n).toHaveLength(1);
+    expect(n[0]).toMatchObject({ id: 'r2', ip: '10.0.1.2' });
+  });
+  it('a lone router has no neighbors', () => {
+    const net = twoRouter();
+    // isolate r1 by downing its transit link
+    net.devices.get('r1').ifaces.get('t').up = false;
+    net.devices.get('r2').ifaces.get('t').up = false;
+    expect(ospfNeighbors(net, 'r1')).toHaveLength(0);
   });
 });

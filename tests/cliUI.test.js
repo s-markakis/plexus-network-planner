@@ -123,3 +123,32 @@ describe('mountCliConsole (DOM)', () => {
     expect(root.textContent).toMatch(/no routed interface/);
   });
 });
+
+describe('show ip ospf neighbor in the console', () => {
+  function ospfProject() {
+    const { newConfig, makeSession } = require('../files/src/cli.js');
+    const cfg = (lines, name) => { const s = makeSession(newConfig({ vendor: 'cisco', hostname: name })); lines.forEach((l) => s.exec(l)); return s.config; };
+    const a = cfg(['en', 'conf t', 'interface vlan 10', 'ip address 10.0.10.1 255.255.255.0', 'exit', 'interface eth5', 'ip address 10.0.99.1 255.255.255.252', 'exit', 'router ospf 1', 'end'], 'SITE-A');
+    const b = cfg(['en', 'conf t', 'interface vlan 20', 'ip address 10.0.20.1 255.255.255.0', 'exit', 'interface eth5', 'ip address 10.0.99.2 255.255.255.252', 'exit', 'router ospf 1', 'end'], 'SITE-B');
+    const siteA = { id: 'siteA', name: 'SITE-A', cli: a };
+    return {
+      device: siteA,
+      project: {
+        settings: { vlans: [{ id: '10', subnet: '10.0.10.0/24' }, { id: '20', subnet: '10.0.20.0/24' }] },
+        floors: [{ SWS: [siteA, { id: 'siteB', name: 'SITE-B', cli: b, uplinkId: 'siteA', uplinkMode: 'routed' }], APS: [], CAMS: [] }],
+      },
+    };
+  }
+
+  it('lists the OSPF peer', () => {
+    const { device, project } = ospfProject();
+    const root = document.createElement('div');
+    document.body.appendChild(root);
+    mountCliConsole({ root, getDevice: () => device, getProject: () => project, onConfigChange() {} });
+    const input = /** @type {HTMLInputElement} */ (root.querySelector('.cli-input'));
+    const type = (l) => { input.value = l; input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter' })); };
+    ['enable', 'show ip ospf neighbor'].forEach(type);
+    expect(root.textContent).toMatch(/r:siteB/);
+    expect(root.textContent).toMatch(/10\.0\.99\.2/);
+  });
+});

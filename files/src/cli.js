@@ -213,6 +213,7 @@ function execIos(config, raw, ctx) {
       return { output: ['% No startup-config; running-config unchanged'] };
     }
     if (lc === 'show ip route') return { output: showIpRoute(config) };
+    if (lc === 'show ip ospf neighbor') return { output: [], show: 'ospf-neighbor' };
     if (lc === 'show ip interface brief') return { output: showIpIntBrief(config) };
     if (lc === 'show vlan') return { output: showVlan(config) };
     if (t[0].toLowerCase() === 'ping' && t[1]) return { output: [], ping: t[1] };

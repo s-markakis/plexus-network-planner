@@ -11,6 +11,8 @@
 // deterministic (ties break by router id). Re-runnable: it clears its own prior
 // 'ospf' routes first, so running after a config change reconverges cleanly.
 
+import { intToIp } from './network.js';
+
 function maskInt(prefix) {
   return prefix <= 0 ? 0 : (0xffffffff << (32 - prefix)) >>> 0;
 }
@@ -116,4 +118,29 @@ export function runOspf(net, opts = {}) {
   }
 
   return { installed, routers: routers.length, segments: segments.size };
+}
+
+// OSPF neighbors of `routerId`: the other routers that share one of its subnets
+// (an adjacency would form there). Returns [{ id, name, ip }] — ip is the
+// neighbor's address on the shared segment. For "show ip ospf neighbor".
+export function ospfNeighbors(net, routerId, opts = {}) {
+  const isEnabled = opts.enabled || defaultEnabled;
+  const me = net.devices.get(routerId);
+  if (!me || me.kind !== 'router') return [];
+  const mySubnets = new Set();
+  for (const i of me.ifaces.values()) {
+    if (isEnabled(me, i)) mySubnets.add(`${netOf(i.ipInt, i.prefix)}/${i.prefix}`);
+  }
+  const out = [];
+  for (const dev of net.devices.values()) {
+    if (dev.kind !== 'router' || dev.id === routerId) continue;
+    for (const i of dev.ifaces.values()) {
+      if (!isEnabled(dev, i)) continue;
+      if (mySubnets.has(`${netOf(i.ipInt, i.prefix)}/${i.prefix}`)) {
+        out.push({ id: dev.id, name: dev.name, ip: intToIp(i.ipInt) });
+        break;
+      }
+    }
+  }
+  return out;
 }
