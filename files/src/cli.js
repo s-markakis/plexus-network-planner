@@ -15,10 +15,10 @@ import { ipToInt, intToIp } from './network.js';
 // ── Running config ───────────────────────────────────────────────────────────
 /**
  * @returns {{hostname:string, vendor:string,
- *   interfaces:Record<string,any>, routes:Array<any>, vlans:number[], ospf:any, rip:any, acls:Array<any>, startup:any}}
+ *   interfaces:Record<string,any>, routes:Array<any>, vlans:number[], ospf:any, rip:any, acls:Array<any>, startup:any, natEnabled:boolean, natMasquerade:any}}
  */
 export function newConfig({ hostname = '', vendor = 'cisco' } = {}) {
-  return { hostname, vendor, interfaces: {}, routes: [], vlans: [], ospf: null, rip: null, acls: [], startup: null };
+  return { hostname, vendor, interfaces: {}, routes: [], vlans: [], ospf: null, rip: null, acls: [], startup: null, natEnabled: false, natMasquerade: null };
 }
 
 // Snapshot/restore the persistable part of a running-config (for startup-config).
@@ -271,6 +271,11 @@ function execIos(config, raw, ctx) {
       return { output: [] };
     }
     if (t[0].toLowerCase() === 'ip' && (t[1] || '').toLowerCase() === 'access-group') return { output: [] };
+    // ip nat inside source list <x> interface <y> overload  → enable PAT
+    if (t[0].toLowerCase() === 'ip' && (t[1] || '').toLowerCase() === 'nat' && (t[2] || '').toLowerCase() === 'inside' && (t[3] || '').toLowerCase() === 'source') {
+      config.natEnabled = true;
+      return { output: [] };
+    }
     if (t[0].toLowerCase() === 'no' && (t[1] || '').toLowerCase() === 'ip' && (t[2] || '').toLowerCase() === 'route') {
       const prefix = maskToPrefix(t[4]);
       const cidr = `${networkOf(t[3], prefix)}/${prefix}`;
@@ -291,6 +296,8 @@ function execIos(config, raw, ctx) {
       return { output: [] };
     }
     if (lc === 'no ip address') { i.ip = null; i.prefix = null; return { output: [] }; }
+    if (lc === 'ip nat inside') { i.natRole = 'inside'; return { output: [] }; }
+    if (lc === 'ip nat outside') { i.natRole = 'outside'; return { output: [] }; }
     if (t[0].toLowerCase() === 'switchport') {
       const sub = (t[1] || '').toLowerCase();
       if (sub === 'mode' && (t[2] === 'access' || t[2] === 'trunk')) { i.mode = t[2]; return { output: [] }; }
@@ -388,6 +395,12 @@ function execRouterOS(config, line, _ctx) {
     for (const id of ids) if (!config.vlans.includes(id)) config.vlans.push(id);
     return { output: [] };
   }
+  // NAT: /ip firewall nat add chain=srcnat action=masquerade out-interface=<if>
+  if (path === '/ip firewall nat' && verb === 'add' && kv.action === 'masquerade' && kv['out-interface']) {
+    config.natMasquerade = { outside: kv['out-interface'] };
+    return { output: [] };
+  }
+
   // Firewall: /ip firewall filter add chain=forward action=drop|accept protocol=…
   //           src-address=…/… dst-address=…/… dst-port=…
   if (path === '/ip firewall filter' && verb === 'add') {
@@ -511,7 +524,18 @@ export function configToDevice(config, opts = {}) {
     if (i.allowed && i.allowed.length) spec.allowed = i.allowed.slice();
     ifaces.push(spec);
   }
-  return {
+  let outside = null;
+  const inside = [];
+  if (config.natMasquerade && config.natMasquerade.outside) {
+    outside = config.natMasquerade.outside;
+    for (const i of Object.values(config.interfaces)) if (i.name !== outside && i.ip != null && i.prefix != null) inside.push(`${i.ip}/${i.prefix}`);
+  } else if (config.natEnabled) {
+    for (const i of Object.values(config.interfaces)) {
+      if (i.natRole === 'outside') outside = i.name;
+      else if (i.natRole === 'inside' && i.ip != null && i.prefix != null) inside.push(`${i.ip}/${i.prefix}`);
+    }
+  }
+  const dev = {
     id: id || config.hostname || 'dev',
     name: config.hostname || id,
     kind,
@@ -520,4 +544,6 @@ export function configToDevice(config, opts = {}) {
     routes: config.routes.map((r) => ({ cidr: r.cidr, via: r.via })),
     acls: Array.isArray(config.acls) ? config.acls.slice() : [],
   };
+  if (outside && inside.length) dev.nat = { inside, outside };
+  return dev;
 }

@@ -81,6 +81,26 @@ function cliOspfEnabled(sw) {
 function cliRipEnabled(sw) {
   return !!(sw && sw.cli && sw.cli.rip && sw.cli.rip.enabled);
 }
+// NAT config from a CLI config → engine nat {inside:[cidr...], outside:<iface>}.
+// IOS: `ip nat inside/outside` on interfaces + an `ip nat inside source … overload`.
+// RouterOS: `/ip firewall nat … action=masquerade out-interface=X` (inside = the rest).
+function cliNat(sw) {
+  const cfg = sw && sw.cli;
+  if (!cfg || !cfg.interfaces) return null;
+  const ifs = Object.values(cfg.interfaces);
+  let outside = null;
+  const inside = [];
+  if (cfg.natMasquerade && cfg.natMasquerade.outside) {
+    outside = cfg.natMasquerade.outside;
+    for (const i of ifs) if (i.name !== outside && validIp(i.ip) && Number.isFinite(i.prefix)) inside.push(`${i.ip}/${i.prefix}`);
+  } else if (cfg.natEnabled) {
+    for (const i of ifs) {
+      if (i.natRole === 'outside') outside = i.name;
+      else if (i.natRole === 'inside' && validIp(i.ip) && Number.isFinite(i.prefix)) inside.push(`${i.ip}/${i.prefix}`);
+    }
+  }
+  return outside && inside.length ? { inside, outside } : null;
+}
 // Packet-filter rules from a CLI config (access-list / firewall filter).
 function cliAcls(sw) {
   const cfg = sw && sw.cli;
@@ -304,6 +324,8 @@ export function compileTopology(project) {
     if (routes.length) dev.routes = routes; // CLI static routes
     const acls = cliAcls(sw);
     if (acls.length) dev.acls = acls; // CLI firewall / access-list
+    const nat = cliNat(sw);
+    if (nat) dev.nat = nat; // CLI NAT/PAT
     devices.push(dev);
     meta.set(rId, { type: 'router', srcId: sw.id, name: sw.name || sw.id, fx: sw.fx, fy: sw.fy, floorId, ip: sw.ip });
     routerIds.add(sw.id);

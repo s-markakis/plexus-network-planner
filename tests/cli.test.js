@@ -270,3 +270,37 @@ describe('RIP enablement', () => {
     expect(s.config.rip.enabled).toBe(true);
   });
 });
+
+describe('NAT via CLI', () => {
+  it('IOS ip nat inside/outside + overload builds nat and works end to end', () => {
+    const s = cisco();
+    run(s, ['en', 'conf t',
+      'interface lan', 'ip address 10.0.0.1 255.255.255.0', 'ip nat inside', 'exit',
+      'interface wan', 'ip address 203.0.113.2 255.255.255.252', 'ip nat outside', 'exit',
+      'ip nat inside source list 1 interface wan overload',
+      'ip route 0.0.0.0 0.0.0.0 203.0.113.1', 'end']);
+    const edge = configToDevice(s.config, { id: 'edge' });
+    expect(edge.nat).toMatchObject({ outside: 'wan' });
+    expect(edge.nat.inside).toContain('10.0.0.1/24');
+    const net = buildNet({
+      devices: [
+        { id: 'pc', kind: 'host', ifaces: [{ name: 'e', ip: '10.0.0.10', prefix: 24 }], gateway: '10.0.0.1' },
+        edge,
+        { id: 'net', kind: 'cloud', ifaces: [{ name: 'w', ip: '203.0.113.1', prefix: 30 }], routes: [{ cidr: '10.0.0.0/24', via: '203.0.113.2' }] },
+      ],
+      links: [['pc/e', 'edge/lan'], ['edge/wan', 'net/w']],
+    });
+    const r = ping(net, { from: 'pc', to: '8.8.8.8' });
+    expect(r.ok).toBe(true);
+    expect(r.events.some((e) => e.kind === 'nat-out' && e.to === '203.0.113.2')).toBe(true);
+  });
+  it('RouterOS masquerade sets the outside interface', () => {
+    const s = ros();
+    s.exec('/ip address add address=10.0.0.1/24 interface=lan');
+    s.exec('/ip address add address=203.0.113.2/30 interface=wan');
+    s.exec('/ip firewall nat add chain=srcnat action=masquerade out-interface=wan');
+    const dev = configToDevice(s.config, { id: 'r' });
+    expect(dev.nat).toMatchObject({ outside: 'wan' });
+    expect(dev.nat.inside).toContain('10.0.0.1/24');
+  });
+});
