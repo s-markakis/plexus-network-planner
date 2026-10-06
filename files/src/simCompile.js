@@ -145,15 +145,16 @@ export function compileTopology(project) {
   const endpoints = [];
   const seenSw = new Set();
   const seenEp = new Set();
-  for (const f of project?.floors || []) {
-    for (const sw of f.SWS || []) {
+  const arr = (x) => (Array.isArray(x) ? x : []); // non-array device lists are hostile input
+  for (const f of arr(project?.floors)) {
+    for (const sw of arr(f.SWS)) {
       if (!sw || !sw.id) { warnings.push(`switch ${(sw && sw.name) || '(unnamed)'}: missing id — skipped`); continue; }
       if (seenSw.has(sw.id)) { warnings.push(`switch ${sw.name || sw.id}: duplicate id ${sw.id} — skipped`); continue; }
       seenSw.add(sw.id);
       switches.push({ sw, floorId: f.id });
     }
     for (const [list, type] of [[f.APS, 'ap'], [f.CAMS, 'camera']]) {
-      for (const ep of list || []) {
+      for (const ep of arr(list)) {
         if (!ep || !ep.id) { warnings.push(`${type} ${(ep && ep.name) || '(unnamed)'}: missing id — skipped`); continue; }
         if (seenEp.has(ep.id)) { warnings.push(`${type} ${ep.name || ep.id}: duplicate id ${ep.id} — skipped`); continue; }
         seenEp.add(ep.id);
@@ -162,7 +163,7 @@ export function compileTopology(project) {
     }
     // Wireless clients associate to their best-signal AP (wall-aware RF), then
     // join that AP's switch + VLAN. Needs the floor's image pixel dimensions.
-    for (const cl of f.CLIENTS || []) {
+    for (const cl of arr(f.CLIENTS)) {
       if (!cl || !cl.id) { warnings.push(`client ${(cl && cl.name) || '(unnamed)'}: missing id — skipped`); continue; }
       if (seenEp.has(cl.id)) { warnings.push(`client ${cl.name || cl.id}: duplicate id ${cl.id} — skipped`); continue; }
       seenEp.add(cl.id);
@@ -170,7 +171,7 @@ export function compileTopology(project) {
         warnings.push(`client ${cl.name || cl.id}: floor has no image size for RF association — skipped`);
         continue;
       }
-      const assoc = bestAp(cl, f.APS || [], f.WALLS || [], f.imgW, f.imgH, {
+      const assoc = bestAp(cl, arr(f.APS), arr(f.WALLS), f.imgW, f.imgH, {
         model: project?.settings?.propagationModel,
         metersPerPx: Number.isFinite(f.scaleM) ? f.scaleM / 100 : undefined,
       });
