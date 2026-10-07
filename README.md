@@ -3,15 +3,15 @@
 Predictive WiFi &amp; camera design · a Packet-Tracer-class network simulator · live device operation — one app, no backend.</p>
 
 <p align="center">
-<a href="https://github.com/SP1R4/plexus-network-planner/releases/latest"><img src="https://img.shields.io/github/v/release/SP1R4/plexus-network-planner?color=black&label=release" alt="Release"></a>
-<a href="https://github.com/SP1R4/plexus-network-planner/actions/workflows/ci.yml"><img src="https://github.com/SP1R4/plexus-network-planner/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+<a href="https://github.com/s-markakis/plexus-network-planner/releases/latest"><img src="https://img.shields.io/github/v/release/s-markakis/plexus-network-planner?color=black&label=release" alt="Release"></a>
+<a href="https://github.com/s-markakis/plexus-network-planner/actions/workflows/ci.yml"><img src="https://github.com/s-markakis/plexus-network-planner/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
 <img src="https://img.shields.io/badge/desktop-mac%20%7C%20win%20%7C%20linux-black" alt="Desktop">
 <img src="https://img.shields.io/badge/tests-467%20unit%20%2B%209%20e2e-brightgreen" alt="Tests">
 <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-black.svg" alt="License: MIT"></a>
 <img src="https://img.shields.io/badge/no%20framework-vanilla%20JS-f7df1e.svg" alt="Vanilla JS">
 </p>
 
-<p align="center"><strong><a href="https://sp1r4.github.io/plexus-network-planner/">▶ Try it in your browser</a></strong> — nothing to install; click <em>Load sample project</em>.</p>
+<p align="center"><strong><a href="https://s-markakis.github.io/plexus-network-planner/">▶ Try it in your browser</a></strong> — nothing to install; click <em>Load sample project</em>.</p>
 
 <p align="center"><img src="docs/media/demo.gif" alt="Dragging an AP — wall-aware coverage re-clips in real time" width="860"></p>
 
@@ -46,8 +46,8 @@ and configure over a Cisco/MikroTik CLI, and then **connect to the real gear** o
 SSH — all from the same canvas. No backend, no accounts; a project is one JSON file
 you can email.
 
-> **[Live demo](https://sp1r4.github.io/plexus-network-planner/)** (deployed from
-> `main`) · **[Download the latest release](https://github.com/SP1R4/plexus-network-planner/releases/latest)**
+> **[Live demo](https://s-markakis.github.io/plexus-network-planner/)** (deployed from
+> `main`) · **[Download the latest release](https://github.com/s-markakis/plexus-network-planner/releases/latest)**
 > for macOS `.dmg`, Windows `.exe`, Linux `.AppImage`/`.deb`, or the portable
 > browser zip · **[Changelog](CHANGELOG.md)**
 
@@ -79,8 +79,8 @@ flowchart LR
 
 ### Option A — browser (zero install)
 
-Open the **[live demo](https://sp1r4.github.io/plexus-network-planner/)**, or grab
-the **portable zip** from [Releases](https://github.com/SP1R4/plexus-network-planner/releases/latest),
+Open the **[live demo](https://s-markakis.github.io/plexus-network-planner/)**, or grab
+the **portable zip** from [Releases](https://github.com/s-markakis/plexus-network-planner/releases/latest),
 unzip, and open `index.html`. Fully offline, runs from `file://`.
 
 > The browser build does everything *except* the desktop-only features (Operate /
@@ -89,7 +89,7 @@ unzip, and open `index.html`. Fully offline, runs from `file://`.
 ### Option B — desktop app (recommended)
 
 Download the installer for your OS from
-[Releases](https://github.com/SP1R4/plexus-network-planner/releases/latest):
+[Releases](https://github.com/s-markakis/plexus-network-planner/releases/latest):
 
 | OS | File | First-launch note (unsigned build) |
 |----|------|-------------------------------------|
@@ -100,7 +100,7 @@ Download the installer for your OS from
 ### Option C — from source
 
 ```bash
-git clone https://github.com/SP1R4/plexus-network-planner
+git clone https://github.com/s-markakis/plexus-network-planner
 cd plexus-network-planner
 npm install
 npm run dev          # browser dev server → http://localhost:5173
