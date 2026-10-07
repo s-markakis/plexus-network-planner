@@ -16,7 +16,7 @@ Host access-sw1 access-sw1.lan
 
 Host *
     User fallback
-    IdentityFile ~/.ssh/id_ed25519
+    IdentityFile ~/.ssh/id_rsa
 `;
 
 describe('parseSshConfig', () => {
