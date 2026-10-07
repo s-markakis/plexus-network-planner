@@ -39,6 +39,8 @@ test('annotation mode reveals the sub-tool bar', async ({page}) => {
 
 test('heatmap mode pill cycles through metrics', async ({page}) => {
   await page.goto('/');
+  // Heatmap controls live in the Layers ▾ dropdown — open it first.
+  await page.locator('[data-action="toggle-menu"][data-arg="layers-menu"]').click();
   const pill = page.locator('#heat-mode-pill');
   const first = (await pill.textContent())?.trim();
   await pill.click();
@@ -52,7 +54,9 @@ test('worker heatmap paints, including the SINR mode', async ({page}) => {
   await page.locator('[data-action="load-sample"]').click();
   await expect(page.locator('#empty-state')).toHaveClass(/hidden/);
   await expect(page.locator('.ap-grp')).toHaveCount(3);
-  // Turn the heatmap on and walk the mode pill until it reads SINR.
+  // Heatmap controls live in the Layers ▾ dropdown — open it, then turn the
+  // heatmap on and walk the mode pill until it reads SINR.
+  await page.locator('[data-action="toggle-menu"][data-arg="layers-menu"]').click();
   await page.locator('#btn-heat').click();
   const pill = page.locator('#heat-mode-pill');
   for (let i = 0; i < 6 && !/SINR/i.test((await pill.textContent()) || ''); i++) {

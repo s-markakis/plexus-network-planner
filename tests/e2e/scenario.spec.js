@@ -93,6 +93,8 @@ test('organization: inventory & rollout, status filter, validation, handover pac
   await expect(page.locator('#empty-state')).toHaveClass(/hidden/);
 
   // ── Inventory modal: 6 devices, mid-flight rollout ───────────────────────
+  // Inventory lives in the Export ▾ dropdown now — open it first.
+  await page.locator('[data-action="toggle-menu"][data-arg="export-menu"]').click();
   await page.locator('[data-action="show-inventory"]').click();
   await expect(page.locator('#mdl-title')).toHaveText('Inventory & rollout');
   const rows = page.locator('#mdl-body tbody tr');

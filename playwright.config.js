@@ -6,6 +6,9 @@ import {defineConfig} from '@playwright/test';
 export default defineConfig({
   testDir: './tests/e2e',
   testMatch: '**/*.spec.js',
+  // Ignore macOS AppleDouble shadow files (`._*`) that exFAT PandorasBox grows —
+  // they're not JS and would fail to parse as test files.
+  testIgnore: '**/._*',
   fullyParallel: true,
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 1 : 0,
