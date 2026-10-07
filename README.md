@@ -1,10 +1,12 @@
 <h1 align="center">Plexus</h1>
-<p align="center"><em>Network Site Planner — predictive WiFi, IP-camera and switch/PoE planning that runs anywhere.</em></p>
+<p align="center"><em>Plan it. Simulate it. Operate it.</em><br/>
+Predictive WiFi &amp; camera design · a Packet-Tracer-class network simulator · live device operation — one app, no backend.</p>
 
 <p align="center">
 <a href="https://github.com/SP1R4/plexus-network-planner/releases/latest"><img src="https://img.shields.io/github/v/release/SP1R4/plexus-network-planner?color=black&label=release" alt="Release"></a>
 <a href="https://github.com/SP1R4/plexus-network-planner/actions/workflows/ci.yml"><img src="https://github.com/SP1R4/plexus-network-planner/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
 <img src="https://img.shields.io/badge/desktop-mac%20%7C%20win%20%7C%20linux-black" alt="Desktop">
+<img src="https://img.shields.io/badge/tests-467%20unit%20%2B%209%20e2e-brightgreen" alt="Tests">
 <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-black.svg" alt="License: MIT"></a>
 <img src="https://img.shields.io/badge/no%20framework-vanilla%20JS-f7df1e.svg" alt="Vanilla JS">
 </p>
@@ -13,365 +15,459 @@
 
 <p align="center"><img src="docs/media/demo.gif" alt="Dragging an AP — wall-aware coverage re-clips in real time" width="860"></p>
 
-Plexus is a **network site planner** that runs entirely in the browser or as a
-native desktop app. Drop a floor plan, place access points, IP cameras and
-switches, draw walls in different materials, and watch **wall-aware coverage
-polygons + a real signal-strength heatmap** fall out of a ray-cast simulation in
-real time — then design the wiring (PoE budgets, port maps, topology, cabling)
-and hand off branded PDF / BoM / cable-schedule deliverables.
+---
 
-Predictive RF (SNR / throughput / MCS, selectable propagation models, regulatory
-regions), multi-floor, band-aware (2.4 / 5 / 6 GHz), directional antennas, survey
-import for predicted-vs-measured validation. **No backend. No accounts.** Projects
-save to a JSON file you can email.
+## Table of contents
 
-> **[Live demo](https://sp1r4.github.io/plexus-network-planner/)** — runs in any
-> browser, deployed straight from `main`.
-> **Download — [latest release](https://github.com/SP1R4/plexus-network-planner/releases/latest):**
-> desktop installers for **macOS** (`.dmg`), **Windows** (`.exe`) and **Linux**
-> (`.AppImage` / `.deb`), or the **portable browser zip** (unzip and open
-> `index.html` — no install, fully offline). · [Changelog](CHANGELOG.md)
+1. [What is Plexus?](#what-is-plexus)
+2. [The three modes](#the-three-modes)
+3. [Install](#install)
+4. [Tutorial 1 — Design a WiFi plan](#tutorial-1--design-a-wifi-plan)
+5. [Tutorial 2 — Simulate the network](#tutorial-2--simulate-the-network)
+6. [Tutorial 3 — Operate: connect to a real device](#tutorial-3--operate-connect-to-a-real-device)
+7. [Feature reference](#feature-reference)
+8. [Keyboard shortcuts](#keyboard-shortcuts)
+9. [How it works (architecture)](#how-it-works-architecture)
+10. [The coverage math](#the-coverage-math)
+11. [Build &amp; desktop installers](#build--desktop-installers)
+12. [Tests](#tests)
+13. [Project layout](#project-layout)
+14. [Project file format](#project-file-format)
+15. [Roadmap · Contributing · Security · License](#roadmap)
 
 ---
 
-## Features
+## What is Plexus?
 
-### Coverage modelling
-- **Wall-aware coverage** — ray-cast simulation accumulates per-material
-  dB attenuation (drywall, wood, glass, brick, concrete) for every wall
-  the signal crosses. Each AP renders its actual reachable polygon, not
-  a naive circle.
-- **Band-aware** — 2.4 / 5 / 6 GHz APs apply different wall-loss
-  multipliers because real RF doesn't care that they all use the same
-  drywall.
-- **Directional antennas** — omni, ceiling-down, wall-mount, sector
-  90 / 60 / 30°. Coverage polygon is masked by the pattern + heading.
-- **Real signal-strength heatmap** — canvas-based per-pixel rendering
-  with banded colours. Switch the heatmap between RSSI, SNR, **SINR**,
-  MCS index, and estimated throughput, and filter it by band
-  (2.4 / 5 / 6 GHz). Computed in a **Web Worker**, so dragging an AP
-  never janks the UI.
-- **Interference-aware SINR** — co-channel APs whose occupied spectrum
-  overlaps the serving AP count as interference, per pixel. Green
-  coverage with contested RF finally shows up on the map.
-- **Channel widths** — 20 / 40 / 80 / 160 / 320 MHz per AP. Width raises
-  the noise floor (+3 dB per doubling), scales throughput by real OFDMA
-  tone ratios, and makes channel-overlap warnings and the auto-channel
-  planner spectrum-true.
-- **Airtime / capacity planning** — expected clients × per-client Mbps
-  vs the cell's average deliverable throughput; the AP panel shows live
-  utilization and Validate flags saturated cells.
-- **Selectable propagation models** — log-distance, ITU-R P.1238 indoor,
-  or COST-231 multi-wall, so the prediction matches the building.
-- **Antenna fidelity** — per-AP antenna gain, cable loss, mount height,
-  and downtilt feed an effective-EIRP calculation.
-- **Regulatory regions** — FCC, ETSI, JP, AU/NZ, IN, BR presets
-  constrain channels, EIRP, and DFS.
-- **Roaming overlap** — highlights where ≥2 APs deliver ≥ -67 dBm so
-  clients can hand off cleanly.
-- **Floor-to-floor leakage** — optionally show neighbouring floors'
-  signal bleeding through the slab.
-- **Channel overlap warnings** — APs sharing or interfering on a 2.4 GHz
-  channel get a dashed orange link with a ⚡ Ch X pill.
-- **Auto channel + power planning** — graph-colouring channel assignment
-  and greedy per-AP Tx-power tuning, region-aware.
-- **Auto-AP placement** — greedy "drop N APs to reach 92% coverage"
-  optimizer that respects existing APs and walls.
+Plexus is a **network site planner, simulator and operator** in a single app that
+runs in any browser or as a native desktop build. You design a network on a floor
+plan, turn that same design into a **working simulated network** you can `ping`
+and configure over a Cisco/MikroTik CLI, and then **connect to the real gear** over
+SSH — all from the same canvas. No backend, no accounts; a project is one JSON file
+you can email.
 
-### Devices on the map
-- **Access points** — UniFi, MikroTik, Aruba/HPE, Cisco Catalyst,
-  Meraki, Ruckus, Cambium, TP-Link Omada, EnGenius, and Extreme
-  catalogs with per-model PoE draw, antenna gain, and typical ranges.
-  Paste your own catalog via the plugin dialog to extend the lists.
-- **IP cameras** — UniFi Protect (G3 / G4 / G5 / AI), Hikvision, Dahua,
-  Reolink, and Axis catalogs. Configurable FoV / heading / range; the
-  field-of-view cone renders on the map. Press `C` to place.
-- **Switches & routers** — per-switch PoE budget. Link any AP or camera
-  to a switch and view the cable run on the map.
-- **Dead zones & walls** — drag-to-draw walls (Shift snaps to 45°),
-  multi-material, drag vertex handles to reshape after placement.
-- **SVG wall import** — drop an SVG floor plan and line / polyline /
-  polygon / path elements become walls automatically.
-- **DXF wall import** — LINE / LWPOLYLINE / POLYLINE entities from CAD
-  handoffs become walls (with a generated blank canvas when there's no
-  plan image yet).
-- **Automatic wall detection** — classical CV (Otsu + Hough transform,
-  zero dependencies) extracts straight walls from the plan bitmap, with
-  a preview + accept/discard step.
-- **DORI zones** (IEC 62676-4) — camera cones show Identify / Recognize
-  / Observe / Detect pixel-density bands from resolution + FoV + floor
-  scale; per-tier distances in the camera panel.
-- **Storage calculator** — per-camera bitrate (auto from resolution ×
-  H.264/H.265, or override) × retention days → NVR sizing in the panel,
-  Validate and the BoM.
+> **[Live demo](https://sp1r4.github.io/plexus-network-planner/)** (deployed from
+> `main`) · **[Download the latest release](https://github.com/SP1R4/plexus-network-planner/releases/latest)**
+> for macOS `.dmg`, Windows `.exe`, Linux `.AppImage`/`.deb`, or the portable
+> browser zip · **[Changelog](CHANGELOG.md)**
 
-### Network planning
-- **PoE budget** — sum draw per switch from every AP / camera assigned
-  to it; flag over-budget switches in the ⚡ PoE summary modal.
-- **Cable runs** — toggle the **Cables** view to draw lines from
-  devices to their switches with length labels (red when > 100 m).
-- **Survey import** — import measured RSSI samples from a CSV; dots are
-  flagged where measured signal deviates materially from predicted.
-- **Live survey mode** (desktop app) — click where you're standing and
-  the app samples your machine's current WiFi RSSI into a survey point.
-  No CSV round-trip.
-- **UniFi controller sync** (desktop app) — pull the device list from a
-  UniFi OS console or legacy controller to fill in as-built IP /
-  firmware / serial and Live status; push the planned channel / width /
-  Tx-power back to matching APs.
-- **Ekahau interop** — import `.esx` projects (floors, plan images,
-  scale, material-mapped walls, AP positions/channels) and export a
-  best-effort `.esx`.
-- **AP-on-stick mode** — drag a candidate AP and read live coverage /
-  overlap feedback before committing the placement.
+---
 
-### Organization & rollout
-- **Inventory & rollout view** — a flat, searchable as-built table of
-  every device (serial, asset tag, firmware, IP) with per-device install
-  status — planned → ordered → installed → tested → live — editable
-  inline; a sidebar filter dims everything else on the map.
-- **IPAM** — subnet-backed VLAN registry feeds per-device IP suggestion
-  and bulk **IP+ all**; Validate flags off-subnet IPs and nearly-full
-  pools; IP plan CSV for the network doc.
-- **Port maps** — per-switch port grid in the panel and report, plus a
-  port-map CSV with free ports listed.
-- **Naming convention** — a `{site}-F{floor}-{type}{nn}` pattern that
-  Validate enforces and one click applies building-wide.
-- **As-designed vs as-built** — mark a revision as the ★ design baseline
-  and diff it against the current state, down to field changes
-  (status, IP, port, serial, channel…).
-- **Handover pack** — one zip with an HTML summary plus inventory,
-  IP plan, port map, BoM and cable-schedule CSVs.
+## The three modes
 
-### Deliverables
-- **BoM + cable-schedule CSV** — one-click bill of materials and cable
-  schedule for procurement and installers.
-- **Per-AP install sheets** — a printable sheet per AP (location, radio
-  config, switch port, serial, status) for the field team.
-- **Customer branding** — project logo, company / tagline / footer line,
-  and architect's-scale presets carried into HTML and PDF exports.
-- **Design review** — snapshot revisions and diff any two; per-device
-  comments on every AP, camera, switch, dead zone, and wall.
-- **Annotations** — text labels, arrows, and dimension lines with live
-  metre readouts.
+Plexus has one canvas and three workspace **modes**. The top-bar switcher changes
+which tools are available, so each mode stays focused.
 
-### Workflow
-- **Multi-floor** — each floor carries its own image, scale (m / 100 px),
-  APs, cameras, switches, dead zones, walls.
-- **Multi-select** — Shift-click or marquee-drag in select mode;
-  Delete clears the whole selection.
-- **Undo / redo** — 50-step history with snapshot debouncing, so a slider
-  scrub collapses to one undoable step.
-- **Autosave** — silent every 10 s to localStorage; floor images live in
-  IndexedDB so the payload stays tiny.
-- **Shareable URL** — 🔗 Share copies a gzip + base64-encoded link that
-  re-opens the project in any browser.
-- **HTML + per-floor PDF export** — branded report with cover page,
-  per-floor maps + tables, and per-AP / per-camera technical details.
-- **Dark mode**, **presentation mode**, **keyboard shortcuts** for every
-  tool, **ruler** for arbitrary distance measurements.
-- **i18n-ready** — all UI strings route through a no-dependency `t()`
-  helper; new languages drop in as bundles under `files/src/i18n/`.
-- **Runs from `file://`** after `npm run build` — no server required for
-  end users.
+```mermaid
+flowchart LR
+    A["🎨 Design<br/>place devices · draw walls<br/>RF coverage &amp; heatmaps"]
+    B["🧪 Simulate<br/>ping / traceroute · VLANs<br/>OSPF/RIP · IOS/RouterOS CLI"]
+    C["🔌 Operate<br/>connect to real devices<br/>over SSH (desktop only)"]
+    A --> B --> C
+    C -. "same project" .-> A
+```
 
-## Gallery
+| Mode | What you do | Key |
+|------|-------------|-----|
+| **Design** | Lay out APs, cameras, switches/routers, walls; read wall-aware coverage + heatmaps. | `A` |
+| **Simulate** | Run packets on your design: VLANs, routing, DHCP/DNS/NAT, a per-device CLI. | `M` |
+| **Operate** | Open an SSH session to the real device you clicked. Desktop build only, behind a confirmation. | — |
 
-| | |
-|---|---|
-| ![Wall-clipped coverage polygons](docs/media/coverage.png) | ![RSSI heatmap](docs/media/heatmap-rssi.png) |
-| Wall-clipped coverage + camera FoV cones | RSSI heatmap (ITU-R P.1238 indoor model) |
-| ![Throughput heatmap](docs/media/heatmap-throughput.png) | ![Dark mode](docs/media/dark-heatmap.png) |
-| Estimated-throughput heatmap | Dark mode |
+---
 
-<details>
-<summary>More: cable runs, classic hero shot</summary>
+## Install
 
-![Cable runs to switches](docs/media/cables.png)
-![Plexus hero](docs/screenshot.png)
+### Option A — browser (zero install)
 
-</details>
+Open the **[live demo](https://sp1r4.github.io/plexus-network-planner/)**, or grab
+the **portable zip** from [Releases](https://github.com/SP1R4/plexus-network-planner/releases/latest),
+unzip, and open `index.html`. Fully offline, runs from `file://`.
 
-All shots come from the bundled sample project (`files/src/sampleProject.js`)
-and are regenerated with `node scripts/capture-media.mjs`.
+> The browser build does everything *except* the desktop-only features (Operate /
+> SSH, live WiFi survey, UniFi sync) — those need the native app.
 
-## Quick start
+### Option B — desktop app (recommended)
 
-Requires Node 18+ (LTS recommended).
+Download the installer for your OS from
+[Releases](https://github.com/SP1R4/plexus-network-planner/releases/latest):
+
+| OS | File | First-launch note (unsigned build) |
+|----|------|-------------------------------------|
+| **macOS** | `.dmg` / `.zip` | Right-click → **Open** → **Open**. If still blocked: `xattr -dr com.apple.quarantine "/Applications/Plexus.app"` |
+| **Windows** | `.exe` (NSIS) | SmartScreen → **More info** → **Run anyway** |
+| **Linux** | `.AppImage` / `.deb` | `chmod +x *.AppImage` then run |
+
+### Option C — from source
 
 ```bash
 git clone https://github.com/SP1R4/plexus-network-planner
 cd plexus-network-planner
 npm install
-npm run dev          # http://localhost:5173
+npm run dev          # browser dev server → http://localhost:5173
+npm run app:dev      # OR launch the desktop app
 ```
 
-Then in the app:
-1. Click **▶ Load sample project** to start from a populated office plan,
-   or **↑ Upload Map** to drop in your own floor plan (PNG/JPG/SVG/PDF).
-2. Set **SCALE** in the toolbar — metres per 100 px of the image (this
-   also switches the heatmap to physical FSPL-based path loss).
-3. Press <kbd>A</kbd> and click the map to place access points.
-4. Press <kbd>L</kbd> to draw walls (Shift snaps to 45°).
-5. Press <kbd>?</kbd> for the full keyboard cheatsheet.
+Requires **Node 18+** (LTS recommended).
 
-## Build
+---
 
-```bash
-npm run build        # → dist/ (open dist/index.html directly, no server needed)
+## Tutorial 1 — Design a WiFi plan
+
+> Goal: a floor plan with wall-aware coverage and a signal heatmap.
+
+1. **Load a plan.** Click **▶ Load sample project** to start populated, or
+   **↑ Upload Map** and drop a floor plan (PNG / JPG / SVG / PDF).
+2. **Set the scale.** In the toolbar, set **SCALE** = metres per 100 px of the
+   image. This switches the heatmap to physical, FSPL-based path loss.
+3. **Draw walls.** Press <kbd>L</kbd> and drag (hold <kbd>Shift</kbd> to snap to
+   45°). Pick a material — drywall, glass, brick, concrete — each attenuates
+   differently. Or **import** walls from an SVG/DXF, or auto-detect them from the
+   bitmap.
+4. **Place access points.** Press <kbd>A</kbd> and click. Each AP renders its
+   **actual wall-clipped coverage polygon**, not a circle.
+5. **Turn on the heatmap.** Open **▤ Layers ▾ → Heatmap**, then cycle the metric
+   pill through **RSSI → SNR → SINR → MCS → Throughput**.
+6. **Optimize.** Use **✦ Auto-place** (drop APs to hit 92% coverage), **⌁ Auto-channel**
+   (graph-colouring), and **⌁ Auto-power**.
+7. **Deliver.** Export a branded **PDF**, **BoM/cable-schedule CSV**, or a
+   one-zip **Handover pack**.
+
+| | |
+|---|---|
+| ![Wall-clipped coverage + camera FoV cones](docs/media/coverage.png) | ![RSSI heatmap](docs/media/heatmap-rssi.png) |
+| **Coverage polygons** — wall-clipped, with camera FoV cones | **Heatmap** — RSSI (ITU-R P.1238 indoor model) |
+
+<details>
+<summary>📸 More screenshots — throughput heatmap, dark mode, cable runs</summary>
+
+| | |
+|---|---|
+| ![Throughput heatmap](docs/media/heatmap-throughput.png) | ![Dark mode](docs/media/dark-heatmap.png) |
+| Estimated-throughput heatmap | Dark mode |
+
+![Cable runs to switches](docs/media/cables.png)
+
+*All shots come from the bundled sample (`files/src/sampleProject.js`), regenerated with `node scripts/capture-media.mjs`.*
+
+</details>
+
+---
+
+## Tutorial 2 — Simulate the network
+
+> Goal: make the design forward real packets, route between VLANs, and take CLI config.
+
+Switch to **🧪 Simulate** (press <kbd>M</kbd>). The packet-sim panel opens.
+
+**Ping across the topology**
+
+1. Pick a **source** and **destination** device.
+2. Click **Ping** — an animated PDU walks the map hop by hop; the step inspector
+   shows each decision (ARP → L2 forward → L3 route → deliver).
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant PC1 as PC-1 (VLAN 10)
+    participant R as L3 Switch
+    participant PC2 as PC-2 (VLAN 20)
+    PC1->>R: ARP who-has gateway?
+    R-->>PC1: ARP reply (SVI MAC)
+    PC1->>R: ICMP echo → 10.0.20.x
+    Note over R: route lookup<br/>longest-prefix match
+    R->>PC2: ICMP echo (routed)
+    PC2-->>PC1: ICMP echo-reply
 ```
 
-The production build uses relative paths (`base: './'` in `vite.config.js`)
-so the output works equally well over `http://`, a CDN, or `file://`.
+**Configure a device from the CLI**
 
-## Desktop app (macOS / Windows / Linux)
+Select a switch/router → **CLI Console**. Type real **Cisco IOS** or **MikroTik
+RouterOS**; the simulator forwards accordingly.
 
-Native installers wrap the same web build in an Electron window. Grab the
-installer for your OS from the [Releases](https://github.com/SP1R4/plexus-network-planner/releases)
-page:
+```text
+# Cisco IOS — inter-VLAN routing on an SVI
+interface vlan 20
+ ip address 10.0.20.1 255.255.255.0
+ no shutdown
+!
+router ospf 1
+ network 10.0.0.0 0.0.255.255 area 0
+```
 
-| OS      | File                    |
-|---------|-------------------------|
-| macOS   | `.dmg` (or `.zip`)      |
-| Windows | `.exe` (NSIS installer) |
-| Linux   | `.AppImage` or `.deb`   |
+```text
+# MikroTik RouterOS — the equivalent
+/ip address add address=10.0.20.1/24 interface=vlan20
+/routing ospf instance add name=default
+/routing ospf network add network=10.0.0.0/16 area=backbone
+```
 
-Installers are produced by a GitHub Actions matrix (`.github/workflows/release.yml`)
-on every `v*` tag — one runner per OS, since each native package must be built
-on its own platform.
+What the simulator models: **L2 switching + VLANs + MAC learning**, **ARP**,
+**L3 routing** (connected/static + **OSPF** and **RIP**), **DHCP**, name-based
+**DNS** (`ping AP-01` resolves), **NAT/PAT**, **ACL/firewall**, an **internet
+cloud**, and **link-down fault injection**. Drop a **wireless client** (<kbd>K</kbd>)
+and it associates to the best AP *by real signal*, then gets a DHCP lease.
 
-### Build it yourself
+> The RouterOS dialect is validated against real hardware (hAP ax lite,
+> RouterOS 7.24.4).
+
+---
+
+## Tutorial 3 — Operate: connect to a real device
+
+> Goal: SSH into the physical device you clicked. **Desktop app only.**
+
+1. **Give the device credentials.** Select it → **Credentials**: set **Protocol** =
+   SSH, **Host** (defaults to the device IP), **Port**, **Username**, and an
+   optional **SSH key** path (e.g. `~/.ssh/id_ed25519`). A **🔑** badge marks
+   devices that are SSH-connectable.
+2. **Protect the file.** In **Settings → Credentials passphrase**, set a passphrase
+   so credentials are encrypted at rest — a shared `.plexus` never leaks a password.
+   (Entering Operate reminds you if plaintext passwords are present.)
+3. **Connect.** Switch to **🔌 Operate** (confirm the prompt), then **right-click the
+   device → Connect via SSH**. Your OS terminal opens a live session.
+
+```mermaid
+flowchart LR
+    RC["Right-click device"] --> M["Connect via SSH"]
+    M --> T["sshConnect.js<br/>build {host,user,port,key}"]
+    T --> P["preload bridge"]
+    P --> V["main.cjs · sshArgv.cjs<br/>validate + rebuild argv"]
+    V -->|valid| TERM["Terminal.app · gnome-terminal · Windows Terminal"]
+    V -->|hostile input| X["❌ rejected (fail closed)"]
+```
+
+**Security model.** The renderer only ever sends **structured fields** —
+the main process re-validates them and rebuilds the `ssh` command itself, so a
+hostile project file can't inject a shell command. **No password is ever put on
+the command line** (key/agent auth, or ssh prompts in the terminal). The command
+run is exactly:
 
 ```bash
-npm install
-npm run app:dev      # launch the desktop app against the current build
+ssh -i ~/.ssh/your_key -p 22 admin@192.0.2.10
+```
+
+> If a device connects as your local username instead of the one you expect, its
+> **Username** field is empty — `ssh` falls back to your OS login. Set it.
+
+---
+
+## Feature reference
+
+<details open>
+<summary><strong>Coverage modelling</strong></summary>
+
+- **Wall-aware coverage** — per-material dB attenuation (drywall/wood/glass/brick/
+  concrete) summed along 72 cast rays per AP → the real reachable polygon.
+- **Band-aware** 2.4 / 5 / 6 GHz wall-loss multipliers; **directional antennas**
+  (omni, ceiling, wall, sector 90/60/30°).
+- **Real heatmap** (Web Worker) — RSSI / SNR / **SINR** / MCS / throughput, band-filtered.
+- **Channel widths** 20–320 MHz (noise-floor + OFDMA-accurate); **airtime/capacity** checks.
+- **Propagation models** — log-distance, ITU-R P.1238, COST-231 multi-wall.
+- **Regulatory regions** (FCC/ETSI/JP/AU-NZ/IN/BR), **roaming overlap**,
+  **floor-to-floor leakage**, **auto channel/power/placement**.
+</details>
+
+<details>
+<summary><strong>Network simulation (Packet-Tracer-class)</strong></summary>
+
+- Deterministic forwarding engine: **L2/VLAN/MAC**, **ARP**, **L3 routing**
+  (longest-prefix, TTL), **ICMP ping/traceroute**, **L4 probe**.
+- **Inter-VLAN routing** (L3 switch / SVIs / routed `/30` uplinks).
+- **Dynamic routing** — **OSPF** (Dijkstra) and **RIP** (15-hop).
+- **Services** — DHCP, name-based DNS, NAT/PAT, ACL/firewall, internet cloud.
+- **Device CLI** — Cisco IOS + MikroTik RouterOS, running/startup config, `show` cmds.
+- **Animated PDU** on the map + step inspector; **wireless association** via real RF;
+  **fault injection**.
+</details>
+
+<details>
+<summary><strong>Live operation (desktop)</strong></summary>
+
+- **Right-click → Connect via SSH** (macOS/Linux/Windows terminal).
+- **Per-device credentials** + optional SSH key; **encrypted credentials vault**.
+- **Fail-closed** ssh-argv validation; **no password on argv**.
+- **UniFi controller sync** (pull as-built / push channel-power); **live WiFi survey**.
+</details>
+
+<details>
+<summary><strong>Devices · planning · organization · deliverables</strong></summary>
+
+- **Devices** — AP/camera/switch catalogs (UniFi, MikroTik, Cisco, Aruba, Meraki,
+  Hikvision, Dahua, Axis…), L2/L3 switches, wireless clients, walls, dead zones,
+  SVG/DXF import, CV wall detection, DORI zones, NVR storage calculator.
+- **Planning** — PoE budgets, cable runs, topology tree, survey CSV import, Ekahau
+  `.esx` interop, AP-on-stick.
+- **Organization** — inventory & rollout table, IPAM + VLAN registry, port maps,
+  naming convention, as-designed-vs-as-built diff, handover pack.
+- **Deliverables** — branded PDF, BoM + cable-schedule CSV, per-AP install sheets,
+  design-review comments, annotations.
+</details>
+
+---
+
+## Keyboard shortcuts
+
+| Key | Tool | Key | Tool |
+|-----|------|-----|------|
+| <kbd>A</kbd> | Add AP | <kbd>M</kbd> | Packet simulation |
+| <kbd>W</kbd> | Switch / Router | <kbd>K</kbd> | Wireless client |
+| <kbd>C</kbd> | Camera | <kbd>L</kbd> | Wall |
+| <kbd>D</kbd> | Dead zone | <kbd>N</kbd> | Annotation |
+| <kbd>R</kbd> | Ruler | <kbd>V</kbd> | Toggle coverage |
+| <kbd>H</kbd> | Toggle heatmap | <kbd>O</kbd> | Toggle overlaps |
+| <kbd>G</kbd> | Toggle grid | <kbd>?</kbd> | Full cheatsheet |
+
+---
+
+## How it works (architecture)
+
+The project model is **compiled** into a topology that a pure, headless engine
+forwards packets over; the UI is a thin renderer, and the CLI folds back into the
+same compile step so typed config changes what the next `ping` does.
+
+```mermaid
+flowchart TD
+    subgraph Model
+      P["Project model<br/>switches · APs · cameras · clients · VLANs"]
+      CLI["CLI console<br/>cli.js (IOS / RouterOS)"]
+    end
+    P --> C["simCompile.js<br/>model → topology"]
+    CLI --> C
+    C --> N["sim.js · buildNet()<br/>forwarding engine"]
+    subgraph ControlPlane["Routing control planes"]
+      OSPF["ospf.js"]
+      RIP["rip.js"]
+    end
+    OSPF --> N
+    RIP --> N
+    N --> EV["deterministic<br/>event stream"]
+    EV --> UI["simUI.js<br/>animated PDU + inspector"]
+    N --> WL["wireless.js<br/>best-AP association"]
+```
+
+Everything under `files/src/` is **pure and DOM-free**, type-checked with
+`tsc --checkJs` (JSDoc, no `.ts` rename), and has a sibling test in `tests/`.
+
+---
+
+## The coverage math
+
+**Coverage polygons** — for each AP we cast **72 rays** (every 5°). Each ray sums
+per-material dB loss × the AP's **band factor** (0.6 / 1.0 / 1.3 for 2.4 / 5 / 6 GHz)
+and shrinks its reach by `0.5^(loss/3)` — every 3 dB of attenuation roughly halves
+range. The 72 endpoints form the cached coverage polygon.
+
+**Heatmap dBm** — with a real-world **SCALE** set, signal uses physical path loss:
+
+```
+RSSI(d) = EIRP − FSPL(1m) − 10·n·log₁₀(d) − Σ wall_dB
+FSPL(1m) = 20·log₁₀(f_MHz) − 27.55        f = 2437 / 5500 / 6525 MHz
+n        = 2.2 (log-distance) · 3.0 (ITU indoor) · 2.0 (COST-231 + per-wall)
+EIRP     = Tx power + antenna gain − cable loss
+```
+
+See `files/src/geometry.js` (pure, unit-tested) and
+[docs/accuracy.md](docs/accuracy.md) for predicted-vs-measured.
+
+---
+
+## Build & desktop installers
+
+```bash
+npm run build        # → dist/  (open dist/index.html directly; file:// safe)
 npm run app:build    # → release/  (installer for the OS you're on)
 ```
 
-> `app:build` only produces the **current** platform's installer — macOS makes
-> the `.dmg`/`.zip`, Windows the `.exe`, Linux the `.AppImage`/`.deb`. Use the
-> CI workflow (push a tag) to get all three at once.
+`base: './'` keeps the web build portable across `http://`, a CDN, or `file://`.
+`app:build` only makes the **current** platform's installer; the GitHub Actions
+matrix (`.github/workflows/release.yml`) builds **all three** on a `v*` tag — one
+native runner per OS. App icons live in `electron/resources/`
+(`npm run make:icons`, macOS only).
 
-App icons live in `electron/resources/` and are regenerated with
-`npm run make:icons` (macOS only — uses `sips`/`iconutil`).
-
-### Unsigned builds — first-launch bypass
-
-The apps are **not code-signed** (that needs paid Apple/Windows certificates),
-so the OS will warn on first launch. This is expected:
-
-- **macOS** — right-click the app → **Open** → **Open** (once). Or, if
-  Gatekeeper still blocks it: `xattr -dr com.apple.quarantine "/Applications/Plexus.app"`.
-- **Windows** — on the SmartScreen prompt, click **More info** → **Run anyway**.
-- **Linux** — `chmod +x` the `.AppImage` and run it.
+---
 
 ## Tests
 
 ```bash
-npm test             # vitest unit tests (one-shot)
-npm run test:watch   # vitest watch mode
-npm run typecheck    # tsc --checkJs over the pure modules
+npm run verify       # the full gate: vitest + tsc
 npm run e2e:install  # one-time: fetch the Playwright browser
-npm run e2e          # Playwright end-to-end smoke suite
+npm run e2e          # Playwright end-to-end suite
 ```
 
-144 unit tests across pure geometry (including the physical FSPL model),
-project-file migration, network logic, crypto, and the bundled sample
-project — plus a Playwright E2E suite: a boot smoke test and a full
-scenario test (load sample → place AP → draw wall → coverage re-clips →
-export → re-import). The `files/src/` modules are type-checked with
-`tsc --checkJs` via JSDoc annotations — no `.ts` rename. Adding a
-feature that touches walls, coverage, or schema versions? Drop a test
-next to the existing ones in `tests/`.
+**467 unit tests across 30 files** — RF geometry (incl. the physical FSPL model),
+the forwarding engine (L2/L3, VLANs, ARP, routing, ACL, NAT, DHCP, DNS), **OSPF**
+and **RIP** convergence, the IOS/RouterOS CLI engine, the project→sim adapter
+(hardened against malformed/hostile project data), schema migration, crypto, the
+**SSH argv validator** (injection-rejection cases), and the bundled sample project.
+Plus a **9-test Playwright E2E** suite (boot smoke + full scenario: load → place →
+wall → coverage re-clips → export → re-import, and the inventory/rollout/handover flow).
+
+---
 
 ## Project layout
 
 ```
 files/
-  index.html         UI shell
-  app.js             App orchestrator (state, DOM, event handlers)
-  styles.css         Theming + component styles
-  fonts.css          Self-hosted font faces
+  index.html            UI shell
+  app.js                App orchestrator (state, DOM, events, modes)
+  styles.css            Theming + component styles
   src/
-    geometry.js      Pure RF math — ray-cast, attenuation, dBm, SNR,
-                     MCS, throughput, propagation models (DOM-free)
-    migrate.js       Project-file schema migrations (v1 → v8)
-    constants.js     AP / camera / switch catalogs + antenna patterns
-                     + PoE tables + heatmap modes + regulatory regions
-    imageStore.js    IndexedDB image storage
-    sampleProject.js Bundled sample project (plan SVG + devices + walls)
-    i18n.js          No-dependency t() translation helper
-    i18n/en.js       English string bundle
-tests/
-  geometry.test.js   Geometry + band-loss + directional + RF math tests
-  migrate.test.js    Schema migration tests (every prior version)
-  e2e/smoke.spec.js  Playwright end-to-end smoke suite
-  e2e/scenario.spec.js  Full editing-loop E2E (sample → edit → export → import)
-vite.config.js       Build config (relative paths for file:// portability)
-vitest.config.js     Unit-test config (points at ./tests/)
-playwright.config.js E2E-test config (tests/e2e/, auto-starts dev server)
-tsconfig.json        checkJs type-check config for files/src/
-scripts/             OS-specific one-line installers (macOS / Ubuntu / Windows)
+    geometry.js         Pure RF math (ray-cast, dBm, SNR, MCS, propagation)
+    heatmap.js / heatmapWorker.js   Heatmap model + Web Worker
+    network.js          IP / subnet / CIDR + IPAM helpers
+    sim.js              Forwarding engine (L2/L3, ARP, routing, ACL, NAT, cloud)
+    ospf.js / rip.js    Dynamic-routing control planes
+    dns.js              Name-resolution zone
+    cli.js / cliUI.js   IOS/RouterOS config engine + per-device console
+    simCompile.js       Project model → engine topology
+    simUI.js            Packet-sim panel + animated PDU
+    wireless.js         RF → best-AP association bridge
+    sshConnect.js       Device → ssh target/command (renderer)
+    sshConfig.js        ~/.ssh/config parse + device matching
+    constants.js        AP / camera / switch catalogs, patterns, PoE, regions
+    migrate.js          Schema migrations (v1 → v11)
+    imageStore.js / sampleProject.js / cameras.js / naming.js /
+    dxf.js / esx.js / walldetect.js / zip.js / i18n.js / i18n/en.js
+electron/
+  main.cjs              Windows, UniFi sync, WiFi survey, SSH launch
+  preload.cjs           contextIsolated bridge (window.plexusNative)
+  sshArgv.cjs           Validated ssh-argv builder (shell-injection boundary)
+tests/                  30 vitest suites + e2e/ (Playwright smoke + scenario)
+.github/workflows/      ci.yml (verify) · release.yml (installer matrix on v* tags)
+vite.config.js  vitest.config.js  playwright.config.js  tsconfig.json
 ```
 
-## How the coverage math works
-
-**Coverage polygons** — for each access point we cast **72 rays** (one
-every 5°) outward. Each ray walks through every wall it intersects, sums
-the per-material dB loss multiplied by the AP's **band factor** (0.6 for
-2.4 GHz, 1.0 for 5 GHz, 1.3 for 6 GHz), and shrinks the ray's reach by
-`0.5^(loss/3)` — each 3 dB of attenuation roughly halves the usable
-range. The 72 endpoints form a polygon, cached on the AP, that's the
-visible coverage shape.
-
-**Heatmap dBm values** — when the floor has a real-world scale set (the
-SCALE field, metres per 100 px), signal strength is computed with
-physical path loss: `FSPL(1 m) = 20·log₁₀(f_MHz) − 27.55` at the band's
-carrier (2 437 / 5 500 / 6 525 MHz), plus `10·n·log₁₀(d)` with the
-propagation model's exponent (log-distance n = 2.2, ITU-R P.1238 office
-n = 3.0, COST-231 multi-wall n = 2.0 + explicit per-wall losses), minus
-per-wall material dB, starting from the AP's effective EIRP
-(Tx power + antenna gain − cable loss). Projects without a scale fall
-back to the older per-radius heuristic, so old project files render
-unchanged.
-
-The floor-coverage percentage is a coarse grid sampler that asks the
-same question — "can *any* AP reach this point through the walls?" —
-at ~60 points across the shorter axis of the image.
-
-See `files/src/geometry.js` for the actual implementation; it's pure,
-DOM-free, and unit-tested. For how predictions compare against
-real-world measurements, see [docs/accuracy.md](docs/accuracy.md).
+---
 
 ## Project file format
 
-Projects save as a single JSON file; floor-plan images live in IndexedDB
-and are referenced by id. Schema is versioned; the migrator can read
-every prior version. Current schema is v8 — see `files/src/migrate.js`
-for the version history.
+Projects save as a single JSON file; floor-plan images live in IndexedDB,
+referenced by id. Schema is versioned and the migrator reads every prior version —
+current schema is **v11** (`files/src/migrate.js`). Device credentials are stored in
+the file only, excluded from Share links and reports, and encrypted when a project
+passphrase is set.
+
+---
 
 ## Roadmap
 
-- Tauri desktop build + optional cloud sync (deferred to v4)
+- EIGRP and IPv6 in the simulator (today: static + OSPF + RIP, IPv4)
+- Embedded SSH console in Operate mode (today: launches the OS terminal)
+- Plan ↔ device **drift detection** (pull live config, diff against the model)
 - Ekahau / NetSpot survey-file import (today: CSV only)
-- True isotropic 5 GHz channel-conflict modelling (today only 2.4 GHz
-  channels 1–14 are flagged for adjacency)
 - Additional UI language bundles (English ships today)
 
 ## Contributing
 
-Bug reports, feature requests, and PRs are welcome. See
-[CONTRIBUTING.md](CONTRIBUTING.md) for the workflow.
-
-For anything that touches geometry, walls, or schema versions, add a
-test in `tests/`.
+PRs welcome — see [CONTRIBUTING.md](CONTRIBUTING.md). Anything touching geometry,
+the forwarding engine, the CLI, or schema versions needs a test in `tests/`.
 
 ## Security
 
-Found something that shouldn't be public-facing? See
-[SECURITY.md](SECURITY.md) for how to report it.
+See [SECURITY.md](SECURITY.md) to report something privately. Credentials are never
+logged in plaintext; the SSH launcher validates all input and fails closed.
 
 ## License
 
-[MIT](LICENSE) — do whatever you want, just don't blame me when your
-boss asks why the coverage map said the conference room had signal.
+[MIT](LICENSE) — do whatever you want, just don't blame me when your boss asks why
+the coverage map said the conference room had signal.
