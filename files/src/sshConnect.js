@@ -21,6 +21,20 @@ export function sshTarget(device) {
   return { host, user, port, key };
 }
 
+// Same charset rules as the desktop validator (electron/sshArgv.cjs). The web
+// build has no main process to re-validate, and a loaded project is untrusted:
+// never hand the user a clipboard command built from unchecked fields.
+const HOST_RE = /^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,253}[A-Za-z0-9])?$/;
+const USER_RE = /^[A-Za-z0-9._+][A-Za-z0-9._+-]{0,63}$/;
+const KEY_RE = /^[A-Za-z0-9._~/-]{1,256}$/;
+/** @param {{host:string,user:string,port:number,key:string}|null} t @returns {boolean} */
+export function sshTargetIsSafe(t) {
+  if (!t || !HOST_RE.test(t.host)) return false;
+  if (t.user && !USER_RE.test(t.user)) return false;
+  if (t.key && !KEY_RE.test(t.key)) return false;
+  return Number.isInteger(t.port) && t.port >= 1 && t.port <= 65535;
+}
+
 /**
  * The `ssh` command a user could paste into a terminal, or null if the device
  * has no reachable host. Argument order mirrors what one would type by hand.

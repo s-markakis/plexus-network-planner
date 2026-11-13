@@ -207,8 +207,101 @@ What the simulator models: **L2 switching + VLANs + MAC learning**, **ARP**,
 cloud**, and **link-down fault injection**. Drop a **wireless client** (<kbd>K</kbd>)
 and it associates to the best AP *by real signal*, then gets a DHCP lease.
 
+**Testing a design in the sim panel**
+
+- **Ping / Traceroute** between any two endpoints — and *to* gateways, switch
+  management addresses and the Internet (they appear as extra "To" targets).
+- **Probe port** — "can the camera open `tcp/554` on the NVR?" → open, closed
+  (nothing listening) or filtered (a firewall rule dropped it).
+- **Faults** — power off a switch or cut an uplink, then re-run the test. Routes
+  over the dead link are withdrawn and OSPF/RIP reconverge on what is left.
+- **VLAN matrix** — every VLAN against every other: ✓ allowed, ⛔ blocked by a
+  rule, ✗ no route. The same table is added to the HTML/PDF report.
+
+- **Blast radius** — pick a device and ask "if this is compromised, what can it
+  reach?": every reachable address and open service, with the findings a
+  segmentation review would raise (management exposed to a camera VLAN, no
+  filtering between segments, outbound Internet).
+- **Scenario queue** — queue several pings/probes and run them back to back on
+  one warm network (later tests see the ARP/MAC tables and connections of
+  earlier ones).
+- **Playback** — step or auto-play the event list at 0.5×–4×, filter it by
+  protocol family (ARP, switching, routing, ICMP/L4, firewall/NAT), and inspect
+  each step's PDU by OSI layer.
+
+**Policies — intent as tests** (Simulate → ✓ Policies). State what must and must
+not be reachable ("Guest must NOT reach Management", "Staff must reach the NVR on
+tcp/554") and Plexus proves each one against the plan, naming the pair that
+breaks it. It does not test one convenient host per VLAN: probe addresses are
+placed inside and just outside every firewall rule that cuts through a subnet,
+so a rule covering only part of a VLAN is caught. Violated policies also show
+up as errors in the design review.
+
+**Labs** (Simulate → 🎓 Labs). Guided scenarios — inter-VLAN routing, guest
+isolation, OSPF between two sites, surviving a cut uplink — graded by proving
+the result in the simulator, not by comparing config text. Any configuration
+that makes the network behave as asked passes.
+
+The firewall is **stateful**: devices track the connections they let through, and
+a rule can match on it — `access-list 130 permit ip any any established` (IOS) or
+`connection-state=established,related` (RouterOS). That is what makes a
+one-directional policy possible ("Staff may reach Guest, Guest may not open
+connections to Staff").
+
+Firewall rules can be scoped the way real gear does it: `ip access-group <n> in|out`
+on an interface (IOS) or `in-interface=` / `out-interface=` (RouterOS). An
+access-list bound nowhere stays device-wide. OSPF/RIP only advertise interfaces
+covered by a `network` statement (none at all = every interface); `no router ospf`
+turns the protocol off.
+
+More of the network is modelled:
+
+- **Spanning tree + redundant uplinks** — give a switch a second uplink and STP
+  blocks one link of the loop (root = lowest priority, then id); cut the active
+  link and the backup takes over. `show spanning-tree` shows port roles.
+- **DHCP server and relay** — `ip dhcp pool` / `/ip dhcp-server network`, and
+  `ip helper-address` / `/ip dhcp-relay`. Once any device configures DHCP, a
+  client only gets a lease if its VLAN's gateway serves a pool for that subnet
+  or relays to a device in the plan that does (with nothing configured, every
+  VLAN with a subnet still hands out leases).
+- **A console that remembers** — the device console keeps the simulated network
+  between commands, so `ping` followed by `show arp`, `show mac address-table`,
+  `show ip nat translations` shows what was learned. Plus `?` help, Tab
+  completion, `do`, `show interfaces`, `show access-lists`, `show ip protocols`,
+  a `show running-config` that includes everything configurable, and on
+  RouterOS `/export`.
+
 > The RouterOS dialect is validated against real hardware (hAP ax lite,
 > RouterOS 7.24.4).
+
+### From the plan to the device
+
+**Export ▾ → Device config / drift** closes the loop between the drawing and the gear:
+
+1. **Generate** — pick a switch and get a RouterOS 7 script built from what the
+   plan already holds: access ports with their VLAN, trunks, the VLAN table, the
+   gateways an L3 switch hosts, its management address and static routes.
+2. **Check drift** — paste or upload the device's `/export` (on the desktop app:
+   **Pull from device** reads it over SSH) and Plexus lists
+   where it no longer matches the plan: a port on the wrong VLAN, a VLAN missing
+   from a trunk, a gateway that isn't configured, VLAN filtering switched off —
+   plus anything on the device the plan doesn't know about.
+
+Safe default / intended use: the script is for review and for devices you manage.
+Plexus never guesses a physical trunk port — you assign it in the dialog, and an
+unassigned trunk is left out and flagged rather than assumed. Bridge VLAN
+filtering is enabled as the **last** command; apply from the console or in Safe
+Mode.
+
+3. **Remediate** — when the device has drifted, Plexus writes the script that
+   brings it back: it adds or corrects only what the plan requires and removes
+   nothing.
+
+**Pull from device** (desktop, MikroTik) is read-only by construction: it runs
+`ssh` non-interactively with one fixed command (`/export`) chosen in the main
+process — the page cannot supply a command — uses key or agent authentication
+only, never prompts, and refuses a host key it has not seen (connect once with
+*Connect via SSH* first). It asks before every connection.
 
 ---
 
@@ -300,7 +393,9 @@ ssh -i ~/.ssh/your_key -p 22 admin@192.0.2.10
 - **Organization** — inventory & rollout table, IPAM + VLAN registry, port maps,
   naming convention, as-designed-vs-as-built diff, handover pack.
 - **Deliverables** — branded PDF, BoM + cable-schedule CSV, per-AP install sheets,
-  design-review comments, annotations.
+  design-review comments, annotations, VLAN reachability matrix.
+- **Plan → device** — RouterOS 7 config generated per switch, and a drift check
+  of a real `/export` against the plan.
 </details>
 
 ---
@@ -394,13 +489,20 @@ npm run e2e:install  # one-time: fetch the Playwright browser
 npm run e2e          # Playwright end-to-end suite
 ```
 
-**467 unit tests across 30 files** — RF geometry (incl. the physical FSPL model),
+**614 unit tests across 42 files** — RF geometry (incl. the physical FSPL model),
 the forwarding engine (L2/L3, VLANs, ARP, routing, ACL, NAT, DHCP, DNS), **OSPF**
 and **RIP** convergence, the IOS/RouterOS CLI engine, the project→sim adapter
 (hardened against malformed/hostile project data), schema migration, crypto, the
 **SSH argv validator** (injection-rejection cases), and the bundled sample project.
-Plus a **9-test Playwright E2E** suite (boot smoke + full scenario: load → place →
-wall → coverage re-clips → export → re-import, and the inventory/rollout/handover flow).
+Also: structural validation of untrusted project files, the credentials vault,
+the RouterOS config generator and drift check, controller certificate pinning
+(against local self-signed HTTPS servers), property tests that check the IP math
+against a BigInt oracle across the whole address space, and a ratchet that fails
+on any unescaped interpolation into markup.
+Plus an **18-test Playwright E2E** suite (boot smoke + full scenario: load → place →
+wall → coverage re-clips → export → re-import, the inventory/rollout/handover flow,
+the simulation and device-config tooling, and security cases — hostile project
+fields stay inert, encrypted saves leak no credentials, share links ask first).
 
 ---
 
@@ -453,7 +555,9 @@ passphrase is set.
 
 - EIGRP and IPv6 in the simulator (today: static + OSPF + RIP, IPv4)
 - Embedded SSH console in Operate mode (today: launches the OS terminal)
-- Plan ↔ device **drift detection** (pull live config, diff against the model)
+- Live state on the map from argus (link up/down, clients, PoE draw)
+- EtherChannel and HSRP/VRRP
+- Device config export for Cisco IOS and UniFi (today: RouterOS 7)
 - Ekahau / NetSpot survey-file import (today: CSV only)
 - Additional UI language bundles (English ships today)
 
@@ -466,6 +570,14 @@ the forwarding engine, the CLI, or schema versions needs a test in `tests/`.
 
 See [SECURITY.md](SECURITY.md) to report something privately. Credentials are never
 logged in plaintext; the SSH launcher validates all input and fails closed.
+
+A project file, share link or autosave is treated as untrusted input: it is
+structurally validated on load, every field is escaped before it reaches markup,
+and the page's CSP allows no inline script. With a credentials passphrase set, a
+saved project contains no plaintext credentials anywhere (revision snapshots
+never carry them). The desktop app pins a UniFi controller's certificate on first
+use — you approve the fingerprint once, and a changed certificate stops the
+connection before any credential is sent.
 
 ## License
 

@@ -17,4 +17,7 @@ contextBridge.exposeInMainWorld('plexusNative', {
   // device. Structured fields only ({host,user,port,key}); the main process
   // validates and rebuilds the argv (never a raw command string from here).
   openSshTerminal: (target) => ipcRenderer.invoke('ssh:open-terminal', target),
+  // Drift check: read a device's configuration (read-only, fixed command per
+  // vendor chosen in the main process — the renderer cannot supply a command).
+  sshPullConfig: (target) => ipcRenderer.invoke('ssh:pull-config', target),
 });

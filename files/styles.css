@@ -1372,3 +1372,71 @@ body[data-uimode="operate"] .topbar-meta{border-bottom-color:#b23030}
 .dropdown-menu .btn,.dropdown-menu .toggle{width:100%;justify-content:flex-start;text-align:left}
 .dropdown-menu .heat-mode-cluster{display:flex;gap:4px;width:100%}
 .dropdown-menu .heat-pill{flex:1}
+
+/* ── Sim panel: L4 probe, fault injection, VLAN matrix ── */
+.sim-proto{flex:0 0 66px}
+.sim-port{flex:0 0 74px;min-width:0}
+.sim-faults{margin:6px 0;font-size:12px;border:1px solid var(--border,rgba(128,128,128,.3));border-radius:6px;padding:4px 8px}
+.sim-faults>summary{cursor:pointer;user-select:none;font-weight:600}
+.sim-faults.active{border-color:#c0382b}
+.sim-faults.active>summary{color:#c0382b}
+.sim-faults-list{display:flex;flex-direction:column;gap:3px;margin-top:5px;max-height:120px;overflow:auto}
+.sim-fault{display:flex;align-items:center;gap:4px;cursor:pointer}
+.sim-matrix{overflow:auto}
+.sim-matrix-table{border-collapse:collapse;font-size:11px;margin:6px 0}
+.sim-matrix-table th,.sim-matrix-table td{border:1px solid var(--border,rgba(128,128,128,.3));padding:3px 7px;text-align:center}
+.sim-m-allowed{color:#1e7d3c}
+.sim-m-blocked{color:#c0382b;font-weight:700}
+.sim-m-unreachable{color:#b26a00}
+.sim-m-na{opacity:.45}
+
+/* ── Device config / drift dialog ── */
+.dc-root{display:flex;flex-direction:column;gap:6px;min-width:min(620px,86vw)}
+.dc-script,.dc-actual{width:100%;font-size:11px;line-height:1.35;white-space:pre;resize:vertical;box-sizing:border-box}
+.dc-warnings{margin:0;padding-left:18px;font-size:11px;color:#b26a00}
+.dc-warnings:empty{display:none}
+.dc-drift-head{font-weight:700;font-size:12px;margin-top:4px}
+.dc-drift-head.ok{color:#1e7d3c}
+.dc-drift-head.bad{color:#c0382b}
+.dc-drift-list{margin:4px 0 0;padding-left:0;list-style:none;font-size:11.5px;max-height:180px;overflow:auto}
+.dc-error{color:#c0382b}
+.dc-warn{color:#b26a00}
+.dc-info{opacity:.75}
+
+/* ── Sim panel: playback, filters, layered PDU, scenario queue, blast radius ── */
+.sim-speed{flex:0 0 58px}
+.sim-filters{display:flex;flex-wrap:wrap;gap:4px 10px;font-size:11px;margin:4px 0}
+.sim-filter{display:flex;align-items:center;gap:3px;cursor:pointer}
+.sim-log li[hidden]{display:none}
+.sim-log li.sim-sep{list-style:none;font-weight:700;margin:6px 0 2px -18px;cursor:default;border-top:1px solid var(--border,rgba(128,128,128,.3));padding-top:4px}
+.sim-insp-layer{font-size:10px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;opacity:.65;margin-top:5px}
+.sim-queue{margin:4px 0;padding-left:20px;font-size:11.5px}
+.sim-queue:empty{display:none}
+.sim-queue li{display:list-item}
+.sim-queue li.ok{color:#1e7d3c}
+.sim-queue li.bad{color:#c0382b}
+.sim-queue-rm{padding:0 5px;margin-left:6px;font-size:10px}
+.sim-blast{list-style:none;margin:4px 0;padding:0;font-size:12px;display:flex;flex-direction:column;gap:3px}
+.sim-blast-high{color:#c0382b;font-weight:700}
+.sim-blast-medium{color:#b26a00}
+.sim-blast-info{opacity:.8}
+.sim-blast-table td,.sim-blast-table th{text-align:left}
+
+/* ── Policies + Labs dialogs ── */
+.pol-root,.lab-root{display:flex;flex-direction:column;gap:8px;min-width:min(640px,86vw)}
+.pol-form{display:grid;grid-template-columns:1fr auto 1fr;gap:6px;align-items:center}
+.pol-form .pol-proto{grid-column:1}.pol-form .pol-port{grid-column:2;width:90px}.pol-form .btn{grid-column:3;justify-self:start}
+.pol-summary,.lab-score{font-weight:700;font-size:12.5px}
+.pol-summary.ok,.lab-score.ok{color:#1e7d3c}
+.pol-summary.bad,.lab-score.bad{color:#c0382b}
+.pol-list,.lab-results{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px;max-height:300px;overflow:auto}
+.pol-item{border:1px solid var(--border,rgba(128,128,128,.3));border-radius:6px;padding:5px 8px;font-size:12px}
+.pol-head{display:flex;align-items:center;gap:6px}
+.pol-label{flex:1;font-weight:600}
+.pol-pass .pol-mark,.lab-results li.ok .lab-mark{color:#1e7d3c}
+.pol-fail{border-color:#c0382b}.pol-fail .pol-mark,.lab-results li.bad .lab-mark{color:#c0382b}
+.pol-detail,.lab-detail{font-size:11px;opacity:.8;padding-left:18px}
+.pol-rm{padding:0 6px;font-size:10px}
+.lab-brief p{margin:0 0 6px;font-size:12.5px;line-height:1.45}
+.lab-hints{font-size:12px}.lab-hints ul{margin:4px 0;padding-left:18px}
+.lab-results li{font-size:12px}

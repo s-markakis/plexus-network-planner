@@ -55,7 +55,7 @@ import {
 import {runLengthM,analyzeLoad,nextFreeIp as netNextFreeIp,ipInCidr,subnetUsage,airtimeUtilization} from './src/network.js';
 import {formatName,nameMatches,patternHasNumber} from './src/naming.js';
 import {zipStore} from './src/zip.js';
-import {encryptObject,decryptObject} from './src/crypto.js';
+import {collectCreds,stripCredsReplacer,attachCreds,hasPlaintextPasswords,sealCreds,openVault} from './src/credsVault.js';
 // PDF floor-plan import. The worker is bundled inline (?worker&inline) so the
 // portable single-file build still works from file:// with no external fetch.
 import * as pdfjsLib from 'pdfjs-dist';
@@ -66,15 +66,21 @@ import {parseDxf} from './src/dxf.js';
 import {importEsx,buildEsxZip} from './src/esx.js';
 import {CAM_RES_HPX,DORI_LEVELS,doriDistancesM,cameraBitrateMbps,storageGb} from './src/cameras.js';
 import {buildSampleProject} from './src/sampleProject.js';
-import {sshTarget,sshCommand} from './src/sshConnect.js';
+import {sshTarget,sshCommand,sshTargetIsSafe,sshVendor} from './src/sshConnect.js';
 import {
   idbPutImage, idbGetImage, idbDeleteImage,
   newImgId as _newImgId,
   imgCache as _imgCache,
   resolveFloorImage,
 } from './src/imageStore.js';
-import {mountSimPanel} from './src/simUI.js';
+import {mountSimPanel,matrixRows} from './src/simUI.js';
 import {mountCliConsole} from './src/cliUI.js';
+import {mountDeviceConfig} from './src/deviceConfigUI.js';
+import {mountPolicies} from './src/policyUI.js';
+import {mountLabs} from './src/labsUI.js';
+import {evaluatePolicies} from './src/policy.js';
+import {compileTopology} from './src/simCompile.js';
+import {reachabilityMatrix} from './src/simMatrix.js';
 import {bestAp} from './src/wireless.js';
 
 // AP_MODEL_GROUPS, AP_RANGE_M, SW_MODEL_GROUPS, AP_COLORS, WALL_MATERIAL_KEYS
@@ -87,6 +93,8 @@ import {bestAp} from './src/wireless.js';
 // polygon's SVG path on the AP object and invalidate it only when walls or
 // AP position/radius change. The actual ray-cast lives in geometry.js.
 const COVERAGE_RAYS=72;   // one ray every 5°.
+// Coverage-% sampling must honour the antenna pattern, like the map and heatmap do.
+const _COV_OPTS={arcOf:ap=>(AP_PATTERNS[ap.pattern]||AP_PATTERNS.omni).arc};
 
 function _apPatternOpts(ap){
   const pat=AP_PATTERNS[ap.pattern]||AP_PATTERNS.omni;
@@ -131,6 +139,8 @@ function rangeMToPx(m){return Math.round(m*100/(scaleM||100));}
 
 // HTML-escape for safely interpolating user-controlled strings into templates.
 function esc(s){return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
+// A colour from a project file, for use inside markup: hex only, else ''.
+function safeColor(c){return typeof c==='string'&&/^#[0-9a-fA-F]{3,8}$/.test(c)?c:'';}
 
 // Convert "#rrggbb" to "rgba(r,g,b,a)" — used for AP color fills where we want
 // the stroke at full opacity but the fill semi-transparent so overlaps blend.
@@ -1030,7 +1040,7 @@ function showValidation(){
   };
   if(hasMap){APS().forEach(ap=>checkRun(ap,ap.name));CAMS().forEach(c=>checkRun(c,c.name));}
   // Unassigned devices (informational).
-  APS().forEach(ap=>{if(!ap.swId)infos.push(`${ap.name} is not assigned to a switch.`);});
+  APS().forEach(ap=>{if(!ap.swId)infos.push(`${esc(ap.name)} is not assigned to a switch.`);});
   CAMS().forEach(c=>{if(!c.swId)infos.push(`${c.name} is not assigned to a switch.`);});
   // Duplicate IPs across all floor devices + switches.
   const ipMap=new Map();
@@ -1083,10 +1093,22 @@ function showValidation(){
     for(const ap of APS()){
       if(!(ap.capacityClients>0))continue;
       const pct=apAirtimePct(ap,f);
-      if(pct===Infinity)errors.push(`${ap.name}: expected ${ap.capacityClients} clients but the cell delivers no usable throughput.`);
-      else if(pct>100)errors.push(`${ap.name}: airtime ~${pct}% — ${ap.capacityClients} clients × ${parseFloat(SETTINGS.perClientMbps)||5} Mbps exceeds what this cell can carry.`);
-      else if(pct>80)warns.push(`${ap.name}: airtime ~${pct}% — near saturation; consider a wider channel or another AP.`);
+      if(pct===Infinity)errors.push(`${esc(ap.name)}: expected ${ap.capacityClients} clients but the cell delivers no usable throughput.`);
+      else if(pct>100)errors.push(`${esc(ap.name)}: airtime ~${pct}% — ${ap.capacityClients} clients × ${parseFloat(SETTINGS.perClientMbps)||5} Mbps exceeds what this cell can carry.`);
+      else if(pct>80)warns.push(`${esc(ap.name)}: airtime ~${pct}% — near saturation; consider a wider channel or another AP.`);
     }
+  }
+  // Policies (reachability intent): a violated policy is a design error.
+  if(Array.isArray(SETTINGS.policies)&&SETTINGS.policies.length){
+    try{
+      const pr=evaluatePolicies(simProject(),SETTINGS.policies).results;
+      for(const r of pr){
+        if(r.status==='fail'){const v=r.violations[0];errors.push(`Policy violated — ${r.label}: ${v.from} (${v.fromIp}) → ${v.to} (${v.toIp})${r.violations.length>1?` (+${r.violations.length-1} more)`:''}.`);}
+        else if(r.status==='skipped')warns.push(`Policy not testable — ${r.label}: ${r.reason}.`);
+      }
+      const okN=pr.filter(r=>r.status==='pass').length;
+      if(okN)infos.push(`${okN} reachability polic${okN===1?'y holds':'ies hold'}.`);
+    }catch(_){warns.push('Policies could not be evaluated (the plan does not simulate).');}
   }
   // Client-capacity rollup (building-wide; only when an expectation is set).
   const expected=parseInt(SETTINGS.expectedClients,10)||0;
@@ -1271,6 +1293,12 @@ async function tryLoadFromHash(){
     const json=await _gunzip(bytes);
     const raw=JSON.parse(json);
     const [data,warnings]=migrateProject(raw);
+    // A link is untrusted input that would silently replace the session (and be
+    // autosaved over it) — never apply it without the user saying so.
+    if(!confirm('Open the project embedded in this link?\n\nIt replaces what is currently on screen. Only open links from people you trust.')){
+      history.replaceState(null,'',location.pathname+location.search);
+      return false;
+    }
     FLOORS=data.floors;
     SETTINGS={...DEFAULT_SETTINGS,...(data.settings||{})};
     applyStoredCatalog();
@@ -1469,7 +1497,8 @@ function importEsxFile(input){
         FLOORS.push(floor);
       }
       // Migration pass fills schema defaults on everything just imported.
-      migrateProject({version:PROJECT_VERSION,floors:FLOORS});
+      // migrateProject returns a sanitized copy (it no longer edits in place).
+      FLOORS=migrateProject({version:PROJECT_VERSION,floors:FLOORS})[0].floors;
       syncNidFromFloors();
       switchFloor(firstNew);
       warnings.forEach(w=>console.warn('[esx import]',w));
@@ -1581,9 +1610,23 @@ function showUnifiDialog(){
   const pullBtn=mkBtn('⇊ Pull devices','Fetch the controller device list and fill in IP / firmware / serial / Live status');
   const pushBtn=mkBtn('⇈ Push channel plan','Write planned channels/width/tx-power to matching APs on the controller');
   const busy=(on)=>{pullBtn.disabled=on;pushBtn.disabled=on;};
+  // Certificate trust (desktop main process pins controller certs). On first
+  // contact, or if the certificate changed, the user has to approve the exact
+  // fingerprint before any credentials are sent.
+  const callUnifi=async(fn,extra)=>{
+    let res=await fn({...cfg(),...extra});
+    if(res&&res.needsTrust){
+      const msg=res.changed
+        ?`⚠ The certificate of ${res.host} has CHANGED.\n\nTrusted before:\n${res.pinned}\n\nPresented now:\n${res.fingerprint}\n\nThis happens after a controller reset or firmware reinstall — or when someone is intercepting the connection. Trust the new certificate?`
+        :`First connection to ${res.host}.\n\nCertificate fingerprint (SHA-256):\n${res.fingerprint}\n\nCompare it with the controller's own certificate if you can. Trust it for future connections?`;
+      if(!confirm(msg))return {ok:false,error:res.changed?'Certificate change not accepted — nothing was sent':'Certificate not trusted — nothing was sent'};
+      res=await fn({...cfg(),...extra,trust:res.fingerprint});
+    }
+    return res;
+  };
   pullBtn.addEventListener('click',async()=>{
     saveFields();busy(true);status.textContent='Connecting…';
-    const res=await window.plexusNative.unifiPull(cfg());
+    const res=await callUnifi(window.plexusNative.unifiPull,{});
     busy(false);
     if(!res.ok){status.textContent='✕ '+res.error;return;}
     const n=_applyUnifiDevices(res.devices);
@@ -1595,7 +1638,7 @@ function showUnifiDialog(){
     if(!changes.length){status.textContent='✕ No APs with a concrete channel — run ⌁ Auto-channel first.';return;}
     if(!confirm(`Push channel/width/tx settings for ${changes.length} AP(s) to the controller? Radios will briefly drop clients when they retune.`))return;
     busy(true);status.textContent='Pushing…';
-    const res=await window.plexusNative.unifiPush({...cfg(),changes});
+    const res=await callUnifi(window.plexusNative.unifiPush,{changes});
     busy(false);
     if(!res.ok){status.textContent='✕ '+res.error;return;}
     const okN=res.results.filter(r=>r.ok).length;
@@ -1652,23 +1695,11 @@ async function saveProject(){
 }
 // ── Credential vault (encrypt-at-rest for saved/exported projects) ─────────
 // Gather {deviceId: creds} across floors.
-function _collectCreds(floors){
-  const map={};
-  for(const f of (floors||[]))for(const key of ['APS','CAMS','SWS'])
-    for(const d of (f[key]||[]))if(d&&d.creds&&d.id)map[d.id]=d.creds;
-  return map;
-}
+// Credential rules live in ./src/credsVault.js (pure, unit-tested).
 // If a passphrase is set, move creds into data.credsVault and strip the inline
 // plaintext from copies of the affected devices (never mutating live FLOORS).
 async function _encryptCredsInto(data){
-  if(!_credPass)return;
-  const map=_collectCreds(data.floors);
-  if(!Object.keys(map).length)return;
-  data.credsVault=await encryptObject(map,_credPass);
-  for(const f of data.floors)for(const key of ['APS','CAMS','SWS']){
-    if(!Array.isArray(f[key]))continue;
-    f[key]=f[key].map(d=>{if(d&&d.creds){const c={...d};delete c.creds;return c;}return d;});
-  }
+  await sealCreds(data,_credPass);
 }
 // After loading a project whose creds are encrypted, prompt for the passphrase
 // and reattach the decrypted creds to the in-memory devices.
@@ -1677,10 +1708,9 @@ async function _unlockCreds(data){
   const pass=await promptPassphrase('This project’s credentials are encrypted.\nEnter the passphrase to unlock them, or Cancel to keep them locked:');
   if(pass==null)return;
   try{
-    const map=await decryptObject(data.credsVault,pass);
+    const map=await openVault(data.credsVault,pass);
     _credPass=pass;   // remember so a re-save stays encrypted with the same key
-    for(const f of FLOORS)for(const key of ['APS','CAMS','SWS'])
-      for(const d of (f[key]||[]))if(map[d.id])d.creds=map[d.id];
+    attachCreds(FLOORS,map);
     render();renderRP();
     toast('Credentials unlocked');
   }catch{
@@ -2127,6 +2157,86 @@ if(typeof document!=='undefined'){
 // (reassigned on load/undo), so the panel always compiles the current plan.
 // onFocus reuses the normal select+zoom so stepping walks the packet on the map.
 let _simPanel=null;
+// Policies: reachability intent, proven against the simulated plan.
+function showPolicies(){
+  const wrap=document.createElement('div');
+  mountPolicies({
+    root:wrap,
+    getProject:simProject,
+    getPolicies:()=>Array.isArray(SETTINGS.policies)?SETTINGS.policies:[],
+    setPolicies:p=>{SETTINGS.policies=p;autosave();},
+  });
+  showModalNode('Policies',wrap,null);
+}
+// Labs: guided scenarios graded by the simulator. Starting one replaces the
+// current plan, so it asks first; the active lab id is session-only.
+let _activeLab='';
+function showLabs(){
+  const wrap=document.createElement('div');
+  mountLabs({
+    root:wrap,
+    getProject:simProject,
+    getActive:()=>_activeLab,
+    onStart:lab=>{
+      if(!confirm(`Start "${lab.title}"?\n\nThis replaces the plan on screen with the lab's starting plan. Save your work first if you need it.`))return;
+      _activeLab=lab.id;
+      _loadProjectObject(lab.build(),`Lab loaded: ${lab.title}`);
+    },
+  });
+  showModalNode('Labs',wrap,null);
+}
+// Load an in-memory project object through the same pipeline as a file load.
+async function _loadProjectObject(obj,okMsg){
+  try{
+    const [data,warnings]=migrateProject(obj);
+    FLOORS=data.floors;
+    SETTINGS={...DEFAULT_SETTINGS,...(data.settings||{})};
+    applyStoredCatalog();
+    PROJECT_REVISIONS=Array.isArray(data.revisions)?data.revisions:[];
+    curFloor=0;selId=null;selType=null;
+    syncScaleFromFloor();
+    syncNidFromFloors();
+    await _rehydrateImages();
+    applySettingsToBrand();
+    loadFloorImage();renderFloorTabs();render();renderList();renderRP();calcCoverage();
+    if(_simPanel)_simPanel.refresh();
+    toast(warnings.length?warnings[0]:okMsg);
+  }catch(err){toast('Could not load: '+(err.message||'unknown error'));}
+}
+// Plan → device: RouterOS config for a switch + drift check against its /export.
+function showDeviceConfig(){
+  const wrap=document.createElement('div');
+  mountDeviceConfig({
+    root:wrap,
+    getProject:()=>({settings:SETTINGS,floors:FLOORS}),
+    switchId:selType==='sw'?selId:undefined,
+    onChange:()=>autosave(),
+    onDownload:(name,text)=>_downloadFile(name,text,'text/plain'),
+    // Desktop only: read the device's config over SSH. Touching a real device
+    // is always an explicit, per-click decision.
+    onPull:(window.plexusNative&&window.plexusNative.sshPullConfig)?async sw=>{
+      const t=sshTarget(sw);
+      if(!t)return {ok:false,error:'No IP or host set on this device'};
+      if(!sshTargetIsSafe(t))return {ok:false,error:'Host, user or key contains characters that are not allowed'};
+      if(!confirm(`Connect to ${t.user?t.user+'@':''}${t.host} over SSH and read its configuration?\n\nRead-only: runs "/export" and nothing else.`))return null;
+      return window.plexusNative.sshPullConfig({host:t.host,user:t.user,port:t.port,key:t.key,vendor:sshVendor(sw.model)});
+    }:undefined,
+  });
+  showModalNode('Device config & drift',wrap,null);
+}
+// VLAN reachability table for the report, from the same simulation the Simulate
+// mode runs. Empty string when the plan has fewer than two addressed VLANs (or
+// the plan can't be compiled) — the report simply omits the section.
+function _vlanMatrixHtml(){
+  let m;
+  try{m=reachabilityMatrix(compileTopology(simProject()));}catch(_){return '';}
+  if(m.vlans.length<2)return '';
+  const cls={allowed:'ok',blocked:'bad',unreachable:'warn','n/a':'muted'};
+  const rows=matrixRows(m);
+  const body=rows.slice(1).map((r,i)=>`<tr><th>${esc(r[0])}</th>${r.slice(1).map((c,j)=>`<td class="mx-${cls[m.cells[i][j].status]||'muted'}">${esc(c)}</td>`).join('')}</tr>`).join('');
+  return `<h2>VLAN reachability</h2><p class="muted">Simulated from the plan: ✓ allowed · ⛔ blocked by a firewall rule · ✗ no route · · not testable (one device).</p>`+
+    `<table class="mx"><thead><tr>${rows[0].map(h=>`<th>${esc(h)}</th>`).join('')}</tr></thead><tbody>${body}</tbody></table>`;
+}
 function toggleSimPanel(show){
   const panel=document.getElementById('sim-panel');
   if(!panel)return;
@@ -3516,7 +3626,7 @@ function updateApStickReadout(){
   if(!el)return;
   if(!apStickStart || !dragId || dragType!=='ap'){el.style.display='none';return;}
   const w=mapImg.naturalWidth||1,h=mapImg.naturalHeight||1;
-  const cur=_sampleFloorCoverage(F(),w,h);
+  const cur=_sampleFloorCoverage(F(),w,h,_COV_OPTS);
   const curPct=cur.total?cur.covered/cur.total*100:0;
   if(apStickBest===null||curPct>apStickBest)apStickBest=curPct;
   const delta=curPct-apStickStart.covPct;
@@ -3529,7 +3639,7 @@ function updateApStickReadout(){
 function startApStick(apId){
   if(!apId)return;
   const w=mapImg.naturalWidth||1,h=mapImg.naturalHeight||1;
-  const cur=_sampleFloorCoverage(F(),w,h);
+  const cur=_sampleFloorCoverage(F(),w,h,_COV_OPTS);
   const ap=APS().find(a=>a.id===apId);
   if(!ap)return;
   apStickStart={id:apId,fx:ap.fx,fy:ap.fy,covPct:cur.total?cur.covered/cur.total*100:0};
@@ -3721,6 +3831,11 @@ function _csvEscape(v){
   const s=String(v??'');
   if(/[",\n]/.test(s))return '"'+s.replace(/"/g,'""')+'"';
   return s;
+}
+// The print popups are written by this page, so they inherit its CSP — which
+// forbids inline handlers. Attach the click from here instead.
+function _wirePrintButton(w){
+  try{const b=w.document.querySelector('.print-btn');if(b)b.addEventListener('click',()=>w.print());}catch(_){}
 }
 function _downloadFile(filename,content,mime){
   const blob=new Blob([content],{type:mime||'text/plain'});
@@ -3936,6 +4051,7 @@ td{font-size:12px;padding:5px 8px;border-bottom:1px solid rgba(0,0,0,.1)}
 <div>${statusRow}</div>
 ${floorSections}
 ${reportNetworkHtml()}
+${_vlanMatrixHtml()}
 <div class="note">Generated by Plexus — Network Site Planner. The CSVs in this pack (inventory, IP plan, port map, BoM, cable schedule) carry the same data in machine-readable form.${SETTINGS.footerLine?' · '+esc(SETTINGS.footerLine):''}</div>
 </body></html>`;
 }
@@ -4025,15 +4141,17 @@ table.install td{font-size:12px;padding:6px 9px;border-bottom:1px solid rgba(0,0
 </style></head><body>
 <div class="cover"><h1>${esc(SETTINGS.company||'Plexus')} — AP install sheets</h1><div class="sub">${new Date().toLocaleDateString()} · ${allAps.length} sheets</div></div>
 ${sections}
-<button class="print-btn" onclick="window.print()">Print / Save as PDF</button>
+<button class="print-btn">Print / Save as PDF</button>
 </body></html>`;
-  if(w){w.document.open();w.document.write(html);w.document.close();toast(t('toast.installs_exported'));}
+  if(w){w.document.open();w.document.write(html);w.document.close();_wirePrintButton(w);toast(t('toast.installs_exported'));}
   else toast('Allow pop-ups to open the install sheets');
 }
 
 // ═══ REVISIONS + DIFF ═════════════════════════════
+// Revision snapshots never carry device credentials: they are saved outside the
+// credentials vault, so a copy here would defeat the passphrase.
 function _snapshotForRevision(){
-  return JSON.parse(JSON.stringify(FLOORS,_stripCacheReplacer));
+  return JSON.parse(JSON.stringify(FLOORS,stripCredsReplacer));
 }
 function newRevision(){
   const name=prompt('Revision name (e.g., "rev B – after client walk")','rev '+String.fromCharCode(65+PROJECT_REVISIONS.length));
@@ -4052,7 +4170,10 @@ function restoreRevision(id){
   if(!rev)return;
   showModal('Restore revision',`Replace current floors with revision <strong>${esc(rev.name)}</strong>? Current state will be lost (consider saving a fresh revision first).`,()=>{
     snapshot();
+    // Snapshots hold no credentials — carry the current ones over by device id.
+    const keepCreds=collectCreds(FLOORS);
     FLOORS=JSON.parse(JSON.stringify(rev.snapshot));
+    attachCreds(FLOORS,keepCreds,{overwrite:false});
     if(curFloor>=FLOORS.length)curFloor=0;
     syncScaleFromFloor();loadFloorImage();renderFloorTabs();render();renderList();renderRP();calcCoverage();
     toast('Restored '+rev.name);
@@ -4463,7 +4584,7 @@ function doDrag(cx,cy){
   // new position. Other types use a cheap transform on the existing group.
   if(dragType==='cam'||dragType==='client'){render();return;} // re-render so the association line follows
   const layer=dragType==='ap'?apLayer:dragType==='dz'?dzLayer:swLayer;
-  const grp=layer.querySelector(`[data-id="${dragId}"]`);
+  const grp=layer.querySelector(`[data-id="${CSS.escape(dragId)}"]`);
   if(grp){
     const dx=(fx-_dragInitialFx)*w;
     const dy=(fy-_dragInitialFy)*h;
@@ -4480,7 +4601,7 @@ function endDrag(){
   // Clear the per-element transform and do one full render so the item's real
   // coords (now updated on the data) are reflected everywhere.
   const layer=dragType==='ap'?apLayer:dragType==='dz'?dzLayer:dragType==='sw'?swLayer:dragType==='cam'?camLayer:null;
-  if(layer){const grp=layer.querySelector(`[data-id="${dragId}"]`);if(grp)grp.removeAttribute('transform');}
+  if(layer){const grp=layer.querySelector(`[data-id="${CSS.escape(dragId)}"]`);if(grp)grp.removeAttribute('transform');}
   if(dragType==='ap')invalidateCoverageCache();
   // AP-on-stick: clear the live coverage readout.
   if(dragType==='ap')endApStick();
@@ -4499,7 +4620,7 @@ function doResize(cx){
 // Defers to the pure sampler in geometry.js so logic stays in one place.
 function sampleFloorCoverage(floor){
   const w=mapImg.naturalWidth||1,h=mapImg.naturalHeight||1;
-  return _sampleFloorCoverage(floor,w,h);
+  return _sampleFloorCoverage(floor,w,h,_COV_OPTS);
 }
 // Wall-aware sampling is heavier than the old circle check, so coalesce calls
 // during fast operations (drag, slider scrub). `calcCoverage()` schedules the
@@ -4672,6 +4793,7 @@ function connectSsh(item){
     }).catch(err=>toast('SSH: '+((err&&err.message)||err)));
     return;
   }
+  if(!sshTargetIsSafe(t)){toast('SSH: host, user or key contains characters that are not allowed');return;}
   const cmd=sshCommand(item);
   if(cmd&&navigator.clipboard&&navigator.clipboard.writeText){
     navigator.clipboard.writeText(cmd).then(()=>toast('SSH command copied: '+cmd)).catch(()=>toast(cmd));
@@ -5053,7 +5175,7 @@ function renderAPPanel(){
   rpBody.innerHTML=`
     ${deviceImageBlock(ap,'ap')}
     <div class="ep-section">Identity</div>
-    <div class="ep-row"><label class="ep-lbl">Name</label><input class="ep-in" id="ep-name" value="${ap.name}" data-input-action="upd-ap"/></div>
+    <div class="ep-row"><label class="ep-lbl">Name</label><input class="ep-in" id="ep-name" value="${esc(ap.name)}" data-input-action="upd-ap"/></div>
     <div class="ep-row"><label class="ep-lbl">AP Model</label><select class="ep-sel" id="ep-model" data-input-action="upd-ap">${mOpts}</select></div>
     <div class="ep-row"><label class="ep-lbl">Frequency</label>
       <select class="ep-sel" id="ep-freq" data-input-action="upd-ap">
@@ -5104,7 +5226,7 @@ function renderAPPanel(){
     <div class="ep-row"><label class="ep-lbl">Airtime est.</label><span class="ep-rng-val" id="ep-airtime-v">${_airtimeLabel(ap)}</span></div>
     <div class="ep-section">Network Info</div>
     <div class="ep-row"><label class="ep-lbl">IP Address</label><input class="ep-in" id="ep-ip" value="${esc(ap.ip||'')}" data-input-action="upd-ap" placeholder="192.168.1.x"/><button class="btn" style="flex:0 0 auto;padding:4px 8px" data-action="suggest-ip-ap" title="Suggest next free IP in this device's VLAN subnet">IP+</button></div>
-    <div class="ep-row"><label class="ep-lbl">MAC Address</label><input class="ep-in ep-mono" id="ep-mac" value="${ap.mac||''}" data-input-action="upd-ap" placeholder="aa:bb:cc:dd:ee:ff"/></div>
+    <div class="ep-row"><label class="ep-lbl">MAC Address</label><input class="ep-in ep-mono" id="ep-mac" value="${esc(ap.mac||'')}" data-input-action="upd-ap" placeholder="aa:bb:cc:dd:ee:ff"/></div>
     <div class="ep-row"><label class="ep-lbl">Switch</label>
       <select class="ep-sel" id="ep-sw" data-input-action="upd-ap">
         <option value=""${!ap.swId?' selected':''}>— None —</option>
@@ -5123,7 +5245,7 @@ function renderAPPanel(){
     </div>
     ${credsBlock(ap)}
     <div class="ep-section">Notes</div>
-    <div class="ep-row"><textarea class="ep-txt" id="ep-notes" rows="4" data-input-action="upd-ap" placeholder="Cable run, switch port, install notes...">${ap.notes||''}</textarea></div>
+    <div class="ep-row"><textarea class="ep-txt" id="ep-notes" rows="4" data-input-action="upd-ap" placeholder="Cable run, switch port, install notes...">${esc(ap.notes||'')}</textarea></div>
     <button class="btn ep-del" data-action="ask-del">✕ Delete AP</button>`;
   _wireDeviceImg();
 }
@@ -5134,7 +5256,7 @@ function renderDZPanel(){
   const realR=Math.round(dz.r*(scaleM/100));
   rpBody.innerHTML=`
     <div class="ep-section">Label</div>
-    <div class="ep-row"><input class="ep-in" id="dz-lbl" value="${dz.label}" data-input-action="upd-dz"/></div>
+    <div class="ep-row"><input class="ep-in" id="dz-lbl" value="${esc(dz.label)}" data-input-action="upd-dz"/></div>
     <div class="ep-section">Radius</div>
     <div class="ep-row ep-slider-row">
       <input class="ep-rng" id="dz-r" type="range" min="10" max="300" value="${Math.round(dz.r)}" data-input-action="upd-dz-r"/>
@@ -5159,6 +5281,11 @@ function renderSWPanel(){
   const uplinkOpts=FLOORS.map((f,i)=>{
     const opts=(f.SWS||[]).filter(s=>s.id!==sw.id)
       .map(s=>`<option value="${esc(s.id)}"${s.id===sw.uplinkId?' selected':''}>${esc(s.name)} · ${esc(s.model||'')}</option>`).join('');
+    return opts?`<optgroup label="${esc(f.name||('Floor '+(i+1)))}">${opts}</optgroup>`:'';
+  }).join('');
+  const uplink2Opts=FLOORS.map((f,i)=>{
+    const opts=(f.SWS||[]).filter(s=>s.id!==sw.id)
+      .map(s=>`<option value="${esc(s.id)}"${s.id===sw.uplink2Id?' selected':''}>${esc(s.name)} · ${esc(s.model||'')}</option>`).join('');
     return opts?`<optgroup label="${esc(f.name||('Floor '+(i+1)))}">${opts}</optgroup>`:'';
   }).join('');
   const statusColor=a.overBudget||a.overPorts||a.classFails.length?'#c0382b':'#1e7d3c';
@@ -5188,6 +5315,12 @@ function renderSWPanel(){
         <option value="routed"${sw.uplinkMode==='routed'?' selected':''}>Routed (L3 /30)</option>
       </select>
     </div>
+    <div class="ep-row"><label class="ep-lbl">Redundant uplink</label>
+      <select class="ep-sel" id="sw-uplink2" data-input-action="upd-sw" title="A second trunk to another switch. Spanning tree blocks one link and fails over to the other.">
+        <option value=""${!sw.uplink2Id?' selected':''}>— None —</option>${uplink2Opts}
+      </select>
+    </div>
+    <div class="ep-row"><label class="ep-lbl">STP priority</label><input class="ep-in ep-mono" id="sw-stp" type="number" min="0" max="61440" step="4096" value="${Number.isFinite(sw.stpPriority)?sw.stpPriority:''}" data-input-action="upd-sw" placeholder="32768 (lowest becomes root)"/></div>
     <label class="ep-check"><input type="checkbox" id="sw-l3" ${sw.role==='l3'?'checked':''} data-input-action="upd-sw"/><span>Layer 3 — routes between VLANs (set a gateway IP per VLAN in Project Settings)</span></label>
     <div class="ep-row"><button class="btn" data-action="open-console" style="width:100%">⌨ CLI Console (IOS / RouterOS)</button></div>
     <div class="ep-row" style="font-family:'Share Tech Mono';font-size:11px;color:${statusColor};opacity:.9">${esc(statusLine)}</div>
@@ -5203,7 +5336,7 @@ function renderSWPanel(){
     ${inventoryBlock(sw,'sw','upd-sw')}
     ${credsBlock(sw)}
     <div class="ep-section">Notes</div>
-    <div class="ep-row"><textarea class="ep-txt" id="sw-notes" rows="3" data-input-action="upd-sw" placeholder="Location, uplink, config notes...">${sw.notes||''}</textarea></div>
+    <div class="ep-row"><textarea class="ep-txt" id="sw-notes" rows="3" data-input-action="upd-sw" placeholder="Location, uplink, config notes...">${esc(sw.notes||'')}</textarea></div>
     <label class="ep-check"><input type="checkbox" ${sw.locked?'checked':''} data-change-action="toggle-lock"/><span>Lock position</span></label>
     <button class="btn ep-del" data-action="ask-del">✕ Delete</button>`;
   _wireDeviceImg();
@@ -5295,6 +5428,10 @@ function updSW(){
   if(upEl)sw.uplinkId=upEl.value;
   const umEl=document.getElementById('sw-uplinkmode');
   if(umEl)sw.uplinkMode=umEl.value;
+  const up2El=document.getElementById('sw-uplink2');
+  if(up2El){if(up2El.value&&up2El.value!==sw.uplinkId)sw.uplink2Id=up2El.value;else delete sw.uplink2Id;}
+  const stpEl=document.getElementById('sw-stp');
+  if(stpEl){const n=parseInt(stpEl.value,10);if(Number.isFinite(n)&&n>=0&&n<=61440)sw.stpPriority=n;else delete sw.stpPriority;}
   const l3El=document.getElementById('sw-l3');
   if(l3El)sw.role=l3El.checked?'l3':'switch';
   sw.notes=document.getElementById('sw-notes').value;
@@ -5327,12 +5464,7 @@ function credBadge(d){
 // True if any device stores a plaintext password and no credentials passphrase
 // is set — used to nudge toward the encrypted-creds vault on entering Operate.
 function _hasPlaintextCreds(){
-  for(const f of FLOORS){
-    for(const key of ['APS','SWS','CAMS']){
-      for(const d of (f[key]||[])){if(d&&d.creds&&d.creds.pass)return true;}
-    }
-  }
-  return false;
+  return hasPlaintextPasswords(FLOORS);
 }
 function renderList(){
   leftList.innerHTML='';
@@ -5380,7 +5512,7 @@ function renderList(){
       const sigDots={strong:'●●●',medium:'●●○',weak:'●○○'}[ap.sig||'strong'];
       const sigClass={strong:'sig-s',medium:'sig-m',weak:'sig-w'}[ap.sig||'strong'];
       const dotStyle=ap.color?` style="background:${esc(ap.color)}"`:'';
-      d.innerHTML=`<div class="li-dot"${dotStyle}></div><div class="li-info"><div class="li-name">${esc(ap.name)}<span class="li-status" style="background:${statusMeta(ap).color}" title="${esc(statusMeta(ap).label)}"></span>${credBadge(ap)}</div><div class="li-sub">${esc(ap.model||'U6 Pro')}</div></div><span class="li-sig ${sigClass}">${sigDots}</span>${ap.locked?'<span class="li-lock">🔒</span>':''}<button class="li-del" data-action="quick-del" data-id="${ap.id}" data-type="ap">✕</button>`;
+      d.innerHTML=`<div class="li-dot"${dotStyle}></div><div class="li-info"><div class="li-name">${esc(ap.name)}<span class="li-status" style="background:${statusMeta(ap).color}" title="${esc(statusMeta(ap).label)}"></span>${credBadge(ap)}</div><div class="li-sub">${esc(ap.model||'U6 Pro')}</div></div><span class="li-sig ${sigClass}">${sigDots}</span>${ap.locked?'<span class="li-lock">🔒</span>':''}<button class="li-del" data-action="quick-del" data-id="${esc(ap.id)}" data-type="ap">✕</button>`;
       d.addEventListener('click',e=>{if(e.target.closest('.li-del'))return;sel(ap.id,'ap',{zoom:true});setMode('sel');});leftList.appendChild(d);
     });
   }
@@ -5388,7 +5520,7 @@ function renderList(){
     const h=document.createElement('div');h.className='sec-lbl';h.textContent='Switches/Routers';leftList.appendChild(h);
     filteredSWs.forEach(sw=>{
       const d=document.createElement('div');d.className='list-item sw-item'+(sw.id===selId?' active':'');
-      d.innerHTML=`<span style="font-size:12px">⊞</span><div class="li-info"><div class="li-name">${esc(sw.name)}<span class="li-status" style="background:${statusMeta(sw).color}" title="${esc(statusMeta(sw).label)}"></span>${credBadge(sw)}</div><div class="li-sub">${esc(sw.model||'')}</div></div><button class="li-del" data-action="quick-del" data-id="${sw.id}" data-type="sw">✕</button>`;
+      d.innerHTML=`<span style="font-size:12px">⊞</span><div class="li-info"><div class="li-name">${esc(sw.name)}<span class="li-status" style="background:${statusMeta(sw).color}" title="${esc(statusMeta(sw).label)}"></span>${credBadge(sw)}</div><div class="li-sub">${esc(sw.model||'')}</div></div><button class="li-del" data-action="quick-del" data-id="${esc(sw.id)}" data-type="sw">✕</button>`;
       d.addEventListener('click',e=>{if(e.target.closest('.li-del'))return;sel(sw.id,'sw',{zoom:true});setMode('sel');});leftList.appendChild(d);
     });
   }
@@ -5397,7 +5529,7 @@ function renderList(){
     filteredCAMs.forEach(c=>{
       const d=document.createElement('div');d.className='list-item cam-item'+(c.id===selId?' active':'')+(c.locked?' locked':'');
       const dotStyle=c.color?` style="background:${esc(c.color)}"`:'';
-      d.innerHTML=`<div class="li-dot"${dotStyle}></div><div class="li-info"><div class="li-name">${esc(c.name)}<span class="li-status" style="background:${statusMeta(c).color}" title="${esc(statusMeta(c).label)}"></span>${credBadge(c)}</div><div class="li-sub">${esc(c.model||'')} · ${esc(c.resolution||'')}</div></div>${c.locked?'<span class="li-lock">🔒</span>':''}<button class="li-del" data-action="quick-del" data-id="${c.id}" data-type="cam">✕</button>`;
+      d.innerHTML=`<div class="li-dot"${dotStyle}></div><div class="li-info"><div class="li-name">${esc(c.name)}<span class="li-status" style="background:${statusMeta(c).color}" title="${esc(statusMeta(c).label)}"></span>${credBadge(c)}</div><div class="li-sub">${esc(c.model||'')} · ${esc(c.resolution||'')}</div></div>${c.locked?'<span class="li-lock">🔒</span>':''}<button class="li-del" data-action="quick-del" data-id="${esc(c.id)}" data-type="cam">✕</button>`;
       d.addEventListener('click',e=>{if(e.target.closest('.li-del'))return;sel(c.id,'cam',{zoom:true});setMode('sel');});leftList.appendChild(d);
     });
   }
@@ -5405,7 +5537,7 @@ function renderList(){
     const h=document.createElement('div');h.className='sec-lbl';h.textContent='Dead Zones';leftList.appendChild(h);
     filteredDZs.forEach(dz=>{
       const d=document.createElement('div');d.className='list-item dz-item'+(dz.id===selId?' active':'');
-      d.innerHTML=`<span style="font-size:12px">⚠</span><span class="li-name">${esc(dz.label)}</span><button class="li-del" data-action="quick-del" data-id="${dz.id}" data-type="dz">✕</button>`;
+      d.innerHTML=`<span style="font-size:12px">⚠</span><span class="li-name">${esc(dz.label)}</span><button class="li-del" data-action="quick-del" data-id="${esc(dz.id)}" data-type="dz">✕</button>`;
       d.addEventListener('click',e=>{if(e.target.closest('.li-del'))return;sel(dz.id,'dz',{zoom:true});setMode('sel');});leftList.appendChild(d);
     });
   }
@@ -5419,7 +5551,7 @@ function renderList(){
       const lenM=(Math.hypot(wpx.x2-wpx.x1,wpx.y2-wpx.y1)*(scaleM/100)).toFixed(1);
       const d=document.createElement('div');
       d.className='list-item'+(w.id===selId?' active':'');
-      d.innerHTML=`<span style="font-size:12px">▌</span><div class="li-info"><div class="li-name">Wall ${i+1}</div><div class="li-sub">${esc(mat.label)} · ${lenM} m</div></div><button class="li-del" data-action="quick-del" data-id="${w.id}" data-type="wall">✕</button>`;
+      d.innerHTML=`<span style="font-size:12px">▌</span><div class="li-info"><div class="li-name">Wall ${i+1}</div><div class="li-sub">${esc(mat.label)} · ${lenM} m</div></div><button class="li-del" data-action="quick-del" data-id="${esc(w.id)}" data-type="wall">✕</button>`;
       d.addEventListener('click',e=>{if(e.target.closest('.li-del'))return;sel(w.id,'wall',{zoom:true});setMode('sel');});
       leftList.appendChild(d);
     });
@@ -5634,7 +5766,7 @@ function buildFloorOverlaySVG(floor,imgEl){
     if(!Number.isFinite(ap.fx)||!Number.isFinite(ap.fy)||!Number.isFinite(ap.r)||ap.r<=0)return '';
     const cx=(ap.fx*cw).toFixed(1),cy=(ap.fy*ch).toFixed(1),r=ap.r,ri=(r*.54).toFixed(1);
     const ls=Math.max(8,Math.min(14,r*.17)).toFixed(1);
-    const col=ap.color||'';
+    const col=safeColor(ap.color);
     const oc=col||({strong:'#000',medium:'rgba(0,0,0,.55)',weak:'rgba(0,0,0,.3)'}[ap.sig]);
     const of=col?hexToRgba(col,.08):({strong:'rgba(0,0,0,.04)',medium:'rgba(0,0,0,.035)',weak:'rgba(0,0,0,.025)'}[ap.sig]);
     const innerFill=col?hexToRgba(col,.12):'rgba(0,0,0,.05)';
@@ -5680,7 +5812,7 @@ ${innerShape}
     if(!Number.isFinite(c.fx)||!Number.isFinite(c.fy))return '';
     const cx=c.fx*cw, cy=c.fy*ch;
     const fov=c.fov||80,heading=c.heading||0,range=c.range||80;
-    const col=c.color||'#000';
+    const col=safeColor(c.color)||'#000';
     let cone;
     if(fov>=350){
       cone=`<circle cx="${cx.toFixed(1)}" cy="${cy.toFixed(1)}" r="${range}" fill="${hexToRgba(col,.12)}" stroke="${col}" stroke-width="1.2" opacity=".85"/>`;
@@ -5707,7 +5839,7 @@ async function doExport(){
   const {cw,ch,innerSVG}=buildMapOverlaySVG();
   const name=f.imgName||'WiFi Map';
   const apImg=await _resolveExportImages(APS());
-  const html=`<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width,initial-scale=1.0"/><title>${name} — Coverage | Plexus</title><link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Rajdhani:wght@500;600;700&display=swap" rel="stylesheet"><style>
+  const html=`<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width,initial-scale=1.0"/><title>${esc(name)} — Coverage | Plexus</title><link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Rajdhani:wght@500;600;700&display=swap" rel="stylesheet"><style>
 *{box-sizing:border-box;margin:0;padding:0}
 html,body{background:#efece5;min-height:100vh;display:flex;flex-direction:column;align-items:center;padding:28px 18px 40px;font-family:'Rajdhani',sans-serif;color:#000}
 .tb{width:100%;max-width:1200px;display:flex;align-items:center;justify-content:space-between;margin-bottom:16px}
@@ -5767,9 +5899,9 @@ html,body{background:#efece5;min-height:100vh;display:flex;flex-direction:column
 </style></head><body>
 <header class="mh"><div class="mhl">${SETTINGS.logoDataUrl?`<img class="mhlogo" src="${esc(SETTINGS.logoDataUrl)}" alt=""/>`:''}<div class="mht">${esc(SETTINGS.reportTitle||name)}</div><div class="mhs">${esc(SETTINGS.company||'Plexus')}${SETTINGS.tagline?' · '+esc(SETTINGS.tagline):''}</div></div><div class="mhm">${esc(SETTINGS.metaLine||'WiFi Coverage Audit')}</div></header>
 <div id="mw">
-<div class="mb"><img id="mi" src="${imgSrc}" alt="Coverage Map"/><div id="ov"><svg id="sl" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${cw} ${ch}" preserveAspectRatio="xMidYMid meet"><defs><filter id="gf"><feGaussianBlur stdDeviation="3" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter></defs>${innerSVG}</svg></div></div>
+<div class="mb"><img id="mi" src="${esc(imgSrc)}" alt="Coverage Map"/><div id="ov"><svg id="sl" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${cw} ${ch}" preserveAspectRatio="xMidYMid meet"><defs><filter id="gf"><feGaussianBlur stdDeviation="3" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter></defs>${innerSVG}</svg></div></div>
 <div class="ml"><div class="li"><div class="ld"></div>AP</div><div class="li"><div class="lr"></div>Coverage</div><div class="li">⚠ Dead Zone</div><div class="li">⊞ Switch</div><span class="lb">${esc(SETTINGS.company||'Plexus')}</span></div></div>
-${APS().length?`<table class="at"><thead><tr><th>#</th><th>Name</th><th>Model</th><th>Freq</th><th>Ch</th><th>TX</th><th>Signal</th><th>IP</th><th>MAC</th><th>Port</th><th>VLAN</th><th>Notes</th></tr></thead><tbody>${APS().map((ap,i)=>`<tr><td>${i+1}</td><td>${apImg.has(ap)?`<img class="thumb" src="${apImg.get(ap)}" alt=""/>`:''}${ap.name}</td><td>${ap.model||''}</td><td>${ap.freq}</td><td style="font-family:'Share Tech Mono',monospace;font-size:10px">${ap.channel||'auto'}</td><td style="font-family:'Share Tech Mono',monospace;font-size:10px">${ap.txPower||'auto'}</td><td class="${{strong:'ss',medium:'sm',weak:'sw'}[ap.sig]}">${{strong:'● Strong',medium:'● Medium',weak:'● Weak'}[ap.sig]}</td><td style="font-family:'Share Tech Mono',monospace;font-size:10px">${ap.ip||'—'}</td><td style="font-family:'Share Tech Mono',monospace;font-size:10px">${ap.mac||'—'}</td><td>${ap.port||'—'}</td><td>${ap.vlan||'—'}</td><td style="font-size:10px;color:rgba(0,0,0,.55)">${esc(ap.comment||ap.notes||'—')}</td></tr>`).join('')}</tbody></table>`:''}
+${APS().length?`<table class="at"><thead><tr><th>#</th><th>Name</th><th>Model</th><th>Freq</th><th>Ch</th><th>TX</th><th>Signal</th><th>IP</th><th>MAC</th><th>Port</th><th>VLAN</th><th>Notes</th></tr></thead><tbody>${APS().map((ap,i)=>`<tr><td>${i+1}</td><td>${apImg.has(ap)?`<img class="thumb" src="${apImg.get(ap)}" alt=""/>`:''}${esc(ap.name)}</td><td>${esc(ap.model||'')}</td><td>${esc(ap.freq)}</td><td style="font-family:'Share Tech Mono',monospace;font-size:10px">${esc(ap.channel||'auto')}</td><td style="font-family:'Share Tech Mono',monospace;font-size:10px">${esc(ap.txPower||'auto')}</td><td class="${{strong:'ss',medium:'sm',weak:'sw'}[ap.sig]}">${{strong:'● Strong',medium:'● Medium',weak:'● Weak'}[ap.sig]}</td><td style="font-family:'Share Tech Mono',monospace;font-size:10px">${esc(ap.ip||'—')}</td><td style="font-family:'Share Tech Mono',monospace;font-size:10px">${esc(ap.mac||'—')}</td><td>${esc(ap.port||'—')}</td><td>${esc(ap.vlan||'—')}</td><td style="font-size:10px;color:rgba(0,0,0,.55)">${esc(ap.comment||ap.notes||'—')}</td></tr>`).join('')}</tbody></table>`:''}
 ${SETTINGS.footerLine?`<footer class="ft">${esc(SETTINGS.footerLine)}</footer>`:''}
 </body></html>`;
   const blob=new Blob([html],{type:'text/html'});const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=(name||'wifi').replace(/\s+/g,'_')+'_coverage.html';a.click();toast('Exported!');
@@ -5795,14 +5927,14 @@ async function doPDF(){
       }catch(_){}
     }
     const overlay=buildFloorOverlaySVG(f,{naturalWidth:cw,naturalHeight:ch});
-    const cov=_sampleFloorCoverage(f,cw,ch);
+    const cov=_sampleFloorCoverage(f,cw,ch,_COV_OPTS);
     const pct=cov.total?Math.round(cov.covered/cov.total*100):0;
     floorRecords.push({floor:f,src,overlay,pct});
   }
   // Whole-building coverage rollup (weighted by floor sample counts).
   let allC=0,allT=0;
   for(const r of floorRecords){
-    const c=_sampleFloorCoverage(r.floor,r.overlay.cw,r.overlay.ch);
+    const c=_sampleFloorCoverage(r.floor,r.overlay.cw,r.overlay.ch,_COV_OPTS);
     allC+=c.covered;allT+=c.total;
   }
   const buildingPct=allT?Math.round(allC/allT*100):0;
@@ -5839,7 +5971,7 @@ async function doPDF(){
     }).join('')}</tbody></table>`:'';
     const dzTable=dzs.length?`<h3>Dead Zones (${dzs.length})</h3><table><thead><tr><th>Label</th><th>Notes</th></tr></thead><tbody>${dzs.map(dz=>`<tr><td>${esc(dz.label||'—')}</td><td class="muted">${esc(dz.comment||dz.notes||'—')}</td></tr>`).join('')}</tbody></table>`:'';
     const mapBlock=r.src
-      ? `<div class="map-wrap"><img src="${r.src}" alt="Map"/><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${r.overlay.cw} ${r.overlay.ch}" preserveAspectRatio="xMidYMid meet">${r.overlay.innerSVG}</svg></div>`
+      ? `<div class="map-wrap"><img src="${esc(r.src)}" alt="Map"/><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${r.overlay.cw} ${r.overlay.ch}" preserveAspectRatio="xMidYMid meet">${r.overlay.innerSVG}</svg></div>`
       : `<div class="map-wrap empty"><span>No floor plan uploaded for this floor.</span></div>`;
     return `<section class="floor-sec${fi>0?' page-break':''}">
   <h2>${esc(f.name||('Floor '+(fi+1)))}<span class="floor-cov"> · ${r.pct}% coverage</span></h2>
@@ -5884,6 +6016,7 @@ img.thumb{height:26px;width:auto;max-width:44px;object-fit:contain;vertical-alig
 .footer{margin-top:48px;padding-top:16px;border-top:1px solid #000;font-size:9px;color:#000;font-family:'Share Tech Mono',monospace;display:flex;justify-content:space-between;letter-spacing:.15em;text-transform:uppercase;font-weight:700}
 .print-btn{margin-top:24px;padding:12px 28px;background:#000;color:#efece5;border:none;border-radius:2px;font-size:11px;cursor:pointer;font-family:'Share Tech Mono',monospace;font-weight:700;letter-spacing:.2em;text-transform:uppercase}
 .print-btn:hover{background:rgba(0,0,0,.8)}
+table.mx{width:auto}table.mx th,table.mx td{text-align:center;padding:5px 12px}.mx-ok{color:#1e7d3c}.mx-bad{color:#c0382b;font-weight:700}.mx-warn{color:#b26a00}
 @media print{body{padding:24px 28px;background:#fff}.print-btn{display:none}.cover{page-break-after:always}h2,h3{page-break-after:avoid}table{page-break-inside:auto}tr{page-break-inside:avoid}.floor-sec{page-break-inside:avoid}}
 </style></head><body>
 <div class="cover">
@@ -5904,11 +6037,13 @@ img.thumb{height:26px;width:auto;max-width:44px;object-fit:contain;vertical-alig
 </div>
 ${floorSections}
 ${reportNetworkHtml()}
+${_vlanMatrixHtml()}
 <div class="footer"><span>${esc(SETTINGS.company||'Plexus')}${SETTINGS.contact?' · '+esc(SETTINGS.contact):''}</span><span>Generated ${new Date().toLocaleString(SETTINGS.locale||'en-GB')}</span></div>
 ${SETTINGS.footerLine?`<div class="footer-line">${esc(SETTINGS.footerLine)}</div>`:''}
-<button class="print-btn" onclick="window.print()">Print / Save as PDF</button>
+<button class="print-btn">Print / Save as PDF</button>
 </body></html>`);
   w.document.close();
+  _wirePrintButton(w);
   toast('PDF preview opened — use Print to save as PDF');
 }
 
@@ -5935,7 +6070,7 @@ function autosave(){
     // localStorage — strip them from the autosave payload (the encrypted copy
     // lives only in explicitly-saved project files).
     const replacer=_credPass
-      ? (k,v)=>(k.startsWith('_')||k==='creds')?undefined:v
+      ? stripCredsReplacer
       : _stripCacheReplacer;
     const payload=JSON.stringify({version:PROJECT_VERSION,settings:SETTINGS,floors:FLOORS,revisions:PROJECT_REVISIONS,savedAt:new Date().toISOString()},replacer);
     if(payload===lastAutosavePayload)return;  // nothing changed
@@ -6053,6 +6188,9 @@ const CLICK_ACTIONS={
   'install-sheets':()=>doInstallSheets(),
   // Organization features
   'show-inventory':()=>showInventory(),
+  'device-config': ()=>showDeviceConfig(),
+  'show-policies': ()=>showPolicies(),
+  'show-labs':     ()=>showLabs(),
   'handover-pack': ()=>doHandoverPack(),
   'export-ip-plan':()=>doIpPlanCsv(),
   'export-port-map':()=>doPortMapCsv(),

@@ -7,7 +7,7 @@
      its bundle) but blocks remote script injection, plugins, frame embedding
      and base-tag hijacking. fonts.* allow the Google Fonts webfonts; img http(s)
      allows pasted device-photo URLs; blob: covers the PDF-import worker. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' blob:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' data: https://fonts.gstatic.com; img-src 'self' data: blob: https: http:; connect-src 'self' data: blob: https://fonts.googleapis.com https://fonts.gstatic.com; worker-src 'self' blob:; object-src 'none'; base-uri 'self'"/>
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' blob:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' data: https://fonts.gstatic.com; img-src 'self' data: blob: https: http:; connect-src 'self' data: blob: https://fonts.googleapis.com https://fonts.gstatic.com; worker-src 'self' blob:; object-src 'none'; base-uri 'self'"/>
 <title>Plexus — Network Site Planner</title>
 <link rel="stylesheet" href="fonts.css"/>
 <link rel="stylesheet" href="styles.css"/>
@@ -22,11 +22,17 @@
       <button class="mode-tab" data-action="set-uimode" data-arg="simulate" data-uimode-btn="simulate" title="Practice on a simulated copy — no real devices">⇄ Simulate</button>
       <button class="mode-tab mode-tab-operate" data-action="set-uimode" data-arg="operate" data-uimode-btn="operate" id="mode-operate" title="Connect to real devices (desktop)" style="display:none">⚡ Operate</button>
     </div>
+    <span class="toolgroup" data-modes="simulate">
+    <button class="btn" data-action="show-policies" title="State what must / must not be reachable and prove it against the plan">✓ Policies</button>
+    <button class="btn" data-action="show-labs" title="Guided labs, graded by the simulator">🎓 Labs</button>
+    </span>
     <div class="tsep"></div>
     <button class="btn" data-action="new-project" title="Start a fresh project">✦ New</button>
     <button class="btn" data-action="open-upload">↑ Upload Map</button>
     <input type="file" id="file-up" accept="image/*,.svg,.pdf,application/pdf" style="display:none" data-change-action="upload-map"/>
-    <span class="toolgroup" data-modes="design">
+    <span class="toolgroup" data-modes="design"><span class="dropdown">
+    <button class="btn" data-action="toggle-menu" data-arg="import-menu" title="Import walls, Ekahau projects and survey data">⇊ Import ▾</button>
+    <div class="dropdown-menu" id="import-menu">
     <button class="btn" data-action="open-svg" title="Import walls from an SVG floor-plan">↺ Walls SVG</button>
     <input type="file" id="svg-up" accept=".svg,image/svg+xml" style="display:none" data-change-action="import-svg-walls"/>
     <button class="btn" data-action="open-dxf" title="Import walls from a DXF (LINE/POLYLINE)">↺ DXF</button>
@@ -36,7 +42,8 @@
     <input type="file" id="esx-up" accept=".esx,.zip" style="display:none" data-change-action="import-esx"/>
     <button class="btn" data-action="open-survey" title="Import RSSI survey samples from a CSV">↺ Survey CSV</button>
     <input type="file" id="survey-up" accept=".csv,text/csv" style="display:none" data-change-action="import-survey-csv"/>
-    </span>
+    </div>
+    </span></span>
     <button class="btn" data-action="save">💾 Save</button>
     <button class="btn" data-action="open-load">📂 Load</button>
     <button class="btn" data-action="share-link" title="Copy a shareable URL of the current project (images not included)">🔗 Share</button>
@@ -61,6 +68,7 @@
       <button class="btn" data-action="show-inventory" title="As-built inventory, rollout status & organization tools">▤ Inventory</button>
       <button class="btn" data-action="handover-pack" title="Zip the HTML summary + every CSV deliverable">⇩ Handover pack</button>
       <button class="btn" data-action="export-esx" title="Export the project as an Ekahau .esx (best-effort)">⇈ Ekahau .esx</button>
+      <button class="btn" data-action="device-config" title="Generate a RouterOS config for a switch from the plan, and check a real device export against it">⇄ Device config / drift</button>
     </div>
     </span></span>
     <button class="btn" id="btn-unifi" data-action="show-unifi" title="Pull as-built data from / push the channel plan to a UniFi controller (desktop app)" style="display:none">⇅ UniFi</button>

@@ -11,12 +11,14 @@
 // plan, and a useful thing for the simulator to show. A gateway/L3 device is a
 // later schema addition (Phase 3/4), at which point this adapter grows a case.
 
-import { buildNet } from './sim.js';
+import { buildNet, setIfaceDown, setDeviceDown, intToIpSafe } from './sim.js';
+import { effectiveAcls, parseIgpNetworks, igpCovers } from './cli.js';
 import { runOspf } from './ospf.js';
 import { runRip } from './rip.js';
+import { runStp } from './stp.js';
 import { normName } from './dns.js';
 import { bestAp } from './wireless.js';
-import { ipToInt, nextFreeIp } from './network.js';
+import { ipToInt, nextFreeIp, ipInCidr } from './network.js';
 
 const validIp = (s) => s != null && s !== '' && ipToInt(s) != null;
 const sameSubnet = (ipA, pA, ipB, pB) => {
@@ -102,17 +104,44 @@ function cliNat(sw) {
   return outside && inside.length ? { inside, outside } : null;
 }
 // Packet-filter rules from a CLI config (access-list / firewall filter).
+// Interface-bound rules are renamed to the simulated interface: a CLI SVI/VLAN
+// subinterface becomes the router's `svi<vlan>` port (see the L3 block below).
 function cliAcls(sw) {
   const cfg = sw && sw.cli;
   if (!cfg || !Array.isArray(cfg.acls)) return [];
-  return cfg.acls.filter((r) => r && (r.action === 'permit' || r.action === 'deny'));
+  return effectiveAcls(cfg, (i) => (i.vlan != null ? `svi${Number(i.vlan)}` : i.name));
 }
+function cliIgpNetworks(sw, proto) {
+  const p = sw && sw.cli && sw.cli[proto];
+  return parseIgpNetworks(p && p.networks);
+}
+
+// Services a network device answers on its own addresses (what a port probe or
+// a blast-radius sweep finds on management). `sw.services` overrides.
+function mgmtServices(sw) {
+  if (Array.isArray(sw.services) && sw.services.length) return sw.services;
+  const base = [{ proto: 'tcp', port: 22 }, { proto: 'tcp', port: 443 }];
+  return vendorOf(sw.model) === 'mikrotik' ? [...base, { proto: 'tcp', port: 80 }, { proto: 'tcp', port: 8291 }] : base;
+}
+const cidrNorm = (cidr) => {
+  const m = /^(\d+\.\d+\.\d+\.\d+)\/(\d+)$/.exec(String(cidr || '').trim());
+  const n = m ? ipToInt(m[1]) : null;
+  if (n == null || +m[2] > 32) return null;
+  const mask = +m[2] <= 0 ? 0 : (0xffffffff << (32 - +m[2])) >>> 0;
+  return `${(n & mask) >>> 0}/${+m[2]}`;
+};
 
 /**
  * @param {any} project
- * @returns {{net:any, spec:any, meta:Map<string,any>, warnings:string[], ospfRouters:string[], ripRouters:string[], dns:Record<string,string>}}
+ * @param {{extraHosts?:Array<{id:string,name?:string,vlan:string|number,ip:string}>}} [opts]
+ *   extraHosts  synthetic probe hosts (policy analysis) placed in a VLAN at a
+ *               given address; they appear in the net as `h:<id>` but never in
+ *               the UI device lists.
+ * @returns {{net:any, spec:any, meta:Map<string,any>, warnings:string[], ospfRouters:string[], ripRouters:string[], dns:Record<string,string>,
+ *   uplinks:Array<{id:string,mode:string,from:string,to:string,ends:Array<[string,string]>}>, reconverge:()=>void,
+ *   stp:{roots:string[], blocked:Array<{dev:string,iface:string}>, ports:Array<{dev:string,iface:string,role:string}>}}}
  */
-export function compileTopology(project) {
+export function compileTopology(project, opts = {}) {
   const warnings = [];
   const meta = new Map();
   const devices = [];
@@ -189,6 +218,14 @@ export function compileTopology(project) {
     }
   }
   const swById = new Map(switches.map((s) => [s.sw.id, s]));
+  // Synthetic probe hosts: attach each to a switch that already has that VLAN on
+  // an access port (else the first switch), so it sits where a real host would.
+  for (const x of Array.isArray(opts.extraHosts) ? opts.extraHosts : []) {
+    if (!x || !x.id || seenEp.has(x.id) || !switches.length) continue;
+    seenEp.add(x.id);
+    const home = endpoints.find((e) => String(e.ep.vlan) === String(x.vlan) && swById.has(e.ep.swId));
+    endpoints.push({ ep: { id: x.id, name: x.name || x.id, swId: home ? home.ep.swId : switches[0].sw.id, vlan: String(x.vlan), ip: x.ip }, type: 'ghost', floorId: null });
+  }
 
   // Fold in per-device CLI configs (Phase 3b). A CLI SVI supplies a VLAN's
   // gateway when settings didn't, and marks the switch that will host that SVI
@@ -204,7 +241,44 @@ export function compileTopology(project) {
       if (!cliOwner.has(vid) && info.gateway === svi.ip) cliOwner.set(vid, sw.id);
     }
   }
-  const allVlans = [...new Set([...vlanInfo.keys()].map(Number).concat(1))];
+  // Trunks carry every VLAN the plan uses — including VLANs that have no subnet
+  // in the registry and VLANs only referenced by an endpoint — otherwise a
+  // same-VLAN pair on two switches is silently cut at the uplink.
+  const vlanIds = new Set([1]);
+  for (const k of vlanInfo.keys()) vlanIds.add(Number(k));
+  for (const v of project?.settings?.vlans || []) if (v && v.id != null) vlanIds.add(Number(v.id));
+  for (const { ep } of endpoints) if (ep.vlan) vlanIds.add(Number(ep.vlan));
+  for (const { sw } of switches) if (sw.vlan) vlanIds.add(Number(sw.vlan));
+  const allVlans = [...vlanIds].filter((n) => Number.isInteger(n) && n > 0);
+
+  // DHCP service. With no pool or relay configured anywhere the sim keeps its
+  // permissive default (every VLAN with a subnet hands out leases). As soon as
+  // the plan configures DHCP on any device it becomes strict, like the real
+  // network: a client only gets a lease if its VLAN's gateway device serves a
+  // pool for that subnet, or relays (helper-address / dhcp-relay) to a device
+  // in the plan that does.
+  const pools = []; // { swId, net }
+  const helpers = []; // { swId, vlan, server }
+  for (const { sw } of switches) {
+    const cfg = sw.cli;
+    if (!cfg || typeof cfg !== 'object') continue;
+    for (const p of Array.isArray(cfg.dhcpPools) ? cfg.dhcpPools : []) { const n = p && cidrNorm(p.cidr); if (n) pools.push({ swId: sw.id, net: n }); }
+    for (const i of Object.values(cfg.interfaces || {})) if (i && i.vlan != null && validIp(i.helper)) helpers.push({ swId: sw.id, vlan: String(Number(i.vlan)), server: i.helper });
+  }
+  const dhcpStrict = pools.length > 0 || helpers.length > 0;
+  const swOwnsIp = (sw, ip) => sw.ip === ip || Object.values((sw.cli && sw.cli.interfaces) || {}).some((i) => i && i.ip === ip);
+  const dhcpFor = (vid, info) => {
+    if (!dhcpStrict) return { ok: true };
+    const net = cidrNorm(info.cidr);
+    const serving = pools.filter((p) => p.net === net);
+    if (!serving.length) return { ok: false, why: 'no DHCP pool covers its subnet' };
+    const gwSw = cliOwner.get(String(vid)) || (switches.find((s) => s.sw.role === 'l3') || {}).sw?.id;
+    if (serving.some((p) => p.swId === gwSw)) return { ok: true };
+    const relay = helpers.filter((h) => h.vlan === String(vid));
+    if (!relay.length) return { ok: false, why: 'the pool is on another device and this VLAN has no relay (ip helper-address / dhcp-relay)' };
+    const hit = relay.some((h) => serving.some((p) => swOwnsIp(swById.get(p.swId).sw, h.server)));
+    return hit ? { ok: true, relayed: true } : { ok: false, why: `the relay points to ${relay[0].server}, which is not a DHCP server in the plan` };
+  };
 
   // Per-switch interface list, accumulated as we wire endpoints and uplinks.
   const swIfaces = new Map();
@@ -240,6 +314,8 @@ export function compileTopology(project) {
     const wantsDhcp = ep.ip === 'dhcp' || (ep.dhcp === true && !validIp(ep.ip));
     if (wantsDhcp) {
       if (!info || !info.cidr) { warnings.push(`${type} ${label}: DHCP needs a VLAN subnet — skipped`); continue; }
+      const svc = dhcpFor(ep.vlan, info);
+      if (!svc.ok) { warnings.push(`${type} ${label}: no DHCP lease in VLAN ${ep.vlan} — ${svc.why}`); continue; }
       ipAddr = nextFreeIp(info.cidr, [...(usedByVlan.get(String(ep.vlan)) || [])]);
       if (!ipAddr) { warnings.push(`${type} ${label}: DHCP pool for VLAN ${ep.vlan} exhausted — skipped`); continue; }
       useIp(ep.vlan, ipAddr);
@@ -267,6 +343,8 @@ export function compileTopology(project) {
     links.push([`${hostId}/eth0`, `sw:${ep.swId}/${portName}`]);
   }
 
+  /** @type {Array<{id:string,mode:string,from:string,to:string,ends:Array<[string,string]>}>} */
+  const uplinks = []; // every inter-switch link, for fault injection (cut a link)
   // Uplinks → trunk links between switches (carry every known VLAN). A routed
   // uplink (uplinkMode 'routed') is an L3 point-to-point handled after routers exist.
   for (const { sw } of switches) {
@@ -280,6 +358,21 @@ export function compileTopology(project) {
     ifacesOf(sw.id).push({ name: near, mode: 'trunk', allowed: allVlans });
     ifacesOf(sw.uplinkId).push({ name: far, mode: 'trunk', allowed: allVlans });
     links.push([`sw:${sw.id}/${near}`, `sw:${sw.uplinkId}/${far}`]);
+    uplinks.push({ id: sw.id, mode: 'trunk', from: sw.name || sw.id, to: swById.get(sw.uplinkId).sw.name || sw.uplinkId, ends: [[`sw:${sw.id}`, near], [`sw:${sw.uplinkId}`, far]] });
+  }
+
+  // Redundant uplink (sw.uplink2Id): a second trunk to another switch. It closes
+  // a loop on purpose — spanning tree (below) blocks one link and brings the
+  // other in when a link or switch fails.
+  for (const { sw } of switches) {
+    if (!sw.uplink2Id || sw.uplink2Id === sw.id) continue;
+    if (!swById.has(sw.uplink2Id)) { warnings.push(`switch ${sw.name || sw.id}: redundant uplink target ${sw.uplink2Id} not found`); continue; }
+    const near = `up2_${sw.uplink2Id}`;
+    const far = `dn2_${sw.id}`;
+    ifacesOf(sw.id).push({ name: near, mode: 'trunk', allowed: allVlans });
+    ifacesOf(sw.uplink2Id).push({ name: far, mode: 'trunk', allowed: allVlans });
+    links.push([`sw:${sw.id}/${near}`, `sw:${sw.uplink2Id}/${far}`]);
+    uplinks.push({ id: `${sw.id}#2`, mode: 'trunk', from: sw.name || sw.id, to: swById.get(sw.uplink2Id).sw.name || sw.uplink2Id, ends: [[`sw:${sw.id}`, near], [`sw:${sw.uplink2Id}`, far]] });
   }
 
   // L3 devices. A switch routes between VLANs — becoming a sim router with one
@@ -300,6 +393,9 @@ export function compileTopology(project) {
   const routerIds = new Set(); // switch ids that became sim routers
   const ospfRouterSimIds = new Set(); // r:<id> running OSPF
   const ripRouterSimIds = new Set(); // r:<id> running RIP
+  // r:<id> → `network` statement matchers; an interface joins the IGP only if a
+  // statement covers its address (no statements at all = every interface).
+  const igpNets = { ospf: new Map(), rip: new Map() };
   for (const { sw, floorId } of switches) {
     const svis = sviByOwner.get(sw.id) || [];
     const routed = cliRoutedIfaces(sw); // routed CLI ports (for routed uplinks / stubs)
@@ -321,7 +417,7 @@ export function compileTopology(project) {
       links.push([`${rId}/svi${s.vid}`, `sw:${sw.id}/${sviPort}`]);
     }
     for (const r of routed) rIfaces.push({ name: r.name, ip: r.ip, prefix: r.prefix, up: r.up });
-    const dev = { id: rId, name: `${sw.name || sw.id} (L3)`, kind: 'router', vendor: vendorOf(sw.model), ifaces: rIfaces };
+    const dev = { id: rId, name: `${sw.name || sw.id} (L3)`, kind: 'router', vendor: vendorOf(sw.model), ifaces: rIfaces, services: mgmtServices(sw) };
     if (routes.length) dev.routes = routes; // CLI static routes
     const acls = cliAcls(sw);
     if (acls.length) dev.acls = acls; // CLI firewall / access-list
@@ -330,8 +426,8 @@ export function compileTopology(project) {
     devices.push(dev);
     meta.set(rId, { type: 'router', srcId: sw.id, name: sw.name || sw.id, fx: sw.fx, fy: sw.fy, floorId, ip: sw.ip });
     routerIds.add(sw.id);
-    if (ospf) ospfRouterSimIds.add(rId);
-    if (rip) ripRouterSimIds.add(rId);
+    if (ospf) { ospfRouterSimIds.add(rId); igpNets.ospf.set(rId, cliIgpNetworks(sw, 'ospf')); }
+    if (rip) { ripRouterSimIds.add(rId); igpNets.rip.set(rId, cliIgpNetworks(sw, 'rip')); }
   }
 
   // Routed uplinks → an L3 point-to-point between two switches' routers, using the
@@ -350,6 +446,37 @@ export function compileTopology(project) {
       continue;
     }
     links.push([`r:${sw.id}/${pair[0].name}`, `r:${sw.uplinkId}/${pair[1].name}`]);
+    uplinks.push({ id: sw.id, mode: 'routed', from: sw.name || sw.id, to: swById.get(sw.uplinkId).sw.name || sw.uplinkId, ends: [[`r:${sw.id}`, pair[0].name], [`r:${sw.uplinkId}`, pair[1].name]] });
+  }
+
+  // Switch management addresses. A switch's own IP (sw.ip) is a real, pingable
+  // thing on the network, so give it a management NIC on an internal access port
+  // in the VLAN whose subnet holds that IP (else sw.vlan, else VLAN 1). Skipped
+  // when the address is already present — an SVI, or a co-located device that
+  // shares the box's IP.
+  const takenIps = new Set();
+  for (const d of devices) for (const i of d.ifaces || []) if (i.ip) takenIps.add(i.ip);
+  for (const info of vlanInfo.values()) if (info.gateway) takenIps.add(info.gateway);
+  for (const { sw, floorId } of switches) {
+    if (!validIp(sw.ip) || takenIps.has(sw.ip)) continue;
+    let vid = null;
+    let info = null;
+    for (const [k, v] of vlanInfo) {
+      if (v.cidr && ipInCidr(sw.ip, v.cidr)) { vid = Number(k); info = v; break; }
+    }
+    if (vid == null) {
+      vid = Number(sw.vlan) > 0 && Number.isInteger(Number(sw.vlan)) ? Number(sw.vlan) : 1;
+      info = vlanInfo.get(String(vid)) || null;
+    }
+    if (!Number.isInteger(vid) || vid <= 0) continue;
+    const mId = `m:${sw.id}`;
+    const host = { id: mId, name: `${sw.name || sw.id} (mgmt)`, kind: 'host', vendor: vendorOf(sw.model), ifaces: [{ name: 'mgmt', ip: sw.ip, prefix: info?.prefix ?? 24 }], services: mgmtServices(sw) };
+    if (info?.gateway) host.gateway = info.gateway;
+    devices.push(host);
+    meta.set(mId, { type: 'mgmt', srcId: sw.id, name: sw.name || sw.id, fx: sw.fx, fy: sw.fy, floorId, ip: sw.ip, vlan: vid });
+    ifacesOf(sw.id).push({ name: 'mgmt0', mode: 'access', vlan: vid });
+    links.push([`${mId}/mgmt`, `sw:${sw.id}/mgmt0`]);
+    takenIps.add(sw.ip);
   }
 
   // Switch devices (built last, after every access/trunk/SVI port is accrued).
@@ -393,13 +520,66 @@ export function compileTopology(project) {
   const net = buildNet(spec);
   // If any device runs OSPF, converge it so routes appear without hand-written
   // statics. Only OSPF-enabled routers' interfaces participate.
-  if (ospfRouterSimIds.size) {
-    runOspf(net, { enabled: (dev, i) => ospfRouterSimIds.has(dev.id) && i.ipInt != null && i.up !== false });
+  const igpEnabled = (ids, nets) => (dev, i) =>
+    ids.has(dev.id) && i.ipInt != null && i.up !== false && igpCovers(nets.get(dev.id) || [], i.ipInt);
+  // Re-runnable: fault injection calls this again after taking links down so the
+  // IGPs converge on what is left.
+  const stpPrio = new Map(switches.map(({ sw }) => [`sw:${sw.id}`, Number(sw.stpPriority)]));
+  let stp = { roots: [], blocked: [], ports: [] };
+  const reconverge = () => {
+    stp = runStp(net, { priority: (dev) => stpPrio.get(dev.id) });
+    out.stp = stp;
+    if (ospfRouterSimIds.size) runOspf(net, { enabled: igpEnabled(ospfRouterSimIds, igpNets.ospf) });
+    if (ripRouterSimIds.size) runRip(net, { enabled: igpEnabled(ripRouterSimIds, igpNets.rip) });
+  };
+  /** @type {any} */
+  const out = { net, spec, meta, warnings, ospfRouters: [...ospfRouterSimIds], ripRouters: [...ripRouterSimIds], dns, uplinks, reconverge, stp };
+  reconverge();
+  return out;
+}
+
+// Fault injection on a compiled plan. `faults.devices` are plan switch ids to
+// power off (its L2 fabric, its router and its management NIC all go dark);
+// `faults.links` are switch ids whose uplink is cut. Dynamic routing reconverges
+// afterwards. Returns how many faults matched something in the topology.
+/** @param {any} compiled @param {{devices?:string[], links?:string[]}} [faults] */
+export function applyFaults(compiled, faults = {}) {
+  if (!compiled || !compiled.net) return 0;
+  let n = 0;
+  for (const id of faults.devices || []) {
+    let hit = false;
+    for (const simId of [`sw:${id}`, `r:${id}`, `m:${id}`]) hit = setDeviceDown(compiled.net, simId, true) || hit;
+    if (hit) n++;
   }
-  if (ripRouterSimIds.size) {
-    runRip(net, { enabled: (dev, i) => ripRouterSimIds.has(dev.id) && i.ipInt != null && i.up !== false });
+  for (const id of faults.links || []) {
+    const up = (compiled.uplinks || []).find((u) => u.id === id);
+    if (!up) continue;
+    for (const [dev, iface] of up.ends) setIfaceDown(compiled.net, dev, iface, true);
+    n++;
   }
-  return { net, spec, meta, warnings, ospfRouters: [...ospfRouterSimIds], ripRouters: [...ripRouterSimIds], dns };
+  if (n && typeof compiled.reconverge === 'function') compiled.reconverge();
+  return n;
+}
+
+// Everything worth pinging *to*: endpoints, switch management addresses, router
+// gateways/transit interfaces, and the Internet when the plan has a way out.
+// Returns [{ ip, name, group }] de-duplicated by IP.
+export function pingTargets(compiled) {
+  const out = [];
+  const seen = new Set();
+  const add = (ip, name, group) => { if (ip && !seen.has(ip)) { seen.add(ip); out.push({ ip, name, group }); } };
+  for (const m of compiled.meta.values()) {
+    if (m.type === 'ap' || m.type === 'camera' || m.type === 'client') add(m.ip, m.name, 'Endpoints');
+  }
+  for (const m of compiled.meta.values()) if (m.type === 'mgmt') add(m.ip, `${m.name} (mgmt)`, 'Switch management');
+  let hasCloud = false;
+  for (const dev of compiled.net.devices.values()) {
+    if (dev.kind === 'cloud') hasCloud = true;
+    if (dev.kind !== 'router') continue;
+    for (const i of dev.ifaces.values()) if (i.ipInt != null) add(intToIpSafe(i.ipInt), `${dev.name} ${i.name}`, 'Gateways');
+  }
+  if (hasCloud) add('8.8.8.8', 'Internet (8.8.8.8)', 'Internet');
+  return out;
 }
 
 // Convenience for the UI device picker: the pingable endpoints (anything with

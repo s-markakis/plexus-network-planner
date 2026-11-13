@@ -8,9 +8,9 @@
 
 const { app, BrowserWindow, shell, Menu, ipcMain } = require('electron');
 const path = require('node:path');
-const https = require('node:https');
-const http = require('node:http');
-const { execFile } = require('node:child_process');
+const { pinnedRequest, peekFingerprint } = require('./pinnedFetch.cjs');
+const { pinKey, loadPins, savePins, decide } = require('./unifiPin.cjs');
+const { execFile, spawn } = require('node:child_process');
 
 // Self-update from GitHub Releases (electron-updater reads the publish config
 // baked into app-update.yml). Guarded so a failure can never crash the app.
@@ -63,14 +63,17 @@ function createWindow() {
   mainWindow.loadFile(INDEX);
 
   // http(s) links (e.g. "Open management UI", external docs) go to the user's
-  // real browser; anything else (about:blank popups used by the PDF/print
-  // export) opens as a normal child window.
+  // real browser. The only child windows the app opens itself are the blank
+  // popups the PDF/print export writes into; every other scheme (file:, data:,
+  // javascript:, custom protocols) is denied — a child window inherits the
+  // preload bridge, so it must never load arbitrary content.
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     if (/^https?:\/\//i.test(url)) {
       shell.openExternal(url);
       return { action: 'deny' };
     }
-    return { action: 'allow' };
+    if (url === '' || url === 'about:blank') return { action: 'allow' };
+    return { action: 'deny' };
   });
 
   // Harden against navigating the app frame away from the bundled file://
@@ -103,61 +106,66 @@ function buildMenu() {
 // ── UniFi controller bridge ────────────────────────────────────────────────
 // All controller traffic runs here (not in the renderer) so self-signed
 // certificates — the norm on UDM/Cloud Key controllers — can be accepted
-// without weakening the app's web security. Credentials are passed per call
-// and never persisted by the main process.
+// without weakening the app's web security. They are accepted by pin, not
+// blindly: the first certificate a controller presents has to be approved by
+// the user (trust on first use) and every later call must present the same one.
+// Credentials are passed per call and never persisted by the main process.
 
-function unifiFetch(base, pathName, { method = 'GET', body, headers = {} } = {}) {
-  return new Promise((resolve, reject) => {
-    let u;
-    try { u = new URL(pathName, base); } catch (e) { return reject(new Error('Bad controller URL')); }
-    const mod = u.protocol === 'http:' ? http : https;
-    const data = body ? JSON.stringify(body) : null;
-    const req = mod.request(u, {
-      method,
-      rejectUnauthorized: false,       // controllers ship self-signed certs
-      headers: {
-        'Content-Type': 'application/json',
-        ...(data ? { 'Content-Length': Buffer.byteLength(data) } : {}),
-        ...headers,
-      },
-    }, (res) => {
-      const chunks = [];
-      res.on('data', (c) => chunks.push(c));
-      res.on('end', () => resolve({
-        status: res.statusCode,
-        headers: res.headers,
-        text: Buffer.concat(chunks).toString('utf8'),
-      }));
-    });
-    req.on('error', reject);
-    req.setTimeout(15000, () => req.destroy(new Error('Controller timed out')));
-    if (data) req.write(data);
-    req.end();
-  });
+function unifiFetch(base, pathName, { method = 'GET', body, headers = {}, fp = null } = {}) {
+  let u;
+  try { u = new URL(pathName, base); } catch (e) { return Promise.reject(new Error('Bad controller URL')); }
+  const data = body ? JSON.stringify(body) : null;
+  // https is pinned to the fingerprint the user trusted for this controller
+  // (see unifiTrust below); the request is only written after it matches.
+  return pinnedRequest(u, { method, body: data, expectedFp: fp, headers: { 'Content-Type': 'application/json', ...headers } });
+}
+
+// Resolve the certificate fingerprint to pin this call to, or an answer for
+// the renderer when the user has to decide first. First contact and a changed
+// certificate both need an explicit approval of the exact fingerprint shown.
+async function unifiTrust(url, approved) {
+  let u;
+  try { u = new URL(url); } catch { throw new Error('Bad controller URL'); }
+  if (u.protocol === 'http:') return { fp: null };       // plaintext: nothing to pin
+  if (u.protocol !== 'https:') throw new Error('Bad controller URL');
+  const file = path.join(app.getPath('userData'), 'controller-pins.json');
+  const pins = loadPins(file);
+  const key = pinKey(u);
+  const seen = await peekFingerprint(u);
+  const d = decide(pins, key, seen, approved);
+  if (d.action === 'use') return { fp: seen };
+  if (d.action === 'store') { pins[key] = seen; savePins(file, pins); return { fp: seen }; }
+  return { ask: { ok: false, needsTrust: true, changed: d.action === 'ask-changed', host: key, fingerprint: seen, pinned: d.pinned || '',
+    error: d.action === 'ask-changed' ? 'Controller certificate changed — not connecting' : 'Controller certificate is not trusted yet' } };
 }
 
 // Login handles both flavours: UniFi OS consoles (UDM/UDR/CK Gen2 —
 // /api/auth/login, APIs proxied under /proxy/network) and the legacy
 // software controller (/api/login, APIs at the root).
-async function unifiLogin(base, username, password) {
+async function unifiLogin(base, username, password, fp) {
   const capture = (res) => ({
     cookie: (res.headers['set-cookie'] || []).map((c) => c.split(';')[0]).join('; '),
     csrf: res.headers['x-csrf-token'] || '',
   });
-  let res = await unifiFetch(base, '/api/auth/login', { method: 'POST', body: { username, password } });
-  if (res.status === 200) return { ...capture(res), unifiOs: true };
-  res = await unifiFetch(base, '/api/login', { method: 'POST', body: { username, password } });
-  if (res.status === 200) return { ...capture(res), unifiOs: false };
+  let res = await unifiFetch(base, '/api/auth/login', { method: 'POST', body: { username, password }, fp });
+  if (res.status === 200) return { ...capture(res), unifiOs: true, fp };
+  res = await unifiFetch(base, '/api/login', { method: 'POST', body: { username, password }, fp });
+  if (res.status === 200) return { ...capture(res), unifiOs: false, fp };
   throw new Error(res.status === 400 || res.status === 401
     ? 'UniFi login rejected — check username/password'
     : `UniFi login failed (HTTP ${res.status})`);
 }
-const unifiSitePath = (session, site, p) =>
-  session.unifiOs ? `/proxy/network/api/s/${site}${p}` : `/api/s/${site}${p}`;
+// The site name comes from the project file: encode it so it stays one path
+// segment and can't steer the authenticated request to another API path.
+const unifiSitePath = (session, site, p) => {
+  const s = encodeURIComponent(String(site || 'default'));
+  return session.unifiOs ? `/proxy/network/api/s/${s}${p}` : `/api/s/${s}${p}`;
+};
 
 async function unifiListDevices(base, session, site) {
   const res = await unifiFetch(base, unifiSitePath(session, site, '/stat/device'), {
     headers: { Cookie: session.cookie },
+    fp: session.fp,
   });
   if (res.status !== 200) throw new Error(`Device list failed (HTTP ${res.status})`);
   const parsed = JSON.parse(res.text);
@@ -166,9 +174,11 @@ async function unifiListDevices(base, session, site) {
 
 ipcMain.handle('unifi:pull', async (_e, cfg) => {
   try {
-    const { url, site = 'default', user, pass } = cfg || {};
+    const { url, site = 'default', user, pass, trust } = cfg || {};
     if (!url || !user) throw new Error('Controller URL and username are required');
-    const session = await unifiLogin(url, user, pass || '');
+    const t = await unifiTrust(url, trust);
+    if (t.ask) return t.ask;
+    const session = await unifiLogin(url, user, pass || '', t.fp);
     const raw = await unifiListDevices(url, session, site);
     // Ship only the fields the renderer needs — not the whole device blob.
     const devices = raw.map((d) => ({
@@ -191,20 +201,26 @@ ipcMain.handle('unifi:pull', async (_e, cfg) => {
 // then case-insensitive name. Only radio_table fields we own are touched.
 ipcMain.handle('unifi:push', async (_e, cfg) => {
   try {
-    const { url, site = 'default', user, pass, changes } = cfg || {};
+    const { url, site = 'default', user, pass, changes, trust } = cfg || {};
     if (!url || !user) throw new Error('Controller URL and username are required');
     if (!Array.isArray(changes) || !changes.length) throw new Error('No channel plan to push');
-    const session = await unifiLogin(url, user, pass || '');
+    const t = await unifiTrust(url, trust);
+    if (t.ask) return t.ask;
+    const session = await unifiLogin(url, user, pass || '', t.fp);
     const devices = await unifiListDevices(url, session, site);
     const norm = (m) => String(m || '').toLowerCase().replace(/[^0-9a-f]/g, '');
-    const bandRadio = { '2.4': 'ng', 5: 'na', '5': 'na', '6': '6e' };
+    const bandRadio = { '2.4': 'ng', '5': 'na', '6': '6e' };
     const results = [];
     for (const ch of changes) {
       const dev = devices.find((d) => norm(d.mac) === norm(ch.mac) && norm(ch.mac))
         || devices.find((d) => (d.name || '').toLowerCase() === (ch.name || '').toLowerCase() && ch.name);
       if (!dev) { results.push({ name: ch.name, ok: false, error: 'no matching device on controller' }); continue; }
       if (!Array.isArray(dev.radio_table)) { results.push({ name: ch.name, ok: false, error: 'device has no radios' }); continue; }
-      const radioName = bandRadio[ch.band] || 'na';
+      // Fail the AP rather than guess: an unknown band must not retune the 5 GHz
+      // radio, and a missing radio must not be reported as a successful push.
+      const radioName = bandRadio[String(ch.band)];
+      if (!radioName) { results.push({ name: ch.name, ok: false, error: `unknown band "${ch.band}"` }); continue; }
+      if (!dev.radio_table.some((r) => r.radio === radioName)) { results.push({ name: ch.name, ok: false, error: `device has no ${ch.band} GHz radio` }); continue; }
       const radio_table = dev.radio_table.map((r) => {
         if (r.radio !== radioName) return r;
         const upd = { ...r, channel: ch.channel };
@@ -216,6 +232,7 @@ ipcMain.handle('unifi:push', async (_e, cfg) => {
         method: 'PUT',
         body: { radio_table },
         headers: { Cookie: session.cookie, ...(session.csrf ? { 'x-csrf-token': session.csrf } : {}) },
+        fp: session.fp,
       });
       results.push({ name: ch.name, ok: res.status === 200, error: res.status === 200 ? '' : `HTTP ${res.status}` });
     }
@@ -302,81 +319,32 @@ ipcMain.handle('survey:sample', async () => {
   }
 });
 
-// ── netssh bridge ────────────────────────────────────────────────────────────
-// Click-to-connect drives the user's own `netssh` broker (persistent SSH shells
-// for Cisco/MikroTik) over the CLI. Private keys never touch Plexus: netssh reads
-// the key by path (--key) the renderer imported from ~/.ssh/config. Passwords, if
-// any, go via the NETSSH_PASSWORD env of the child, never on argv.
-const os = require('node:os');
-const fs = require('node:fs');
-
-function netsshBin() {
-  const candidates = [
-    process.env.NETSSH_BIN,
-    path.join(os.homedir(), 'Downloads/netssh/.venv/bin/netssh'),
-    '/Volumes/PandorasBox/code/noctis/netssh/.venv/bin/netssh',
-    'netssh',
-  ].filter(Boolean);
-  for (const c of candidates) {
-    if (c === 'netssh') return c; // last resort: rely on PATH
-    try { if (fs.existsSync(c)) return c; } catch { /* ignore */ }
-  }
-  return null;
-}
-
-function runNetssh(args, { password, json = true } = {}) {
-  return new Promise((resolve) => {
-    const bin = netsshBin();
-    if (!bin) return resolve({ ok: false, error: 'netssh not found — install it or set NETSSH_BIN' });
-    const env = { ...process.env };
-    if (password) env.NETSSH_PASSWORD = password;
-    execFile(bin, args, { env, timeout: 60000, maxBuffer: 4 * 1024 * 1024 }, (err, stdout, stderr) => {
-      const out = String(stdout || '').trim();
-      if (json) {
-        try { return resolve(JSON.parse(out)); } catch { /* fall through */ }
-        return resolve({ ok: false, error: String(stderr || (err && err.message) || 'netssh error').trim(), raw: out });
-      }
-      resolve({ ok: !err, output: out, error: String(stderr || '').trim() });
-    });
-  });
-}
-
-ipcMain.handle('netssh:available', async () => ({ available: !!netsshBin() }));
-ipcMain.handle('netssh:open', async (_e, t = {}) => {
-  const args = ['open', String(t.host || ''), '-u', String(t.user || 'admin'), '-V', t.vendor || 'generic', '--json'];
-  if (t.port) args.push('-p', String(t.port));
-  if (t.identityFile) args.push('--key', String(t.identityFile));
-  if (t.knownHosts) args.push('--known-hosts', String(t.knownHosts));
-  if (t.readOnly) args.push('--read-only');
-  if (t.name) args.push('--name', String(t.name));
-  return runNetssh(args, { password: t.password });
-});
-ipcMain.handle('netssh:run', async (_e, { sid, command, timeout } = {}) => {
-  const args = ['run', String(sid), String(command), '--json'];
-  if (timeout) args.push('-t', String(timeout));
-  return runNetssh(args, { json: true });
-});
-ipcMain.handle('netssh:sendRaw', async (_e, { sid, data, newline } = {}) => {
-  const args = ['send-raw', String(sid), String(data)];
-  if (newline) args.push('-n');
-  return runNetssh(args, { json: false });
-});
-ipcMain.handle('netssh:close', async (_e, { sid } = {}) => runNetssh(['close', String(sid)], { json: false }));
-ipcMain.handle('netssh:sessions', async () => runNetssh(['sessions', '--json']));
-
 // ── Open a real terminal running `ssh` to a device (right-click → Connect) ───
-// A BOUNDED capability, deliberately not the arbitrary-command netssh bridge:
+// A BOUNDED capability, deliberately not an arbitrary-command bridge:
 // the renderer sends only structured fields and the main process rebuilds the
 // argv here after strict validation, because a loaded project file is untrusted
 // input — a malicious host/user/key from a shared .plexus file must never reach
 // a shell. Fail closed on anything that isn't a clean hostname/IP, user, port
 // or key path. No password is ever accepted (key- or agent-auth only). The
 // validator lives in its own pure module so it can be unit-tested headless.
-const { buildSshArgv } = require('./sshArgv.cjs');
+const { buildSshArgv, buildSshPullArgv } = require('./sshArgv.cjs');
 
 // Single-quote a token for /bin/sh. The validators above already forbid single
 // quotes, so this only has to wrap — the escape is defence in depth.
 const shQuote = (s) => `'${String(s).replace(/'/g, "'\\''")}'`;
+
+// Start a terminal emulator detached from Plexus. Resolves true once the process
+// has spawned and false when the binary is missing. It must never wait for exit
+// or carry a timeout: most emulators stay in the foreground for as long as the
+// SSH session lives, so a timeout would kill the user's session.
+function launchDetached(bin, args) {
+  return new Promise((resolve) => {
+    let child;
+    try { child = spawn(bin, args, { detached: true, stdio: 'ignore' }); } catch { return resolve(false); }
+    child.once('error', () => resolve(false));
+    child.once('spawn', () => { child.unref(); resolve(true); });
+  });
+}
 
 function openSshTerminal(t) {
   const built = buildSshArgv(t);
@@ -404,10 +372,12 @@ function openSshTerminal(t) {
         ['konsole', ['-e', 'bash', '-lc', line]],
         ['xterm', ['-e', 'bash', '-lc', line]],
       ];
-      (function next(i) {
-        if (i >= tries.length) return resolve({ ok: false, error: 'No supported terminal emulator found (install gnome-terminal, konsole or xterm)' });
-        execFile(tries[i][0], tries[i][1], { timeout: 10000 }, (err) => (err ? next(i + 1) : ok()));
-      })(0);
+      (async () => {
+        for (const [bin, args] of tries) {
+          if (await launchDetached(bin, args)) return ok();
+        }
+        resolve({ ok: false, error: 'No supported terminal emulator found (install gnome-terminal, konsole or xterm)' });
+      })();
 
     } else if (process.platform === 'win32') {
       // Windows: open a new console window running ssh (OpenSSH client ships with
@@ -425,6 +395,27 @@ function openSshTerminal(t) {
 }
 
 ipcMain.handle('ssh:open-terminal', async (_e, t = {}) => openSshTerminal(t));
+
+// Read-only config pull for the drift check: runs ssh non-interactively with a
+// fixed, vendor-specific dump command (see buildSshPullArgv) and returns its
+// output. No shell is involved (execFile), no password is accepted, and an
+// unknown host key is refused rather than trusted.
+ipcMain.handle('ssh:pull-config', async (_e, t = {}) => {
+  const built = buildSshPullArgv(t);
+  if (!built.ok) return built;
+  return new Promise((resolve) => {
+    execFile(built.argv[0], built.argv.slice(1), { timeout: 25000, maxBuffer: 4 * 1024 * 1024, windowsHide: true }, (err, stdout, stderr) => {
+      if (!err) return resolve({ ok: true, text: String(stdout) });
+      const msg = String(stderr || err.message || '');
+      let error = 'Could not read the device configuration';
+      if (/Host key verification failed|No .* host key is known/i.test(msg)) error = 'This device\'s SSH host key is not known yet — connect to it once with "Connect via SSH" and accept the key, then try again';
+      else if (/Permission denied/i.test(msg)) error = 'SSH login was refused — the pull uses key or agent authentication only (set an SSH key in the device\'s Credentials)';
+      else if (/timed out|Connection refused|No route to host|Could not resolve/i.test(msg)) error = 'The device is not reachable over SSH from this computer';
+      else if (err.code === 'ENOENT') error = 'No ssh client found on this computer';
+      resolve({ ok: false, error });
+    });
+  });
+});
 
 // Windows groups taskbar buttons and resolves the running app's icon by its
 // AppUserModelID. It must match the appId electron-builder bakes into the

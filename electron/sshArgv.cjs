@@ -9,7 +9,9 @@
 const os = require('node:os');
 
 const SSH_HOST_RE = /^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,253}[A-Za-z0-9])?$/;
-const SSH_USER_RE = /^[A-Za-z0-9._+-]{1,64}$/;
+// No leading '-': the user becomes the first character of the destination
+// token, and ssh would parse `-x@host` as an option.
+const SSH_USER_RE = /^[A-Za-z0-9._+][A-Za-z0-9._+-]{0,63}$/;
 const SSH_KEY_RE  = /^[A-Za-z0-9._~/-]{1,256}$/;
 
 function buildSshArgv(t = {}) {
@@ -38,4 +40,22 @@ function buildSshArgv(t = {}) {
   return { ok: true, argv };
 }
 
-module.exports = { buildSshArgv, SSH_HOST_RE, SSH_USER_RE, SSH_KEY_RE };
+// The ONLY commands the app will ever run on a device by itself, per vendor —
+// read-only configuration dumps. Nothing from the renderer or a project file
+// can add to or alter this table.
+const PULL_COMMANDS = Object.freeze({ mikrotik: '/export' });
+
+// argv for a non-interactive, read-only config pull. Same validation as the
+// terminal launcher, plus: never prompt (BatchMode — key/agent auth only),
+// never trust a new host key silently (the user must have connected to the
+// device once themselves), bounded connect time, and a fixed remote command.
+function buildSshPullArgv(t = {}) {
+  const cmd = Object.prototype.hasOwnProperty.call(PULL_COMMANDS, t.vendor) ? PULL_COMMANDS[t.vendor] : null;
+  if (!cmd) return { ok: false, error: 'Reading the configuration is supported for MikroTik RouterOS devices only' };
+  const base = buildSshArgv(t);
+  if (!base.ok) return base;
+  const [, ...rest] = base.argv;
+  return { ok: true, argv: ['ssh', '-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=yes', '-o', 'ConnectTimeout=8', '-T', ...rest, cmd] };
+}
+
+module.exports = { buildSshArgv, buildSshPullArgv, PULL_COMMANDS, SSH_HOST_RE, SSH_USER_RE, SSH_KEY_RE };

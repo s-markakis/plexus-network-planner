@@ -6,6 +6,7 @@
 // OWASP-recommended floor for PBKDF2-SHA256 (2023+). Blobs written before the
 // bump decrypt fine — decryptObject reads the iteration count from the blob.
 const PBKDF2_ITERS = 600000;
+const MAX_PBKDF2_ITERS = 10000000;
 
 function bytesToB64(bytes) {
   const b = new Uint8Array(bytes);
@@ -51,7 +52,11 @@ export async function encryptObject(obj, passphrase) {
 // tampering (GCM auth failure) — callers should treat that as "stay locked".
 export async function decryptObject(blob, passphrase) {
   if (!blob || !blob.ct || !blob.salt || !blob.iv) throw new Error('Not an encrypted blob');
-  const key = await deriveKey(passphrase, b64ToBytes(blob.salt), blob.iter || PBKDF2_ITERS);
+  // The iteration count comes from the (untrusted) file: bound it so a crafted
+  // blob can't hang the unlock prompt with a multi-billion-round KDF.
+  const iter = blob.iter == null ? PBKDF2_ITERS : blob.iter;
+  if (!Number.isInteger(iter) || iter < 1 || iter > MAX_PBKDF2_ITERS) throw new Error('Unsupported KDF parameters');
+  const key = await deriveKey(passphrase, b64ToBytes(blob.salt), iter);
   const pt = await crypto.subtle.decrypt(
     { name: 'AES-GCM', iv: b64ToBytes(blob.iv) }, key, b64ToBytes(blob.ct)
   );

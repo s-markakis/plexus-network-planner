@@ -62,7 +62,9 @@ export function nextFreeIp(cidr, used = [], maxScan = 4094) {
   const bits = parseInt(m[5], 10);
   if (bits < 1 || bits > 30) return '';
   const size = 2 ** (32 - bits);
-  const net = base & (~(size - 1) >>> 0);
+  // `&` yields a signed int32; keep the network unsigned so addresses at or
+  // above 128.0.0.0 compare correctly against unsigned host integers.
+  const net = (base & (~(size - 1) >>> 0)) >>> 0;
   const taken = used instanceof Set ? used : new Set((used || []).map((x) => String(x).trim()));
   const end = Math.min(size - 1, 2 + maxScan);
   for (let i = 2; i < end; i++) {
@@ -83,7 +85,9 @@ export function parseCidr(cidr) {
   const bits = parseInt(m[5], 10);
   if (bits < 1 || bits > 30) return null;
   const size = 2 ** (32 - bits);
-  const net = base & (~(size - 1) >>> 0);
+  // `&` yields a signed int32; keep the network unsigned so addresses at or
+  // above 128.0.0.0 compare correctly against unsigned host integers.
+  const net = (base & (~(size - 1) >>> 0)) >>> 0;
   return { net, bits, size, capacity: Math.max(0, size - 3) };
 }
 

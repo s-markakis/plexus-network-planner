@@ -8,6 +8,7 @@
 // Pure: takes plain AP/wall data + image dimensions; no DOM.
 
 import { dbmAt, bandLossMultiplier } from './geometry.js';
+import { AP_PATTERNS } from './constants.js';
 
 /**
  * Pick the best-signal AP for a client at its fractional position.
@@ -25,7 +26,9 @@ export function bestAp(client, aps, walls, imgW, imgH, opts = {}) {
   let best = null;
   for (const ap of aps || []) {
     if (!ap || !Number.isFinite(ap.fx) || !Number.isFinite(ap.fy) || !ap.r) continue;
-    const o = { bandFactor: bandLossMultiplier(ap.freq) };
+    // A client behind a sector/wall antenna is outside its arc and can't associate.
+    const pat = AP_PATTERNS[ap.pattern] || AP_PATTERNS.omni;
+    const o = { bandFactor: bandLossMultiplier(ap.freq), arcDeg: pat.arc, headingDeg: ap.heading || 0 };
     if (opts.model) o.model = opts.model;
     if (Number.isFinite(opts.metersPerPx) && opts.metersPerPx > 0) o.metersPerPx = opts.metersPerPx;
     const dbm = dbmAt(ap, sx, sy, imgW, imgH, walls || [], o);

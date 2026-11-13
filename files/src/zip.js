@@ -93,11 +93,29 @@ export function zipStore(files, when = new Date()) {
 
 // ── Reader ──────────────────────────────────────────────────────────────────
 
+// Imported archives are untrusted: cap the inflated size of a single entry so a
+// zip bomb fails fast instead of exhausting memory.
+const MAX_INFLATED_BYTES = 256 * 1024 * 1024;
+
 async function inflateRaw(bytes) {
   const ds = new DecompressionStream('deflate-raw');
-  const stream = new Blob([bytes]).stream().pipeThrough(ds);
-  const buf = await new Response(stream).arrayBuffer();
-  return new Uint8Array(buf);
+  const reader = new Blob([bytes]).stream().pipeThrough(ds).getReader();
+  const chunks = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.length;
+    if (total > MAX_INFLATED_BYTES) {
+      await reader.cancel();
+      throw new Error('Zip entry is too large when decompressed');
+    }
+    chunks.push(value);
+  }
+  const out = new Uint8Array(total);
+  let p = 0;
+  for (const c of chunks) { out.set(c, p); p += c.length; }
+  return out;
 }
 
 // Read a .zip: returns [{name, data: Uint8Array}]. Walks the central

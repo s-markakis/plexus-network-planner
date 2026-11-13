@@ -168,6 +168,7 @@ export function resetRuntime(net) {
     dev.arp.clear();
     dev.macTable.clear();
     dev._natSession = null;
+    dev._ct = null;
   }
 }
 
@@ -196,6 +197,7 @@ function deliverFrame(net, srcDevId, egressIfaceName, frame, events) {
     const dev = net.devices.get(hop.dev);
     const port = dev.ifaces.get(hop.iface);
     if (!port || !port.up) continue;
+    if (port.blocked && dev.kind === 'switch') continue; // spanning tree: discarding
 
     // A non-switch device: the frame has reached a host/router NIC.
     if (dev.kind !== 'switch') {
@@ -227,11 +229,11 @@ function deliverFrame(net, srcDevId, egressIfaceName, frame, events) {
       frame.dstMac !== BROADCAST_MAC ? dev.macTable.get(`${vlan}|${frame.dstMac}`) : null;
     const flood = !known;
     events.push(
-      ev(flood ? 'l2-flood' : 'l2-forward', dev, port, { vlan, dstMac: frame.dstMac })
+      ev(flood ? 'l2-flood' : 'l2-forward', dev, port, { vlan, dstMac: frame.dstMac, srcMac: frame.srcMac, ...(frame.pdu ? { pdu: frame.pdu } : {}) })
     );
 
     for (const out of dev.ifaces.values()) {
-      if (out.name === port.name || !out.up || !out.peer) continue;
+      if (out.name === port.name || !out.up || !out.peer || out.blocked) continue;
       if (!known && !portInVlan(out, vlan)) continue; // flood: same-VLAN ports only
       if (known && out.name !== known) continue; // known unicast: the one learned port
       queue.push({ dev: out.peer.dev, iface: out.peer.iface, vlan });
@@ -283,6 +285,7 @@ function lookupRoute(dev, dstIp) {
   let best = null;
   for (const r of dev.routes) {
     if (netOf(dstIp, r.prefix) !== r.net) continue;
+    if (!routeUsable(dev, r)) continue;
     if (
       !best ||
       r.prefix > best.prefix ||
@@ -292,6 +295,16 @@ function lookupRoute(dev, dstIp) {
     }
   }
   return best;
+}
+
+// A route whose egress interface is down is withdrawn from the lookup, as a real
+// RIB does — this is what lets a backup (less specific or alternate) route take
+// over when a link is failed.
+function routeUsable(dev, r) {
+  const name = r.iface || (r.via != null ? ifaceForIp(dev, r.via) : null);
+  if (!name) return true; // unresolved here; forward() reports it as no-route
+  const i = dev.ifaces.get(name);
+  return !i || i.up !== false;
 }
 
 function ownsIp(dev, ip) {
@@ -318,10 +331,44 @@ function cidrContains(ipInt, cidr) {
 }
 
 // First-match packet-filter. Rules: {action:'permit'|'deny', proto?:'ip'|'icmp'|
-// 'tcp'|'udp', src?:cidr|'any', dst?:cidr|'any', dport?:number}. No match → permit
-// (add an explicit `deny any` rule for Cisco-style default-deny).
-function aclEval(rules, pkt) {
+// 'tcp'|'udp', src?:cidr|'any', dst?:cidr|'any', dport?:number, iface?, dir?}.
+// No match → permit (add an explicit `deny any` rule for Cisco-style default-deny).
+//
+// Scope: a rule with no `iface` is device-wide and is checked when the packet
+// enters the device. A rule bound to an interface applies only to packets
+// crossing that interface in its direction (`dir`: 'in' — the default — or 'out').
+function aclRulesFor(dev, ifaceName, dir) {
+  return dev.acls.filter((r) => {
+    if (!r.iface) return dir === 'in';
+    return r.iface === ifaceName && (r.dir === 'out' ? 'out' : 'in') === dir;
+  });
+}
+// ── Connection tracking ──────────────────────────────────────────────────────
+// Every device remembers the flows it let through (dev._ct). A reply to a
+// remembered flow is 'established'; a reply to nothing is 'invalid'; anything
+// that starts a conversation is 'new'. Rules may match on that via `state`
+// (RouterOS connection-state=…, IOS `established`), which is what makes a
+// one-directional policy possible: "A may talk to B" without "B may open
+// connections to A".
+const isReply = (pkt) => pkt.type === 'echo-reply' || pkt.type === 'l4-reply';
+const flowKey = (proto, src, dst, port) => `${proto || 'ip'}|${src}|${dst}|${port == null ? '' : port}`;
+function pktState(dev, pkt) {
+  if (!isReply(pkt)) return 'new';
+  return dev._ct && dev._ct.has(flowKey(pkt.protocol, pkt.dstIp, pkt.srcIp, pkt.dport)) ? 'established' : 'invalid';
+}
+function track(dev, pkt) {
+  if (isReply(pkt)) return;
+  if (!dev._ct) dev._ct = new Map();
+  dev._ct.set(flowKey(pkt.protocol, pkt.srcIp, pkt.dstIp, pkt.dport), { proto: pkt.protocol || 'ip', src: pkt.srcIp, dst: pkt.dstIp, dport: pkt.dport == null ? null : pkt.dport });
+}
+// Serialisable copy of the packet as it is at this instant (for the PDU inspector).
+function pduOf(pkt) {
+  return { src: intToIp(pkt.srcIp), dst: intToIp(pkt.dstIp), ttl: pkt.ttl, proto: pkt.protocol || 'ip', type: pkt.type, dport: pkt.dport == null ? null : pkt.dport };
+}
+
+function aclEval(rules, pkt, state) {
   for (const r of rules) {
+    if (Array.isArray(r.state) && r.state.length && !r.state.includes(state)) continue;
     if (r.proto && r.proto !== 'ip' && r.proto !== 'any' && r.proto !== pkt.protocol) continue;
     if (!cidrContains(pkt.srcIp, r.src)) continue;
     if (!cidrContains(pkt.dstIp, r.dst)) continue;
@@ -334,14 +381,17 @@ function aclEval(rules, pkt) {
 // Forward `pkt` one device at a time. `pkt` = {srcIp, dstIp, ttl, type, protocol,
 // dport?}. Returns {status, hopIp?} — status 'delivered' | 'unreachable' |
 // 'ttl-exceeded' | 'filtered' | 'closed'. `hops` guards routing loops.
-function forward(net, dev, pkt, events, hops = 0) {
+function forward(net, dev, pkt, events, hops = 0, ingress = null) {
   if (hops > MAX_HOPS) return { status: 'unreachable' };
 
-  // Inbound packet filter (ACL / firewall) on this device.
-  if (dev.acls && dev.acls.length && aclEval(dev.acls, pkt) === 'deny') {
-    events.push(ev('acl-drop', dev, null, { proto: pkt.protocol, dst: intToIp(pkt.dstIp), port: pkt.dport }));
+  // Inbound packet filter (ACL / firewall): device-wide rules plus any bound
+  // inbound to the interface the packet arrived on.
+  const state = pktState(dev, pkt);
+  if (dev.acls && dev.acls.length && aclEval(aclRulesFor(dev, ingress, 'in'), pkt, state) === 'deny') {
+    events.push(ev('acl-drop', dev, ingress ? dev.ifaces.get(ingress) : null, { proto: pkt.protocol, dst: intToIp(pkt.dstIp), port: pkt.dport, dir: 'in', state, pdu: pduOf(pkt) }));
     return { status: 'filtered' };
   }
+  track(dev, pkt);
 
   // NAT de-translation: a *reply* addressed to this edge router's outside IP is
   // rewritten back to the remembered inside host, then routed inward (single-flow
@@ -366,18 +416,18 @@ function forward(net, dev, pkt, events, hops = 0) {
   const mine = ownsIp(dev, pkt.dstIp);
   if (mine) {
     if (pkt.type === 'echo-request') {
-      events.push(ev('icmp-echo', dev, mine, { from: intToIp(pkt.srcIp) }));
+      events.push(ev('icmp-echo', dev, mine, { from: intToIp(pkt.srcIp), pdu: pduOf(pkt) }));
       const reply = { srcIp: pkt.dstIp, dstIp: pkt.srcIp, ttl: DEFAULT_TTL, type: 'echo-reply', protocol: 'icmp' };
       return forward(net, dev, reply, events, hops + 1);
     }
     if (pkt.type === 'l4-request') {
       const listening = (dev.services || []).some((s) => s.proto === pkt.protocol && s.port === pkt.dport);
-      events.push(ev(listening ? 'l4-open' : 'l4-closed', dev, mine, { proto: pkt.protocol, port: pkt.dport, from: intToIp(pkt.srcIp) }));
+      events.push(ev(listening ? 'l4-open' : 'l4-closed', dev, mine, { proto: pkt.protocol, port: pkt.dport, from: intToIp(pkt.srcIp), pdu: pduOf(pkt) }));
       if (!listening) return { status: 'closed' };
       const reply = { srcIp: pkt.dstIp, dstIp: pkt.srcIp, ttl: DEFAULT_TTL, type: 'l4-reply', protocol: pkt.protocol, dport: pkt.dport };
       return forward(net, dev, reply, events, hops + 1);
     }
-    events.push(ev(pkt.type === 'l4-reply' ? 'l4-reply' : 'icmp-reply', dev, mine, { from: intToIp(pkt.srcIp) }));
+    events.push(ev(pkt.type === 'l4-reply' ? 'l4-reply' : 'icmp-reply', dev, mine, { from: intToIp(pkt.srcIp), pdu: pduOf(pkt) }));
     return { status: 'delivered' };
   }
 
@@ -401,17 +451,25 @@ function forward(net, dev, pkt, events, hops = 0) {
       dst: intToIp(pkt.dstIp),
       via: route.via != null ? intToIp(route.via) : 'connected',
       routeKind: route.kind, // NOT `kind` — that key is the event type and must not be shadowed
+      pdu: pduOf(pkt),
     })
   );
 
-  // A router decrements TTL at each hop; a host originating a packet does not.
+  // Outbound packet filter bound to the egress interface.
+  if (dev.acls && dev.acls.length && aclEval(aclRulesFor(dev, egressName, 'out'), pkt, state) === 'deny') {
+    events.push(ev('acl-drop', dev, egress, { proto: pkt.protocol, dst: intToIp(pkt.dstIp), port: pkt.dport, dir: 'out', state, pdu: pduOf(pkt) }));
+    return { status: 'filtered' };
+  }
+
+  // A device decrements TTL only when forwarding someone else's packet; the
+  // originator (host or router) sends it with the TTL it was given.
   // TTL reaching 0 after the decrement means the hop budget is spent — the
   // router drops it and would emit ICMP time-exceeded (this is what traceroute
   // walks). Expiring at <=0 makes TTL=1 stop at the first router.
-  if (dev.kind !== 'host' || pkt._forwarded) {
+  if (pkt._forwarded) {
     pkt.ttl -= 1;
     if (pkt.ttl <= 0) {
-      events.push(ev('ttl-expired', dev, null, { dst: intToIp(pkt.dstIp) }));
+      events.push(ev('ttl-expired', dev, null, { dst: intToIp(pkt.dstIp), pdu: pduOf(pkt) }));
       return { status: 'ttl-exceeded', hopIp: ownHopIp(dev) };
     }
   }
@@ -422,6 +480,7 @@ function forward(net, dev, pkt, events, hops = 0) {
     dev._natSession = { origIp: pkt.srcIp, transIp: egress.ipInt };
     events.push(ev('nat-out', dev, egress, { from: intToIp(pkt.srcIp), to: intToIp(egress.ipInt) }));
     pkt.srcIp = egress.ipInt;
+    track(dev, pkt); // the reply comes back addressed to the translated source
   }
 
   const mac = arpResolve(net, dev, egressName, nextHopIp, events);
@@ -430,15 +489,15 @@ function forward(net, dev, pkt, events, hops = 0) {
     return { status: 'unreachable' };
   }
 
-  const frame = { srcMac: egress.mac, dstMac: mac, vlan: egress.vlan };
+  const frame = { srcMac: egress.mac, dstMac: mac, vlan: egress.vlan, pdu: pduOf(pkt) };
   const reached = deliverFrame(net, dev.id, egressName, frame, events);
-  const nextDev = reached
-    .map((ep) => net.devices.get(ep.dev))
-    .find((d) => d && [...d.ifaces.values()].some((i) => i.mac === mac));
+  const nextEp = reached.find((ep) => net.devices.get(ep.dev)?.ifaces.get(ep.iface)?.mac === mac)
+    || reached.find((ep) => { const d = net.devices.get(ep.dev); return d && [...d.ifaces.values()].some((i) => i.mac === mac); });
+  const nextDev = nextEp ? net.devices.get(nextEp.dev) : null;
   if (!nextDev) return { status: 'unreachable' };
 
   pkt._forwarded = true;
-  return forward(net, nextDev, pkt, events, hops + 1);
+  return forward(net, nextDev, pkt, events, hops + 1, nextEp.iface);
 }
 
 function ownHopIp(dev) {
@@ -496,18 +555,32 @@ export function setIfaceDown(net, devId, ifaceName, down = true) {
   return !!i;
 }
 
+// Fault injection: take a whole device down (every interface), e.g. a dead
+// switch or a powered-off router. Returns true if the device existed.
+export function setDeviceDown(net, devId, down = true) {
+  const dev = net.devices.get(devId);
+  if (!dev) return false;
+  for (const i of dev.ifaces.values()) i.up = !down;
+  return true;
+}
+
 // Discover the hops to `to` by sending probes with increasing TTL. Returns an
 // ordered list of { ttl, ip|null, reached } — `reached` true on the final hop.
 /** @param {{from:string, to:string, maxHops?:number}} opts */
 export function traceroute(net, opts) {
   const { from, to, maxHops = 30 } = opts;
+  const src = net.devices.get(from);
+  if (!src) throw new Error(`no such device: ${from}`);
+  const dstIp = ipToInt(to);
+  if (dstIp == null) throw new Error(`bad destination ip: ${to}`);
+  const srcIfaceName = firstAddressedIface(src);
+  const srcIp = srcIfaceName ? src.ifaces.get(srcIfaceName).ipInt : null;
+  if (srcIp == null) throw new Error(`${from} has no addressed interface`);
   const hops = [];
   for (let ttl = 1; ttl <= maxHops; ttl++) {
     const events = [];
-    const src = net.devices.get(from);
-    const srcIfaceName = firstAddressedIface(src);
-    const srcIp = src.ifaces.get(srcIfaceName).ipInt;
-    const pkt = { srcIp, dstIp: ipToInt(to), ttl, type: 'echo-request' };
+    // protocol must be set: ACL rules match on it, same as ping().
+    const pkt = { srcIp, dstIp, ttl, type: 'echo-request', protocol: 'icmp' };
     const res = forward(net, src, pkt, events, 0);
     if (res.status === 'ttl-exceeded') {
       hops.push({ ttl, ip: res.hopIp, reached: false });
@@ -520,6 +593,24 @@ export function traceroute(net, opts) {
     }
   }
   return hops;
+}
+
+// Read-only views of a device's learned runtime state, for `show arp`,
+// `show mac address-table`, `show ip nat translations` and the connection table.
+export function runtimeState(net, devId) {
+  const dev = net.devices.get(devId);
+  if (!dev) return null;
+  return {
+    arp: [...dev.arp].map(([ip, mac]) => ({ ip: intToIp(ip), mac })),
+    mac: [...dev.macTable].map(([k, port]) => { const i = k.indexOf('|'); return { vlan: Number(k.slice(0, i)), mac: k.slice(i + 1), port }; }),
+    nat: dev._natSession ? [{ inside: intToIp(dev._natSession.origIp), outside: intToIp(dev._natSession.transIp) }] : [],
+    conns: dev._ct ? [...dev._ct.values()].map((c) => ({ proto: c.proto, src: intToIp(c.src), dst: intToIp(c.dst), dport: c.dport })) : [],
+  };
+}
+
+// Integer → dotted quad for callers that only hold a built net (adapter/UI).
+export function intToIpSafe(n) {
+  return n == null ? '' : intToIp(n);
 }
 
 // ── Event helper ─────────────────────────────────────────────────────────────
