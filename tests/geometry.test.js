@@ -278,6 +278,28 @@ describe('sampleRoamingOverlap',()=>{
   });
 });
 
+describe('dbmAtThroughSlab across several floors',()=>{
+  const ap={fx:0.5,fy:0.5,r:400,freq:'5 GHz only',txPowerDbm:20,antennaGainDbi:3};
+  const at=(slabs,vertM)=>dbmAtThroughSlab(ap,100,100,200,200,18,1.0,'logd',0.1,slabs,vertM);
+  test('each extra slab costs exactly one more slab loss at the same path length',()=>{
+    const one=at(1,3),two=at(2,3);
+    expect(one-two).toBeCloseTo(18,6);
+  });
+  test('vertical separation lengthens the path: directly below is not zero distance',()=>{
+    const flat=at(1,0),below3=at(1,3),below6=at(1,6);
+    expect(below3).toBeLessThan(flat);
+    expect(below6).toBeLessThan(below3);
+  });
+  test('the path is the 3-D distance (3-4-5 triangle)',()=>{
+    // 40 px at 0.1 m/px = 4 m horizontal, 3 m vertical → 5 m; same as 50 px flat.
+    const diag=dbmAtThroughSlab(ap,140,100,200,200,18,1.0,'logd',0.1,1,3);
+    const flat=dbmAtThroughSlab(ap,150,100,200,200,18,1.0,'logd',0.1,1,0);
+    expect(diag).toBeCloseTo(flat,6);
+  });
+  test('omitting the new arguments keeps the single-slab, same-plane result',()=>{
+    expect(dbmAtThroughSlab(ap,150,100,200,200,18,1.0,'logd',0.1)).toBeCloseTo(dbmAtThroughSlab(ap,150,100,200,200,18,1.0,'logd',0.1,1,0),9);
+  });
+});
 describe('dbmAtThroughSlab',()=>{
   test('returns null beyond range',()=>{
     expect(dbmAtThroughSlab({fx:0.5,fy:0.5,r:100},250,100,200,200,18,1.0)).toBeNull();

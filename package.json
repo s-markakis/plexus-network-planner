@@ -68,7 +68,8 @@
     "verify": "vitest run && tsc --noEmit",
     "prepare": "git config core.hooksPath .githooks 2>/dev/null || true",
     "e2e": "playwright test",
-    "e2e:install": "playwright install --with-deps chromium"
+    "e2e:install": "playwright install --with-deps chromium",
+    "e2e:desktop": "npm run package:web && playwright test -c playwright.desktop.config.js"
   },
   "dependencies": {
     "electron-updater": "^6.3.9",

@@ -84,6 +84,26 @@ jobs:
           path: playwright-report/
           retention-days: 7
 
+  e2e-desktop:
+    name: End-to-end (desktop app)
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Electron needs a display; xvfb provides a virtual one on the runner.
+      - name: Run desktop E2E tests
+        run: xvfb-run -a npm run e2e:desktop
+
   build:
     name: Verify production build
     runs-on: ubuntu-latest

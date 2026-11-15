@@ -6,11 +6,12 @@
 //
 // CommonJS (.cjs) so it runs regardless of the package's "type":"module".
 
-const { app, BrowserWindow, shell, Menu, ipcMain } = require('electron');
+const { app, BrowserWindow, shell, Menu, ipcMain, dialog } = require('electron');
 const path = require('node:path');
 const { pinnedRequest, peekFingerprint } = require('./pinnedFetch.cjs');
 const { pinKey, loadPins, savePins, decide } = require('./unifiPin.cjs');
 const { execFile, spawn } = require('node:child_process');
+const { createProjectFiles } = require('./projectFiles.cjs');
 
 // Self-update from GitHub Releases (electron-updater reads the publish config
 // baked into app-update.yml). Guarded so a failure can never crash the app.
@@ -93,14 +94,61 @@ function createWindow() {
 // zoom, reload, fullscreen, devtools) without app-specific clutter.
 function buildMenu() {
   const isMac = process.platform === 'darwin';
+  // File actions are carried out by the renderer (it owns the project); the
+  // menu only tells it which one. Open Recent lists what projectFiles holds.
+  const send = (action, arg) => { if (mainWindow) mainWindow.webContents.send('menu:action', { action, arg }); };
+  const recents = projectFiles ? projectFiles.recents() : [];
+  const fileMenu = {
+    label: 'File',
+    submenu: [
+      { label: 'New Project', accelerator: 'CmdOrCtrl+N', click: () => send('new') },
+      { label: 'New from Template…', accelerator: 'Shift+CmdOrCtrl+N', click: () => send('new-template') },
+      { label: 'Open…', accelerator: 'CmdOrCtrl+O', click: () => send('open') },
+      {
+        label: 'Open Recent',
+        enabled: recents.length > 0,
+        submenu: recents.map((r) => ({ label: r.name, toolTip: r.path, click: () => send('open-recent', r.path) })),
+      },
+      { type: 'separator' },
+      { label: 'Save', accelerator: 'CmdOrCtrl+S', click: () => send('save') },
+      { label: 'Save As…', accelerator: 'Shift+CmdOrCtrl+S', click: () => send('save-as') },
+      { type: 'separator' },
+      isMac ? { role: 'close' } : { role: 'quit' },
+    ],
+  };
   const template = [
     ...(isMac ? [{ role: 'appMenu' }] : []),
-    { role: 'fileMenu' },
+    fileMenu,
     { role: 'editMenu' },
     { role: 'viewMenu' },
     { role: 'windowMenu' },
   ];
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+}
+
+// ── Project files (Open / Save / Save As / recents) ────────────────────────
+// The path gate lives in projectFiles.cjs; this only adds the native dialogs.
+let projectFiles = null;
+const PROJECT_FILTERS = [{ name: 'Plexus project', extensions: ['json'] }];
+// The suggested name comes from the renderer: keep it a bare file name.
+const safeFileName = (n) => (String(n || 'plexus_project.json').replace(/[\\/:*?"<>|\x00-\x1f]/g, '_').slice(0, 120) || 'plexus_project.json');
+
+function setupProjectFiles() {
+  projectFiles = createProjectFiles({
+    recentsFile: path.join(app.getPath('userData'), 'recent-projects.json'),
+    onRecentsChanged: () => buildMenu(),
+  });
+  ipcMain.handle('project:open', async () => {
+    const r = await dialog.showOpenDialog(mainWindow, { properties: ['openFile'], filters: PROJECT_FILTERS });
+    return projectFiles.openPicked(r.canceled ? undefined : r.filePaths[0]);
+  });
+  ipcMain.handle('project:open-recent', (_e, p) => projectFiles.openRecent(p));
+  ipcMain.handle('project:save', (_e, a = {}) => projectFiles.save(a.path, a.text));
+  ipcMain.handle('project:save-as', async (_e, a = {}) => {
+    const r = await dialog.showSaveDialog(mainWindow, { defaultPath: safeFileName(a.suggestedName), filters: PROJECT_FILTERS });
+    return projectFiles.saveAsPicked(r.canceled ? undefined : r.filePath, a.text);
+  });
+  ipcMain.handle('project:recents', () => projectFiles.recents());
 }
 
 // ── UniFi controller bridge ────────────────────────────────────────────────
@@ -349,6 +397,13 @@ function launchDetached(bin, args) {
 function openSshTerminal(t) {
   const built = buildSshArgv(t);
   if (!built.ok) return Promise.resolve(built);
+  return openTerminalArgv(built);
+}
+
+// Run an already-validated argv in a new terminal window. Every token is
+// single-quoted for the shell on macOS/Linux. The Windows branch passes tokens
+// through unquoted, so it must only ever get charset-validated SSH argv.
+function openTerminalArgv(built) {
   return new Promise((resolve) => {
     const ok = () => resolve({ ok: true });
     const fail = (err) => resolve({ ok: false, error: String((err && err.message) || err) });
@@ -396,6 +451,49 @@ function openSshTerminal(t) {
 
 ipcMain.handle('ssh:open-terminal', async (_e, t = {}) => openSshTerminal(t));
 
+// ── Plan → device: rosconf dry run ─────────────────────────────────────────
+// Writes the generated script to the app's data directory and opens a terminal
+// running `rosconf apply … -f <file>` — a DRY RUN. The app never adds --apply
+// (see deploy.cjs): changing a device is the user's own step in that terminal.
+const { buildRosconfArgv, writeScript, loadRosconfPath, saveRosconfPath, commandLine } = require('./deploy.cjs');
+const rosconfStore = () => path.join(app.getPath('userData'), 'rosconf-path.json');
+
+async function locateRosconf() {
+  const r = await dialog.showOpenDialog(mainWindow, {
+    title: 'Locate rosconf', message: 'Choose the rosconf executable (or rosconf.py)', properties: ['openFile'],
+  });
+  if (r.canceled || !r.filePaths[0]) return null;
+  saveRosconfPath(rosconfStore(), r.filePaths[0]);
+  return loadRosconfPath(rosconfStore());
+}
+
+ipcMain.handle('deploy:locate-rosconf', async () => {
+  const p = await locateRosconf();
+  return p ? { ok: true, path: p } : { ok: false, cancelled: true };
+});
+
+ipcMain.handle('deploy:rosconf', async (_e, a = {}) => {
+  try {
+    const rosconf = loadRosconfPath(rosconfStore()) || await locateRosconf();
+    if (!rosconf) return { ok: false, cancelled: true, error: 'rosconf location not chosen' };
+    // Validate the target before anything is written to disk.
+    const probe = buildRosconfArgv({ rosconf, target: a.target, file: path.join(app.getPath('userData'), 'deploy', 'x.rsc') });
+    if (!probe.ok) return probe;
+    const file = writeScript(path.join(app.getPath('userData'), 'deploy'), a.name, a.text);
+    const built = buildRosconfArgv({ rosconf, target: a.target, file });
+    if (!built.ok) return built;
+    const command = commandLine(built.argv);
+    // Windows: no safe generic quoting for `cmd /k` here — hand back the command.
+    // PLEXUS_NO_TERMINAL does the same anywhere (headless runs, tests); it can
+    // only withhold the terminal, never widen what is run.
+    if (process.platform === 'win32' || process.env.PLEXUS_NO_TERMINAL) return { ok: true, launched: false, command, file };
+    const opened = await openTerminalArgv(built);
+    return { ok: true, launched: !!opened.ok, command, file, ...(opened.ok ? {} : { error: opened.error }) };
+  } catch (err) {
+    return { ok: false, error: String((err && err.message) || err) };
+  }
+});
+
 // Read-only config pull for the drift check: runs ssh non-interactively with a
 // fixed, vendor-specific dump command (see buildSshPullArgv) and returns its
 // output. No shell is involved (execFile), no password is accepted, and an
@@ -427,6 +525,7 @@ if (process.platform === 'win32') {
 }
 
 app.whenReady().then(() => {
+  setupProjectFiles();
   buildMenu();
   createWindow();
   setupAutoUpdate();

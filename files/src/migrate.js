@@ -23,6 +23,7 @@ export const DEFAULT_SETTINGS={
   regulatoryRegion: 'FCC-US',         // key into REGULATORY_REGIONS
   noiseFloorDbm:    -95,              // for SNR/MCS/throughput maps
   floorSlabAttenDb: 18,               // floor-to-floor slab loss in dB
+  floorHeightM: 3,                    // slab-to-slab height, for the 3-D path between floors
   showFloorLeakage: false,            // include neighbouring floors in heatmap
   heatmapMode:      'rssi',           // 'rssi' | 'snr' | 'mcs' | 'throughput'
   heatmapBand:      'all',            // 'all' | '2.4' | '5' | '6'

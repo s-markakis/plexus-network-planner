@@ -12,15 +12,22 @@ const SEV_LABEL = { error: '✗', warn: '⚠', info: 'ℹ' };
 /**
  * @param {{root:any, getProject:()=>any, switchId?:string,
  *   onChange?:()=>void, onDownload?:(filename:string, text:string)=>void,
- *   onPull?:(sw:any)=>Promise<any>}} opts
+ *   onPull?:(sw:any)=>Promise<any>,
+ *   onDeploy?:(sw:any, filename:string, text:string)=>Promise<any>,
+ *   onDrift?:(sw:any, result:{errors:number,warnings:number,info:number})=>void}} opts
  *   onChange   called after trunk/prefix assignments were edited (they are
  *              stored on the switch object, so the caller should autosave)
  *   onDownload saves the generated script
  *   onPull     (optional, desktop) reads the device's config over SSH:
  *              (switch) => Promise<{ok:boolean, text?:string, error?:string}>
+ *   onDeploy   (optional, desktop) hands a script to rosconf as a DRY RUN:
+ *              (switch, filename, text) => Promise<{ok:boolean, launched?:boolean,
+ *              command?:string, error?:string}|null>   (null = cancelled)
+ *   onDrift    (optional) told the outcome of every drift check:
+ *              (switch, {errors:number, warnings:number, info:number})
  */
 export function mountDeviceConfig(opts) {
-  const { root, getProject, onChange, onDownload, onPull } = opts;
+  const { root, getProject, onChange, onDownload, onPull, onDeploy, onDrift } = opts;
   const doc = root.ownerDocument;
   const el = (tag, attrs = {}, kids = []) => {
     const n = doc.createElement(tag);
@@ -41,6 +48,21 @@ export function mountDeviceConfig(opts) {
   const script = el('textarea', { class: 'dc-script ep-mono', readonly: 'readonly', rows: '14', spellcheck: 'false' });
   const dlBtn = el('button', { class: 'btn btn-primary', text: '↓ Download .rsc' });
   const copyBtn = el('button', { class: 'btn', text: 'Copy' });
+  const deployBtn = el('button', { class: 'btn dc-deploy', text: '⇢ Dry-run with rosconf', title: 'Open a terminal running rosconf in dry-run mode for this script' });
+  const deployOut = el('div', { class: 'ep-hint dc-deploy-out' });
+  const lastCheck = el('div', { class: 'ep-hint dc-last-check' });
+  const canDeploy = typeof onDeploy === 'function';
+  // Hand a script to rosconf (dry run) and say what happened / what to run.
+  async function deploy(sw, filename, text, out) {
+    out.textContent = 'Preparing…';
+    let res;
+    try { res = await onDeploy(sw, filename, text); } catch (e) { res = { ok: false, error: String((e && e.message) || e) }; }
+    if (!res) { out.textContent = ''; return; }
+    if (!res.ok) { out.textContent = `✕ ${res.error || 'Could not start rosconf'}`; return; }
+    out.textContent = (res.launched
+      ? 'Opened a terminal with a DRY RUN — nothing was changed. Read what it would send; to apply it, re-run the same command with --apply added:'
+      : 'Run this in a terminal for a DRY RUN (nothing changes until you add --apply):') + '\n' + (res.command || '');
+  }
   const actual = el('textarea', { class: 'dc-actual ep-mono', rows: '7', spellcheck: 'false', placeholder: 'Paste the output of  /export  from the device here…' });
   const fileInp = el('input', { type: 'file', accept: '.rsc,.txt,text/plain', class: 'dc-file' });
   const checkBtn = el('button', { class: 'btn btn-primary', text: 'Check drift' });
@@ -52,12 +74,14 @@ export function mountDeviceConfig(opts) {
   root.classList.add('dc-root');
   root.append(
     el('div', { class: 'ep-row' }, [el('label', { class: 'ep-lbl', text: 'Device' }), swSel]),
+    lastCheck,
     el('div', { class: 'ep-row' }, [el('label', { class: 'ep-lbl', text: 'Port prefix' }), prefixInp]),
     trunkBox,
     el('div', { class: 'ep-section', text: 'RouterOS 7 config from the plan' }),
     warnBox,
     script,
-    el('div', { class: 'ep-btn-row' }, [dlBtn, copyBtn]),
+    el('div', { class: 'ep-btn-row' }, [dlBtn, copyBtn, ...(canDeploy ? [deployBtn] : [])]),
+    deployOut,
     el('div', { class: 'ep-hint', text: 'Review before applying. Bridge VLAN filtering is switched on as the last step — apply from the console or in Safe Mode.' }),
     el('div', { class: 'ep-section', text: 'Drift check — does the device still match the plan?' }),
     actual,
@@ -87,7 +111,10 @@ export function mountDeviceConfig(opts) {
     warnBox.innerHTML = '';
     driftOut.innerHTML = '';
     fixBox.innerHTML = '';
+    deployOut.textContent = '';
+    lastCheck.textContent = '';
     if (!sw) { script.value = ''; warnBox.appendChild(el('li', { text: 'No switches in the plan.' })); return; }
+    showLastCheck(sw);
     prefixInp.value = sw.portPrefix || '';
     const model = planDeviceModel(getProject(), sw.id, modelOpts(sw));
     // One input per trunk: the physical interface is a site fact the plan
@@ -110,6 +137,21 @@ export function mountDeviceConfig(opts) {
     script.value = renderRouterOs(model, { generatedAt: new Date().toISOString().slice(0, 10) });
   }
 
+  // The outcome of the last drift check, stored on the switch by the owner.
+  function showLastCheck(sw) {
+    const d = sw && sw.drift;
+    if (!d || typeof d.at !== 'string') { lastCheck.textContent = 'Not checked against the device yet.'; return; }
+    const when = d.at.slice(0, 16).replace('T', ' ');
+    lastCheck.textContent = d.errors || d.warnings
+      ? `Last check ${when}: ${d.errors || 0} mismatch(es), ${d.warnings || 0} warning(s) — the device differs from the plan.`
+      : `Last check ${when}: the device matched the plan.`;
+  }
+  const safeName = (sw) => String(sw.name || sw.id).replace(/[^A-Za-z0-9._-]+/g, '_').slice(0, 48) || 'device';
+  deployBtn.addEventListener('click', () => {
+    const sw = current();
+    if (!sw || !canDeploy) return;
+    deploy(sw, `${safeName(sw)}.rsc`, script.value, deployOut);
+  });
   swSel.addEventListener('change', render);
   prefixInp.addEventListener('change', () => {
     const sw = current();
@@ -156,6 +198,7 @@ export function mountDeviceConfig(opts) {
       ? `${n('error')} mismatch(es) · ${n('warn')} warning(s) · ${n('info')} not in the plan`
       : '✓ The device matches the plan.';
     driftOut.appendChild(head);
+    if (typeof onDrift === 'function') { onDrift(sw, { errors: n('error'), warnings: n('warn'), info: n('info') }); showLastCheck(sw); }
     const ul = el('ul', { class: 'dc-drift-list' });
     for (const f of findings) {
       ul.appendChild(el('li', { class: `dc-${f.severity}`, text: `${SEV_LABEL[f.severity]} [${f.area}] ${f.message}` }));
@@ -175,7 +218,10 @@ export function mountDeviceConfig(opts) {
           const safe = String(sw.name || sw.id).replace(/[^A-Za-z0-9._-]+/g, '_').slice(0, 48) || 'device';
           onDownload(`${safe}-remediation.rsc`, fix.text);
         });
-        fixBox.append(ta, el('div', { class: 'ep-btn-row' }, [dl]), el('div', { class: 'ep-hint', text: 'Adds or corrects only what the plan requires. It removes nothing — anything on the device that the plan does not know stays as it is.' }));
+        const fixOut = el('div', { class: 'ep-hint dc-deploy-out' });
+        const run = el('button', { class: 'btn dc-deploy-fix', text: '⇢ Dry-run with rosconf' });
+        run.addEventListener('click', () => deploy(sw, `${safeName(sw)}-remediation.rsc`, fix.text, fixOut));
+        fixBox.append(ta, el('div', { class: 'ep-btn-row' }, [dl, ...(canDeploy ? [run] : [])]), fixOut, el('div', { class: 'ep-hint', text: 'Adds or corrects only what the plan requires. It removes nothing — anything on the device that the plan does not know stays as it is.' }));
       });
       driftOut.appendChild(btn);
     }

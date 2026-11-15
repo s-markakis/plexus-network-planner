@@ -96,6 +96,9 @@ export function zipStore(files, when = new Date()) {
 // Imported archives are untrusted: cap the inflated size of a single entry so a
 // zip bomb fails fast instead of exhausting memory.
 const MAX_INFLATED_BYTES = 256 * 1024 * 1024;
+// …and the archive as a whole: many entries just under the per-entry cap (or
+// overlapping ones) would otherwise still add up to gigabytes.
+const MAX_TOTAL_BYTES = 1024 * 1024 * 1024;
 
 async function inflateRaw(bytes) {
   const ds = new DecompressionStream('deflate-raw');
@@ -138,6 +141,7 @@ export async function zipRead(bytes) {
   let off = dv.getUint32(eocd + 16, true);
   const utf8 = new TextDecoder();
   const out = [];
+  let total = 0;
   for (let n = 0; n < count; n++) {
     if (dv.getUint32(off, true) !== 0x02014b50) throw new Error('Corrupt central directory');
     const method = dv.getUint16(off + 10, true);
@@ -156,6 +160,8 @@ export async function zipRead(bytes) {
       if (method === 0) out.push({ name, data: raw.slice() });
       else if (method === 8) out.push({ name, data: await inflateRaw(raw) });
       else throw new Error(`Unsupported zip compression method ${method} for ${name}`);
+      total += out[out.length - 1].data.length;
+      if (total > MAX_TOTAL_BYTES) throw new Error('Zip archive is too large when decompressed');
     }
     off += 46 + nameLen + extraLen + commentLen;
   }

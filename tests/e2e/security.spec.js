@@ -67,10 +67,13 @@ test('encrypted save keeps credentials out of revision snapshots', async ({page}
   }, 'creds');
   await reload(page, file);
 
-  // New revision through the UI (name comes from a prompt()).
-  page.once('dialog', d => d.accept('rev e2e'));
+  // New revision through the UI. The name comes from an in-app dialog, not
+  // window.prompt() — Electron has no prompt(), so that path never worked there.
   await page.locator('[data-action="show-revisions"]').click();
   await page.getByRole('button', {name: 'Save current state as new revision'}).click();
+  await page.locator('#mdl-body input[type="text"]').fill('rev e2e');
+  await page.locator('#mdl-body input[type="text"]').press('Enter');
+  await expect(page.locator('#mbg')).not.toHaveClass(/vis/);
 
   // Set a credentials passphrase in Settings.
   await page.locator('[data-action="show-settings"]').click();

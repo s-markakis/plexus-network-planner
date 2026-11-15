@@ -303,6 +303,39 @@ process — the page cannot supply a command — uses key or agent authenticatio
 only, never prompts, and refuses a host key it has not seen (connect once with
 *Connect via SSH* first). It asks before every connection.
 
+4. **Dry-run with rosconf** (desktop) — hands the generated script (or the
+   remediation script) to [`rosconf`](../rosconf): Plexus writes it to its own
+   data directory and opens a terminal running `rosconf apply <host> -f <file>`.
+   That is a **dry run**: rosconf prints what it would send and changes nothing.
+
+   **Safe default, by construction:** Plexus never passes `--apply`. Pushing
+   configuration to a device is your own step — re-run the printed command with
+   `--apply` added, after reading the dry-run output. The host, user, port and
+   key go through the same validator as *Connect via SSH*, and the `rosconf`
+   executable is chosen once through a native file dialog and stored in the
+   app's own settings — a project file cannot name a program to run. Intended
+   for devices you own or are authorised to configure.
+
+### Client report, site templates, multi-floor coverage
+
+- **Export ▾ → Client report** — a document for the person paying for the
+  network: predicted coverage per floor on the plan, on-site measurements where
+  there are any, the equipment list, cabling and video-storage totals, and a
+  sign-off block. It contains no IP or MAC addresses, VLANs, ports, internal
+  notes or credentials (those stay in the technical **PDF**). Written in Greek
+  when the project locale is `el-*`.
+- **New from template…** (empty state, or File menu) — starts a project with the
+  VLAN plan, reachability policies and naming convention for a villa, a hotel or
+  a restaurant. The "must never reach" policies fail until the firewall rules
+  exist — that is the to-do list. No floor plan or APs: those are the site.
+- **Other floors in the heatmap** (Settings → *Include other floors in heatmap*)
+  — APs on every other floor reach the current one through the slabs between:
+  one slab loss per level and the true 3-D path length, using *Floor-to-floor
+  height*. Floors are stacked in tab order and assumed to share a footprint.
+
+The dialog also remembers the outcome of the last drift check per device
+("matched the plan" / "N mismatches", with the time), saved with the project.
+
 ---
 
 ## Tutorial 3 — Operate: connect to a real device
@@ -486,10 +519,11 @@ native runner per OS. App icons live in `electron/resources/`
 ```bash
 npm run verify       # the full gate: vitest + tsc
 npm run e2e:install  # one-time: fetch the Playwright browser
-npm run e2e          # Playwright end-to-end suite
+npm run e2e          # Playwright end-to-end suite (web build, dev server)
+npm run e2e:desktop  # builds, then drives the real Electron app (native bridge)
 ```
 
-**614 unit tests across 42 files** — RF geometry (incl. the physical FSPL model),
+**681 unit tests across 49 files** — RF geometry (incl. the physical FSPL model),
 the forwarding engine (L2/L3, VLANs, ARP, routing, ACL, NAT, DHCP, DNS), **OSPF**
 and **RIP** convergence, the IOS/RouterOS CLI engine, the project→sim adapter
 (hardened against malformed/hostile project data), schema migration, crypto, the
@@ -499,7 +533,12 @@ the RouterOS config generator and drift check, controller certificate pinning
 (against local self-signed HTTPS servers), property tests that check the IP math
 against a BigInt oracle across the whole address space, and a ratchet that fails
 on any unescaped interpolation into markup.
-Plus an **18-test Playwright E2E** suite (boot smoke + full scenario: load → place →
+Also unit-tested: the undo history, deferred image deletion, the credentials
+session (locked vaults survive a save), the project-file path gate and the
+rosconf dry-run argv (no `--apply`, hostile targets rejected).
+Plus a **5-test desktop E2E** suite against the real Electron app — native
+Open / Save / Save As / Open Recent, the path gate from the renderer's side, and
+the rosconf hand-off — and a **25-test Playwright E2E** suite (boot smoke + full scenario: load → place →
 wall → coverage re-clips → export → re-import, the inventory/rollout/handover flow,
 the simulation and device-config tooling, and security cases — hostile project
 fields stay inert, encrypted saves leak no credentials, share links ask first).

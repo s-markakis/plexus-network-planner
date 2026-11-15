@@ -603,9 +603,14 @@ export function sampleRoamingOverlap(floor,imgW,imgH,thresholdDbm=-67,opts){
  * @param {number=} bandFactor
  * @param {string=} modelKey  Propagation model key.
  * @param {number=} metersPerPx  Real-world scale → physical path loss (see dbmAt).
+ * @param {number=} slabs  Number of slabs between the AP's floor and this one
+ *   (1 = the floor directly above/below). Each one costs `slabDb`.
+ * @param {number=} verticalM  Vertical separation in metres. With a physical
+ *   scale the path is the 3-D distance, so a point straight under an AP two
+ *   floors up is ~6 m away, not 0. Ignored without `metersPerPx`.
  * @returns {number|null}
  */
-export function dbmAtThroughSlab(ap,sx,sy,imgW,imgH,slabDb,bandFactor,modelKey,metersPerPx){
+export function dbmAtThroughSlab(ap,sx,sy,imgW,imgH,slabDb,bandFactor,modelKey,metersPerPx,slabs,verticalM){
   const bf=bandFactor??1;
   const pe=PROP_EXPONENT[modelKey||'logd']??PROP_EXPONENT.logd;
   const eirp=effectiveEirp(ap);
@@ -617,10 +622,12 @@ export function dbmAtThroughSlab(ap,sx,sy,imgW,imgH,slabDb,bandFactor,modelKey,m
   const dRatio=Math.max(0.05,dist/ap.r);
   // Apply the slab loss as an extra attenuator multiplied by the band factor —
   // 2.4 GHz penetrates slabs better than 5 GHz, just like walls.
-  const effSlab=slabDb*bf;
+  const nSlabs=Number.isFinite(slabs)&&slabs>=1?slabs:1;
+  const effSlab=slabDb*bf*nSlabs;
   if(dist > ap.r*attenuationFactor(effSlab))return null;
   if(Number.isFinite(metersPerPx)&&metersPerPx>0){
-    return eirp - pathLossDb(dist*metersPerPx,bandFreqMhz(ap.freq),modelKey) - effSlab;
+    const dz=Number.isFinite(verticalM)&&verticalM>0?verticalM:0;
+    return eirp - pathLossDb(Math.hypot(dist*metersPerPx,dz),bandFreqMhz(ap.freq),modelKey) - effSlab;
   }
   const fsLoss=pe*Math.log10(1/dRatio);
   return edgeDbm + fsLoss - effSlab + eirpBoost;

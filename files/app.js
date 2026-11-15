@@ -55,7 +55,12 @@ import {
 import {runLengthM,analyzeLoad,nextFreeIp as netNextFreeIp,ipInCidr,subnetUsage,airtimeUtilization} from './src/network.js';
 import {formatName,nameMatches,patternHasNumber} from './src/naming.js';
 import {zipStore} from './src/zip.js';
-import {collectCreds,stripCredsReplacer,attachCreds,hasPlaintextPasswords,sealCreds,openVault} from './src/credsVault.js';
+import {collectCreds,stripCredsReplacer,attachCreds,hasPlaintextPasswords} from './src/credsVault.js';
+import {createCredsSession} from './src/credsSession.js';
+import {buildClientReportModel,renderClientReport} from './src/clientReport.js';
+import {SITE_TEMPLATES,buildTemplateProject} from './src/siteTemplates.js';
+import {createHistory} from './src/history.js';
+import {createImageTrash,imageIdsIn} from './src/imageTrash.js';
 // PDF floor-plan import. The worker is bundled inline (?worker&inline) so the
 // portable single-file build still works from file:// with no external fetch.
 import * as pdfjsLib from 'pdfjs-dist';
@@ -219,7 +224,9 @@ let SETTINGS={...DEFAULT_SETTINGS,vlans:[]};
 // Session-only credentials passphrase. When set, device credentials are
 // AES-GCM encrypted in saved/exported project files and stripped from autosave
 // and Share links. Never persisted to SETTINGS or disk.
-let _credPass='';
+// Passphrase, locked vault and the autosave's encrypted copy — see
+// ./src/credsSession.js for the rules (unit-tested).
+const CREDS=createCredsSession({getFloors:()=>FLOORS,onVaultReady:()=>autosave(true)});
 
 // ═══ STATE ════════════════════════════════════════
 let FLOORS=[{id:'f1',name:'Floor 1',img:'',imgName:'',APS:[],DZS:[],SWS:[],WALLS:[],CAMS:[],ANNOS:[],SAMPLES:[],scaleM:100}];
@@ -235,10 +242,35 @@ let pendDel=null,modalCB=null;
 // Reads happen on every render; writes go through setScaleM() which updates
 // both the global and the current floor.
 let scaleM=100; // metres per 100px (mirror of current floor's scaleM)
-function syncScaleFromFloor(){scaleM=F().scaleM||100;const el=document.getElementById('scale-m');if(el)el.value=scaleM;}
-function setScaleM(v){scaleM=Math.max(1,parseFloat(v)||100);F().scaleM=scaleM;}
+function syncScaleFromFloor(){scaleM=F().scaleM||100;const el=document.getElementById('scale-m');if(el)el.value=+scaleM.toPrecision(4);}
+// Radii (ap.r, dz.r, cam.range) are stored in image px, so a scale change must
+// rescale them or every device's real-world range silently changes with it.
+// Kept unrounded: the scale box fires per keystroke and rounding would drift.
+const MIN_SCALE_M=0.01; // hi-res plans are routinely well under 1 m per 100 px
+function setScaleM(v){
+  const f=F(),old=f.scaleM||scaleM||100;
+  const p=parseFloat(v);
+  scaleM=p>0?Math.max(MIN_SCALE_M,p):100;
+  f.scaleM=scaleM;
+  if(old!==scaleM){
+    const k=old/scaleM;
+    (f.APS||[]).forEach(a=>{if(a.r>0)a.r*=k;});
+    (f.DZS||[]).forEach(d=>{if(d.r>0)d.r*=k;});
+    (f.CAMS||[]).forEach(c=>{if(c.range>0)c.range*=k;});
+    invalidateCoverageCache();
+  }
+}
+// Slider/drag ceilings in px: the legacy px cap, or `m` metres at the current
+// scale if that is larger (otherwise a calibrated hi-res plan caps at ~4 m).
+function radiusMaxPx(basePx,m){return Math.max(basePx,rangeMToPx(m));}
 // Undo/redo
-let undoStack=[],redoStack=[];
+// Rules live in ./src/history.js (unit-tested); these keep the toolbar in sync.
+function _syncUndoButtons(){
+  const u=document.getElementById('btn-undo'),r=document.getElementById('btn-redo');
+  if(u)u.disabled=!HISTORY.canUndo();
+  if(r)r.disabled=!HISTORY.canRedo();
+}
+const HISTORY=createHistory({serialize:()=>_serializeState(),restore:st=>_restoreState(st),onChange:()=>{_syncUndoButtons();_markDirty();}});
 // Zoom/pan
 let scale=1,panX=0,panY=0;
 let panning=false,panStartX=0,panStartY=0,panPrevX=0,panPrevY=0;
@@ -350,8 +382,8 @@ function deleteFloor(i){
   if(i<0||i>=FLOORS.length)return;
   snapshot();
   const removed=FLOORS[i];
-  if(removed&&removed.imgId)idbDeleteImage(removed.imgId).catch(()=>{});
   FLOORS.splice(i,1);
+  imageIdsIn([removed]).forEach(_releaseImage);
   // Adjust curFloor so we stay on a valid index. If we deleted the current
   // floor, move to the one before it (or stay at 0 if it was the first).
   if(curFloor===i)curFloor=Math.max(0,i-1);
@@ -446,7 +478,7 @@ async function _applyMapDataUrl(dataUrl,name,label){
     document.getElementById('brand-lbl').textContent=(SETTINGS.company||'Plexus')+' · '+name;
     updateEmptyState();
     toast('Map loaded: '+label);
-    if(oldId&&oldId!==id)idbDeleteImage(oldId).catch(()=>{});
+    if(oldId&&oldId!==id)_releaseImage(oldId);
   }catch(err){
     // IndexedDB unavailable or quota exceeded — fall back to inline.
     F().img=dataUrl;F().imgName=name;F().imgId='';
@@ -500,6 +532,21 @@ function uploadMap(input){
 // currently-uncovered points. Stop when target % is reached or max APs hit.
 // Not optimal in the strict NP-hard sense; good enough in practice and
 // finishes in well under a second for realistic floor sizes.
+// Every new AP — clicked or auto-placed — starts from the same record. Auto-
+// placed APs used to lack the RF fields (antenna gain, Tx power, width…), so
+// their heatmap changed after a save + reload filled them in.
+function _newAp(id,name,model,fx,fy){
+  return {
+    id,name,model,
+    freq:'2.4 / 5 GHz',channel:'auto',txPower:'auto',sig:'strong',color:'',
+    ip:'',mac:'',port:'',vlan:'',notes:'',comment:'',
+    fx,fy,r:rangeMToPx(AP_RANGE_M[model]),locked:false,
+    pattern:'omni',heading:0,swId:'',
+    antennaGainDbi:AP_ANTENNA_GAIN_DBI[model]??4,
+    cableLossDb:0,txPowerDbm:20,mountHeightM:2.7,downtiltDeg:0,
+    capacityClients:25,chanWidth:40,
+  };
+}
 function autoPlaceAPs(){
   const w=mapImg.naturalWidth,h=mapImg.naturalHeight;
   if(!w||!h){toast('Upload a map first');return;}
@@ -562,7 +609,7 @@ function autoPlaceAPs(){
     const c=candidates[bestIdx];
     const id='ap'+nid++;
     const num=nextNameSuffix(APS(),/^AP-(\d+)/);
-    APS().push({id,name:'AP-'+String(num).padStart(2,'0'),model,freq:'2.4 / 5 GHz',channel:'auto',txPower:'auto',sig:'strong',color:'',ip:'',mac:'',swId:'',port:'',vlan:'',notes:'',fx:c.x/w,fy:c.y/h,r,pattern:'omni',heading:0,locked:false});
+    APS().push(_newAp(id,'AP-'+String(num).padStart(2,'0'),model,c.x/w,c.y/h));
     placedNow.push(id);
   }
   invalidateCoverageCache();
@@ -912,7 +959,7 @@ function autoRenameDevices(){
 // usage and PoE-class fit. Footer offers auto-assign and full validation.
 function showPoESummary(){
   const wrap=document.createElement('div');
-  wrap.style.cssText='font-family:Rajdhani,sans-serif;font-size:13px';
+  wrap.style.cssText='font-family:inherit;font-size:13px';
   const sws=SWS();
   if(!sws.length){
     wrap.textContent='No switches placed yet. Drop a switch on the map (W) then assign APs/cameras to it.';
@@ -926,8 +973,8 @@ function showPoESummary(){
     const sec=document.createElement('div');sec.style.cssText='margin-bottom:14px;padding-bottom:10px;border-bottom:1px solid rgba(0,0,0,.08)';
     const head=document.createElement('div');head.style.cssText='display:flex;justify-content:space-between;font-weight:600;margin-bottom:4px';
     const portStr=a.ports!=null?` · ${a.used}/${a.ports} ports`:` · ${a.used} ports`;
-    head.innerHTML=`<span>${esc(sw.name)} <span style="font-family:'Share Tech Mono';font-size:10px;opacity:.6">${esc(sw.model||'')}${esc(portStr)}</span></span>
-      <span style="font-family:'Share Tech Mono';color:${a.overBudget?'#c0382b':'#1e7d3c'}">${a.draw.toFixed(1)} W${a.budget>0?` / ${a.budget} W${a.headroom!=null?` · ${a.headroom}%`:''}`:''}</span>`;
+    head.innerHTML=`<span>${esc(sw.name)} <span style="font-family:var(--font-mono);font-size:10px;opacity:.6">${esc(sw.model||'')}${esc(portStr)}</span></span>
+      <span style="font-family:var(--font-mono);color:${a.overBudget?'#c0382b':'#1e7d3c'}">${a.draw.toFixed(1)} W${a.budget>0?` / ${a.budget} W${a.headroom!=null?` · ${a.headroom}%`:''}`:''}</span>`;
     sec.appendChild(head);
     if(!a.clients.length){
       const empty=document.createElement('div');empty.style.cssText='font-size:11px;opacity:.6;font-style:italic';empty.textContent='No devices assigned.';
@@ -936,7 +983,7 @@ function showPoESummary(){
       for(const c of a.clients){
         const bad=a.classFails.includes(c);
         const li=document.createElement('div');li.style.cssText='display:flex;justify-content:space-between;font-size:11px;padding:2px 8px;opacity:.85';
-        li.innerHTML=`<span>${c.type==='AP'?'●':'◉'} ${esc(c.name)} <span style="opacity:.5">${esc(c.model)}</span></span><span style="font-family:'Share Tech Mono'${bad?';color:#c0382b;font-weight:700':''}">${c.w} W${c.cls?` ${c.cls}`:''}</span>`;
+        li.innerHTML=`<span>${c.type==='AP'?'●':'◉'} ${esc(c.name)} <span style="opacity:.5">${esc(c.model)}</span></span><span style="font-family:var(--font-mono)${bad?';color:#c0382b;font-weight:700':''}">${c.w} W${c.cls?` ${c.cls}`:''}</span>`;
         sec.appendChild(li);
       }
     }
@@ -947,7 +994,7 @@ function showPoESummary(){
     wrap.appendChild(sec);
   }
   const total=document.createElement('div');total.style.cssText='margin-top:8px;padding-top:8px;border-top:1px solid #000;font-weight:600;display:flex;justify-content:space-between';
-  total.innerHTML=`<span>Total</span><span style="font-family:'Share Tech Mono'">${totalDraw.toFixed(1)} W${totalBudget>0?` / ${totalBudget} W`:''}</span>`;
+  total.innerHTML=`<span>Total</span><span style="font-family:var(--font-mono)">${totalDraw.toFixed(1)} W${totalBudget>0?` / ${totalBudget} W`:''}</span>`;
   wrap.appendChild(total);
   const foot=document.createElement('div');foot.style.cssText='margin-top:12px;display:flex;gap:8px;flex-wrap:wrap';
   const mkBtn=(label,fn)=>{const b=document.createElement('button');b.className='btn';b.textContent=label;b.addEventListener('click',fn);foot.appendChild(b);};
@@ -1125,7 +1172,7 @@ function showValidation(){
   }
 
   const wrap=document.createElement('div');
-  wrap.style.cssText='font-family:Rajdhani,sans-serif;font-size:13px';
+  wrap.style.cssText='font-family:inherit;font-size:13px';
   // The ✓ banner keys off problems only — informational lines (e.g. the NVR
   // storage rollup) still print below a passing result.
   if(!errors.length&&!warns.length){
@@ -1152,7 +1199,7 @@ function showValidation(){
 // showing each switch's port usage. Read-only documentation aid.
 function showTopology(){
   const wrap=document.createElement('div');
-  wrap.style.cssText='font-family:Rajdhani,sans-serif;font-size:13px';
+  wrap.style.cssText='font-family:inherit;font-size:13px';
   const {all,children,roots}=topologyModel();
   if(!all.length){wrap.textContent='No switches placed yet.';showModalNode('Network topology',wrap,null);return;}
   const multiFloor=FLOORS.length>1;
@@ -1167,8 +1214,8 @@ function showTopology(){
     row.style.cssText=`padding:3px 0 3px ${depth*18}px;display:flex;justify-content:space-between;gap:10px`;
     const portStr=a.ports!=null?`${a.used}/${a.ports}`:`${a.used}`;
     const floorTag=multiFloor?` <span style="opacity:.45;font-size:9px">[${esc(e.floor.name||('Floor '+(e.floorIdx+1)))}]</span>`:'';
-    row.innerHTML=`<span>${depth?'└ ':''}⊞ <strong>${esc(e.sw.name)}</strong> <span style="opacity:.55;font-family:'Share Tech Mono';font-size:10px">${esc(e.sw.model||'')}</span>${floorTag}</span>
-      <span style="font-family:'Share Tech Mono';font-size:10px;opacity:.7">${portStr} ports · ${a.draw.toFixed(0)} W</span>`;
+    row.innerHTML=`<span>${depth?'└ ':''}⊞ <strong>${esc(e.sw.name)}</strong> <span style="opacity:.55;font-family:var(--font-mono);font-size:10px">${esc(e.sw.model||'')}</span>${floorTag}</span>
+      <span style="font-family:var(--font-mono);font-size:10px;opacity:.7">${portStr} ports · ${a.draw.toFixed(0)} W</span>`;
     tree.appendChild(row);
     children.get(e.sw.id).forEach(c=>renderNode(c,depth+1));
   };
@@ -1179,7 +1226,7 @@ function showTopology(){
   for(const e of all){
     const a=analyzeSwitch(e.sw,e.floor);
     const unit=document.createElement('div');unit.style.cssText='margin-bottom:8px;padding:6px 8px;border:1px solid var(--ink-04);border-radius:3px';
-    unit.innerHTML=`<div style="display:flex;justify-content:space-between;font-size:11px;margin-bottom:4px"><span><strong>${esc(e.sw.name)}</strong> <span style="opacity:.55;font-size:10px">${esc(e.sw.model||'')}</span></span><span style="font-family:'Share Tech Mono';opacity:.7">${a.ports!=null?`${a.used}/${a.ports}`:`${a.used}/?`}${a.overPorts?' ⚠':''}</span></div>${portGridHtml(a)}`;
+    unit.innerHTML=`<div style="display:flex;justify-content:space-between;font-size:11px;margin-bottom:4px"><span><strong>${esc(e.sw.name)}</strong> <span style="opacity:.55;font-size:10px">${esc(e.sw.model||'')}</span></span><span style="font-family:var(--font-mono);opacity:.7">${a.ports!=null?`${a.used}/${a.ports}`:`${a.used}/?`}${a.overPorts?' ⚠':''}</span></div>${portGridHtml(a)}`;
     wrap.appendChild(unit);
   }
   // Cabling rollup.
@@ -1299,9 +1346,11 @@ async function tryLoadFromHash(){
       history.replaceState(null,'',location.pathname+location.search);
       return false;
     }
+    _beginProjectSwitch();
     FLOORS=data.floors;
     SETTINGS={...DEFAULT_SETTINGS,...(data.settings||{})};
     applyStoredCatalog();
+    PROJECT_REVISIONS=[];   // a link carries none; don't keep the previous project's
     curFloor=0;selId=null;selType=null;
     syncScaleFromFloor();syncNidFromFloors();
     await _rehydrateImages();
@@ -1310,6 +1359,7 @@ async function tryLoadFromHash(){
     // Strip the hash so a reload doesn't keep loading the same project.
     history.replaceState(null,'',location.pathname+location.search);
     toast(warnings.length?warnings[0]:'Project loaded from link');
+    _endProjectSwitch();
     return true;
   }catch(err){
     toast('Could not decode shared link');
@@ -1594,7 +1644,7 @@ function showUnifiDialog(){
   const user=field('Username','text',SETTINGS.unifiUser,'admin');
   const pass=field('Password','password',_unifiPass,'');
   const status=document.createElement('div');
-  status.style.cssText='font-family:"Share Tech Mono";font-size:11px;white-space:pre-wrap;margin:8px 0;min-height:16px';
+  status.style.cssText='font-family:var(--font-mono);font-size:11px;white-space:pre-wrap;margin:8px 0;min-height:16px';
   const saveFields=()=>{
     SETTINGS.unifiUrl=(url.value||'').trim();
     SETTINGS.unifiSite=(site.value||'default').trim();
@@ -1660,7 +1710,49 @@ function showUnifiDialog(){
 // Strip per-item cache fields (`_coveragePath`, `_coverageFor`, etc.) so saved
 // JSON stays small and never round-trips stale geometry into a future load.
 function _stripCacheReplacer(k,v){return k.startsWith('_')?undefined:v;}
-async function saveProject(){
+// The file this project was opened from / last saved to (desktop app only), and
+// whether the plan changed since. Paths are only ever handed out by the main
+// process after a native dialog — see electron/projectFiles.cjs.
+let _projectFile=null,_dirty=false;
+const _BASE_TITLE=typeof document!=='undefined'?document.title:'Plexus';
+function _syncTitle(){
+  if(typeof document==='undefined')return;
+  document.title=_projectFile?`${_dirty?'• ':''}${_projectFile.name} — Plexus`:_BASE_TITLE;
+}
+function _setProjectFile(f){
+  _projectFile=f&&f.path?{path:f.path,name:f.name||'project'}:null;
+  _dirty=false;_syncTitle();
+}
+function _markDirty(){if(!_dirty){_dirty=true;_syncTitle();}}
+function _suggestedFileName(){
+  const base=(SETTINGS.siteCode||SETTINGS.company||(F()&&F().imgName)||'plexus_project').trim()||'plexus_project';
+  return base.replace(/[^\p{L}\p{N}._ -]+/gu,'_').slice(0,80)+'.plexus.json';
+}
+function _savedToast(){
+  return CREDS.locked?(_hasPlaintextCreds()?'Project saved — locked credentials kept; ones added since are NOT encrypted until you unlock':'Project saved (locked credentials kept)'):CREDS.pass?'Project saved (credentials encrypted)':'Project saved';
+}
+// Desktop: write to the project's file (Save) or ask where (Save As / first
+// save). Web build: download, as before.
+async function saveProject(opts){
+  const text=await _buildProjectText();
+  const native=typeof window!=='undefined'&&window.plexusNative;
+  if(native&&native.projectSave){
+    const res=_projectFile&&!(opts&&opts.saveAs)
+      ? await native.projectSave({path:_projectFile.path,text})
+      : await native.projectSaveAs({text,suggestedName:_projectFile?_projectFile.name:_suggestedFileName()});
+    if(res&&res.cancelled)return;
+    if(!res||!res.ok){toast('Could not save: '+((res&&res.error)||'unknown error'));return;}
+    _setProjectFile(res);
+    toast(_savedToast()+' — '+res.name);
+    return;
+  }
+  const blob=new Blob([text],{type:'application/json'});
+  const a=document.createElement('a');a.href=URL.createObjectURL(blob);
+  a.download='plexus_project.json';a.click();
+  _dirty=false;_syncTitle();
+  toast(_savedToast());
+}
+async function _buildProjectText(){
   // Inline the IDB-stored images into the saved file so the project remains
   // self-contained when shared. The in-memory FLOORS keeps `imgId` only —
   // we serialize a copy with `img` populated for portability.
@@ -1688,10 +1780,7 @@ async function saveProject(){
   // When a credentials passphrase is set, encrypt every device's creds into a
   // single vault and strip the plaintext from the exported devices.
   await _encryptCredsInto(data);
-  const blob=new Blob([JSON.stringify(data,_stripCacheReplacer,2)],{type:'application/json'});
-  const a=document.createElement('a');a.href=URL.createObjectURL(blob);
-  a.download='plexus_project.json';a.click();
-  toast(_credPass?'Project saved (credentials encrypted)':'Project saved');
+  return JSON.stringify(data,_stripCacheReplacer,2);
 }
 // ── Credential vault (encrypt-at-rest for saved/exported projects) ─────────
 // Gather {deviceId: creds} across floors.
@@ -1699,28 +1788,45 @@ async function saveProject(){
 // If a passphrase is set, move creds into data.credsVault and strip the inline
 // plaintext from copies of the affected devices (never mutating live FLOORS).
 async function _encryptCredsInto(data){
-  await sealCreds(data,_credPass);
+  await CREDS.sealInto(data);
+}
+// Try a passphrase against the locked vault; on success reattach its creds.
+// Devices that got credentials while it was locked keep the newer ones.
+async function _tryUnlock(pass){
+  const ok=await CREDS.tryUnlock(pass);
+  if(ok){render();renderRP();toast('Credentials unlocked');}
+  else toast('Wrong passphrase — credentials stay locked (kept in the file; retry in Settings → Credentials passphrase)');
+  return ok;
 }
 // After loading a project whose creds are encrypted, prompt for the passphrase
 // and reattach the decrypted creds to the in-memory devices.
 async function _unlockCreds(data){
   if(!data||!data.credsVault)return;
+  CREDS.lock(data.credsVault);
   const pass=await promptPassphrase('This project’s credentials are encrypted.\nEnter the passphrase to unlock them, or Cancel to keep them locked:');
-  if(pass==null)return;
-  try{
-    const map=await openVault(data.credsVault,pass);
-    _credPass=pass;   // remember so a re-save stays encrypted with the same key
-    attachCreds(FLOORS,map);
-    render();renderRP();
-    toast('Credentials unlocked');
-  }catch{
-    toast('Wrong passphrase — credentials stay locked');
-  }
+  if(pass==null){toast('Credentials stay locked — they are kept when you save');return;}
+  await _tryUnlock(pass);   // remembers the passphrase so a re-save stays encrypted
+}
+// Modal text prompt → resolves to the string, or null if cancelled. Replaces
+// window.prompt(), which Electron does not implement (it returns null), so
+// text labels and revisions could not be created in the desktop app.
+function promptText(title,message,initial){
+  return new Promise(resolve=>{
+    const wrap=document.createElement('div');wrap.style.cssText='font-family:inherit;font-size:13px';
+    wrap.appendChild(document.createTextNode(String(message||'')));
+    const inp=document.createElement('input');inp.type='text';inp.className='ep-in';inp.autocomplete='off';
+    inp.value=initial||'';inp.style.cssText='width:100%;margin-top:10px';
+    inp.addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();e.stopPropagation();modalOK();}});
+    wrap.appendChild(inp);
+    let done=false;
+    showModalNode(title,wrap,()=>{done=true;resolve(inp.value||'');},()=>{if(!done)resolve(null);});
+    setTimeout(()=>{inp.focus();inp.select();},50);
+  });
 }
 // Modal password prompt → resolves to the string, or null if cancelled.
 function promptPassphrase(message){
   return new Promise(resolve=>{
-    const wrap=document.createElement('div');wrap.style.cssText='font-family:Rajdhani,sans-serif;font-size:13px';
+    const wrap=document.createElement('div');wrap.style.cssText='font-family:inherit;font-size:13px';
     String(message).split('\n').forEach((line,i,arr)=>{wrap.appendChild(document.createTextNode(line));if(i<arr.length-1)wrap.appendChild(document.createElement('br'));});
     const inp=document.createElement('input');inp.type='password';inp.className='ep-in';inp.autocomplete='off';
     inp.style.cssText='width:100%;margin-top:10px';
@@ -1739,7 +1845,7 @@ function newProject(){
   const doIt=async ()=>{
     // Drop any IDB-stored images for the floors we're discarding so the
     // database doesn't grow without bound across "New Project" cycles.
-    const oldIds=FLOORS.map(f=>f.imgId).filter(Boolean);
+    _beginProjectSwitch();
     // Mutate FLOORS in place rather than reassigning the binding — this keeps
     // any existing references (tests, inspector debugging, closures) valid.
     FLOORS.length=0;
@@ -1748,8 +1854,8 @@ function newProject(){
     curFloor=0;selId=null;selType=null;nid=1;
     syncScaleFromFloor();
     try{localStorage.removeItem(AUTOSAVE_KEY);}catch(_){}
-    for(const id of oldIds){idbDeleteImage(id).catch(()=>{});}
-    lastAutosavePayload='';
+    lastAutosaveBody='';
+    _sweepImages();
     invalidateCoverageCache();
     loadFloorImage();renderFloorTabs();render();renderList();renderRP();calcCoverage();
     toast('New project');
@@ -1760,38 +1866,55 @@ function newProject(){
     doIt();
   }
 }
+// Replace the session with the project in `text`. `file` ({path,name}) is set
+// when it came from a file on disk in the desktop app, so Save writes back.
+async function _loadProjectText(text,file){
+  try{
+    const raw=JSON.parse(text);
+    const [data,warnings]=migrateProject(raw);
+    _beginProjectSwitch();
+    FLOORS=data.floors;
+    SETTINGS={...DEFAULT_SETTINGS,...(data.settings||{})};
+    applyStoredCatalog();
+    PROJECT_REVISIONS=Array.isArray(data.revisions)?data.revisions:[];
+    // Apply the persisted UI language (i18n bundle) right away.
+    if(SETTINGS.language)setLang(SETTINGS.language);
+    curFloor=0;selId=null;selType=null;
+    syncScaleFromFloor();
+    syncNidFromFloors();
+    // Import any inline floor/device images into IDB (and warm the cache) so
+    // the project is portable across laptops; keeps autosaves tiny afterward.
+    await _rehydrateImages();
+    applySettingsToBrand();
+    loadFloorImage();renderFloorTabs();render();renderList();renderRP();calcCoverage();
+    if(warnings.length){toast(warnings[0]);}else{toast(file?'Opened '+file.name:'Project loaded');}
+    CREDS.lock(data.credsVault);   // before the autosave below, so a crash mid-prompt keeps it
+    _setProjectFile(file||null);
+    _endProjectSwitch();
+    await _unlockCreds(data);   // prompt for the passphrase if creds are encrypted
+  }catch(err){toast('Error loading project: '+(err.message||'invalid file'));}
+}
 function loadProject(input){
   const file=input.files[0];if(!file)return;
   const reader=new FileReader();
-  reader.onload=async e=>{
-    try{
-      const raw=JSON.parse(e.target.result);
-      const [data,warnings]=migrateProject(raw);
-      FLOORS=data.floors;
-      SETTINGS={...DEFAULT_SETTINGS,...(data.settings||{})};
-      applyStoredCatalog();
-      PROJECT_REVISIONS=Array.isArray(data.revisions)?data.revisions:[];
-      // Apply the persisted UI language (i18n bundle) right away.
-      if(SETTINGS.language)setLang(SETTINGS.language);
-      curFloor=0;selId=null;selType=null;
-      syncScaleFromFloor();
-      syncNidFromFloors();
-      // Import any inline floor/device images into IDB (and warm the cache) so
-      // the project is portable across laptops; keeps autosaves tiny afterward.
-      await _rehydrateImages();
-      applySettingsToBrand();
-      loadFloorImage();renderFloorTabs();render();renderList();renderRP();calcCoverage();
-      if(warnings.length){toast(warnings[0]);}else{toast('Project loaded');}
-      await _unlockCreds(data);   // prompt for the passphrase if creds are encrypted
-    }catch(err){toast('Error loading project: '+(err.message||'invalid file'));}
-  };
+  reader.onload=e=>_loadProjectText(e.target.result,null);
   reader.readAsText(file);input.value='';
+}
+// Desktop: native Open dialog / a recent file. The main process reads the file
+// and only for paths the user picked (see electron/projectFiles.cjs).
+async function openProjectNative(recentPath){
+  const native=window.plexusNative;
+  const res=recentPath?await native.projectOpenRecent(recentPath):await native.projectOpen();
+  if(!res||res.cancelled)return;
+  if(!res.ok){toast('Could not open: '+(res.error||'unknown error'));return;}
+  await _loadProjectText(res.text,{path:res.path,name:res.name});
 }
 // Load the bundled sample project (empty-state button). Same pipeline as
 // loadProject, minus the file read — the sample is generated in-memory.
 async function loadSampleProject(){
   try{
     const [data,warnings]=migrateProject(buildSampleProject());
+    _beginProjectSwitch();
     FLOORS=data.floors;
     SETTINGS={...DEFAULT_SETTINGS,...(data.settings||{})};
     applyStoredCatalog();
@@ -1804,6 +1927,7 @@ async function loadSampleProject(){
     applySettingsToBrand();
     loadFloorImage();renderFloorTabs();render();renderList();renderRP();calcCoverage();
     if(warnings.length){toast(warnings[0]);}else{toast('Sample project loaded — drag things around');}
+    _endProjectSwitch();
   }catch(err){toast('Error loading sample: '+(err.message||'unknown'));}
 }
 // Update the top-bar brand label to whatever the current SETTINGS specify.
@@ -2007,69 +2131,58 @@ function _restoreState(json){
   syncScaleFromFloor();
   invalidateCoverageCache();
 }
-function snapshot(){
-  // Cancel any pending debounced snapshot — committing one synchronously
-  // means we already have the right "before" state captured here.
-  _snapPending=false;clearTimeout(_snapT);_snapT=null;
-  undoStack.push(_serializeState());
-  if(undoStack.length>50)undoStack.shift();
-  redoStack=[];
-  document.getElementById('btn-undo').disabled=false;
-  document.getElementById('btn-redo').disabled=true;
-}
+function snapshot(){HISTORY.snapshot();}
 // Debounced snapshot for streaming edits (sliders, text inputs). The first
 // call within a quiet window captures the *pre-edit* state, then 400ms after
 // the last call we commit. This way Undo jumps back across the whole edit
 // burst (one visible step) instead of per-keystroke (many).
-let _snapT=null,_snapPending=false,_snapPreState=null;
-function snapshotSoon(){
-  if(!_snapPending){
-    _snapPending=true;
-    _snapPreState=_serializeState();
-  }
-  clearTimeout(_snapT);
-  _snapT=setTimeout(()=>{
-    if(!_snapPending)return;
-    _snapPending=false;
-    undoStack.push(_snapPreState);
-    if(undoStack.length>50)undoStack.shift();
-    redoStack=[];
-    document.getElementById('btn-undo').disabled=false;
-    document.getElementById('btn-redo').disabled=true;
-    _snapPreState=null;
-  },400);
+
+// ── Image lifetime ─────────────────────────────────────────────────────────
+// Stored images are deleted only once no floor, revision or undo entry can
+// bring them back — see ./src/imageTrash.js (unit-tested). Always drop an
+// image through _releaseImage(), never idbDeleteImage() directly.
+function _liveImgIds(){
+  const ids=imageIdsIn(FLOORS);
+  for(const r of PROJECT_REVISIONS||[])imageIdsIn(r&&r.snapshot,ids);
+  return ids;
 }
+const IMG_TRASH=createImageTrash({
+  liveIds:_liveImgIds,
+  isHeld:id=>HISTORY.mentions('"'+id+'"'),
+  drop:id=>{_imgCache.delete(id);idbDeleteImage(id).catch(()=>{});},
+});
+function _releaseImage(id){IMG_TRASH.release(id);}
+function _sweepImages(){IMG_TRASH.sweep();}
+
+// Call BEFORE replacing the whole project (load / new / sample / link / lab /
+// session restore). Undo history and the credentials passphrase belong to the
+// project being left: keeping them let Undo resurrect the previous project's
+// floors and re-encrypted the next project with the wrong passphrase.
+let _projectSwitched=false;
+function _beginProjectSwitch(){
+  _projectSwitched=true;
+  IMG_TRASH.retire(_liveImgIds());
+  HISTORY.reset();
+  CREDS.reset();
+  _setProjectFile(null);   // after reset(): its change notification marks dirty
+}
+// Call AFTER the new project is in place: persist it first so the autosave no
+// longer points at the old project's images, then drop those images.
+function _endProjectSwitch(){autosave(true);_sweepImages();}
+function snapshotSoon(){HISTORY.snapshotSoon();}
 // Force commit immediately — call from blur handlers so leaving a field
 // finalizes its snapshot without waiting for the timer.
-function snapshotFlush(){
-  if(!_snapPending)return;
-  clearTimeout(_snapT);_snapT=null;
-  _snapPending=false;
-  undoStack.push(_snapPreState);
-  if(undoStack.length>50)undoStack.shift();
-  redoStack=[];
-  document.getElementById('btn-undo').disabled=false;
-  document.getElementById('btn-redo').disabled=true;
-  _snapPreState=null;
-}
+function snapshotFlush(){HISTORY.flush();}
 function undo(){
-  if(!undoStack.length)return;
-  redoStack.push(_serializeState());
-  _restoreState(undoStack.pop());
+  if(!HISTORY.undo())return;
   selId=null;selType=null;
   loadFloorImage();renderFloorTabs();render();renderList();renderRP();calcCoverage();
-  document.getElementById('btn-undo').disabled=!undoStack.length;
-  document.getElementById('btn-redo').disabled=false;
   toast('Undo');
 }
 function redo(){
-  if(!redoStack.length)return;
-  undoStack.push(_serializeState());
-  _restoreState(redoStack.pop());
+  if(!HISTORY.redo())return;
   selId=null;selType=null;
   loadFloorImage();renderFloorTabs();render();renderList();renderRP();calcCoverage();
-  document.getElementById('btn-redo').disabled=!redoStack.length;
-  document.getElementById('btn-undo').disabled=false;
   toast('Redo');
 }
 
@@ -2117,7 +2230,7 @@ function setUiMode(m){
   document.body.dataset.uimode=m;
   // Entering Operate with plaintext passwords in the file is a leak risk — nudge
   // toward the encrypted-creds vault (Settings → Credentials passphrase).
-  if(m==='operate'&&!_credPass&&_hasPlaintextCreds())toast('⚠ Stored passwords are unencrypted — set a Credentials passphrase in Settings to protect this project file.');
+  if(m==='operate'&&!CREDS.pass&&_hasPlaintextCreds())toast('⚠ Stored passwords are unencrypted — set a Credentials passphrase in Settings to protect this project file.');
   document.querySelectorAll('[data-modes]').forEach(el=>{el.hidden=!el.dataset.modes.split(/\s+/).includes(m);});
   document.querySelectorAll('[data-uimode-btn]').forEach(b=>b.classList.toggle('active',b.dataset.uimodeBtn===m));
   // Pick a sensible tool for the mode, and never leave a now-hidden tool active.
@@ -2189,6 +2302,7 @@ function showLabs(){
 async function _loadProjectObject(obj,okMsg){
   try{
     const [data,warnings]=migrateProject(obj);
+    _beginProjectSwitch();
     FLOORS=data.floors;
     SETTINGS={...DEFAULT_SETTINGS,...(data.settings||{})};
     applyStoredCatalog();
@@ -2201,7 +2315,32 @@ async function _loadProjectObject(obj,okMsg){
     loadFloorImage();renderFloorTabs();render();renderList();renderRP();calcCoverage();
     if(_simPanel)_simPanel.refresh();
     toast(warnings.length?warnings[0]:okMsg);
+    _endProjectSwitch();
   }catch(err){toast('Could not load: '+(err.message||'unknown error'));}
+}
+// "New from template": a new project pre-loaded with a site kind's VLAN plan,
+// policies and naming (./src/siteTemplates.js). Replaces what is on screen.
+function showTemplates(){
+  const wrap=document.createElement('div');wrap.className='tpl-list';
+  const hasWork=FLOORS.some(f=>(f.APS?.length||f.DZS?.length||f.SWS?.length||f.CAMS?.length||(f.WALLS&&f.WALLS.length)||f.img||f.imgId));
+  if(hasWork){
+    const warn=document.createElement('div');warn.className='ep-hint';
+    warn.textContent='Starting from a template replaces the plan on screen. Save your work first if you need it.';
+    wrap.appendChild(warn);
+  }
+  for(const t of SITE_TEMPLATES){
+    const row=document.createElement('button');row.className='btn tpl-item';row.dataset.template=t.id;
+    const title=document.createElement('strong');title.textContent=t.title;
+    const sub=document.createElement('span');sub.className='tpl-sub';
+    sub.textContent=`${t.summary} ${t.settings.vlans.length} VLANs · ${t.settings.policies.length} policies.`;
+    row.append(title,sub);
+    row.addEventListener('click',()=>{
+      closeModal();
+      _loadProjectObject(buildTemplateProject(t.id),`Template loaded: ${t.title} — upload a floor plan to begin`);
+    });
+    wrap.appendChild(row);
+  }
+  showModalNode('New from template',wrap,null);
 }
 // Plan → device: RouterOS config for a switch + drift check against its /export.
 function showDeviceConfig(){
@@ -2221,6 +2360,16 @@ function showDeviceConfig(){
       if(!confirm(`Connect to ${t.user?t.user+'@':''}${t.host} over SSH and read its configuration?\n\nRead-only: runs "/export" and nothing else.`))return null;
       return window.plexusNative.sshPullConfig({host:t.host,user:t.user,port:t.port,key:t.key,vendor:sshVendor(sw.model)});
     }:undefined,
+    // Desktop only: hand the script to rosconf as a DRY RUN in a terminal. The
+    // app never passes --apply — pushing to the device is the user's own step.
+    onDeploy:(window.plexusNative&&window.plexusNative.deployRosconf)?async (sw,name,text)=>{
+      const t=sshTarget(sw);
+      if(!t)return {ok:false,error:'No IP or host set on this device'};
+      if(!sshTargetIsSafe(t))return {ok:false,error:'Host, user or key contains characters that are not allowed'};
+      return window.plexusNative.deployRosconf({target:{host:t.host,user:t.user,port:t.port,key:t.key},name,text});
+    }:undefined,
+    // Remember how the device compared with the plan the last time it was checked.
+    onDrift:(sw,r)=>{sw.drift={at:new Date().toISOString(),errors:r.errors,warnings:r.warnings};autosave();},
   });
   showModalNode('Device config & drift',wrap,null);
 }
@@ -2342,16 +2491,7 @@ viewport.addEventListener('click',e=>{
     // Remember last-used model: new APs default to whatever model the user
     // last selected or placed in this session (or the project default).
     const defaultModel=AP_RANGE_M[SETTINGS.lastModel]?SETTINGS.lastModel:'U6 Pro';
-    APS().push({
-      id,name:'AP-'+String(num).padStart(2,'0'),model:defaultModel,
-      freq:'2.4 / 5 GHz',channel:'auto',txPower:'auto',sig:'strong',color:'',
-      ip:'',mac:'',port:'',vlan:'',notes:'',comment:'',
-      fx,fy,r:rangeMToPx(AP_RANGE_M[defaultModel]),locked:false,
-      pattern:'omni',heading:0,swId:'',
-      antennaGainDbi:AP_ANTENNA_GAIN_DBI[defaultModel]??4,
-      cableLossDb:0,txPowerDbm:20,mountHeightM:2.7,downtiltDeg:0,
-      capacityClients:25,chanWidth:40,
-    });
+    APS().push(_newAp(id,'AP-'+String(num).padStart(2,'0'),defaultModel,fx,fy));
     sel(id,'ap');setMode('sel');render();renderList();calcCoverage();toast('AP placed — edit in panel');
   }else if(mode==='dz'){
     snapshot();
@@ -2937,7 +3077,8 @@ function renderAPs(){
 
     // On-map label: just the AP name. Model + all other technical details are
     // visible in the right-side properties panel when an AP is selected.
-    const lbl=mk('text');lbl.setAttribute('x',cx);lbl.setAttribute('y',cy);
+    // Below the dot (7 px radius), so the name never sits on top of the marker.
+    const lbl=mk('text');lbl.setAttribute('x',cx);lbl.setAttribute('y',cy+9+ls*.75);
     lbl.setAttribute('class',isSel?'ap-lbl-sel':'ap-lbl');lbl.setAttribute('font-size',ls);lbl.textContent=ap.name;
     if(apColor)lbl.style.fill=apColor;
 
@@ -2982,7 +3123,7 @@ function renderDZs(){
     pulse.setAttribute('class','dz-pulse');pulse.style.transformOrigin=`${cx}px ${cy}px`;pulse.style.animation='dzs 8s linear infinite';
     if(isSel){pulse.style.stroke=tInk();pulse.style.strokeWidth='2.5';pulse.style.fill=tInk(.1);}
     const icon=mk('text');icon.setAttribute('x',cx);icon.setAttribute('y',cy);icon.setAttribute('text-anchor','middle');icon.setAttribute('dominant-baseline','central');icon.setAttribute('font-size','18');icon.setAttribute('fill',tInk());icon.textContent='⚠';
-    const lbl=mk('text');lbl.setAttribute('x',cx);lbl.setAttribute('y',cy+dz.r+11);lbl.setAttribute('text-anchor','middle');lbl.setAttribute('font-size','10');lbl.setAttribute('font-family','Rajdhani,sans-serif');lbl.setAttribute('font-weight','700');lbl.setAttribute('letter-spacing','.1em');lbl.setAttribute('fill',tInk());lbl.setAttribute('paint-order','stroke');lbl.setAttribute('stroke',tBg());lbl.setAttribute('stroke-width','3');lbl.textContent=(dz.label||'').toUpperCase();
+    const lbl=mk('text');lbl.setAttribute('x',cx);lbl.setAttribute('y',cy+dz.r+11);lbl.setAttribute('text-anchor','middle');lbl.setAttribute('font-size','10');lbl.setAttribute('font-family','-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica Neue,Arial,sans-serif');lbl.setAttribute('font-weight','700');lbl.setAttribute('letter-spacing','.1em');lbl.setAttribute('fill',tInk());lbl.setAttribute('paint-order','stroke');lbl.setAttribute('stroke',tBg());lbl.setAttribute('stroke-width','3');lbl.textContent=(dz.label||'').toUpperCase();
     if(isSel&&!dz.locked){const rh=mk('circle');rh.setAttribute('cx',cx+dz.r);rh.setAttribute('cy',cy);rh.setAttribute('r',8);rh.setAttribute('class','rh-sel');rh.dataset.resizeDz=dz.id;rh.style.pointerEvents='all';rh.addEventListener('pointerdown',e=>{e.stopPropagation();resId=dz.id;resizeStartX=e.clientX;resizeStartR=dz.r;});g.appendChild(rh);}
     [pulse,icon,lbl].forEach(el=>g.appendChild(el));
     g.addEventListener('pointerdown',e=>{e.stopPropagation();if(e.shiftKey&&mode==='sel'){toggleSelection(dz.id,'dz');return;}sel(dz.id,'dz');if(!dz.locked){const img=vpToImg(e.clientX,e.clientY);dragOffX=dz.fx*w-img.x;dragOffY=dz.fy*h-img.y;dragId=dz.id;dragType='dz';_dragInitialFx=dz.fx;_dragInitialFy=dz.fy;}});
@@ -3212,7 +3353,7 @@ function renderSWs(){
     box.setAttribute('fill',isSel?tInk(.1):tInk(.04));
     box.setAttribute('stroke',tInk());box.setAttribute('stroke-width',isSel?'2':'1.2');
     const icon=mk('text');icon.setAttribute('x',cx);icon.setAttribute('y',cy);icon.setAttribute('text-anchor','middle');icon.setAttribute('dominant-baseline','central');icon.setAttribute('font-size',iconFs);icon.setAttribute('fill',tInk());icon.textContent='⊞';
-    const lbl=mk('text');lbl.setAttribute('x',cx);lbl.setAttribute('y',cy+sz*.9);lbl.setAttribute('text-anchor','middle');lbl.setAttribute('font-size',lblFs);lbl.setAttribute('font-family','Rajdhani,sans-serif');lbl.setAttribute('font-weight','700');lbl.setAttribute('letter-spacing','.08em');lbl.setAttribute('fill',tInk());lbl.setAttribute('paint-order','stroke');lbl.setAttribute('stroke',tBg());lbl.setAttribute('stroke-width','2.5');lbl.textContent=(sw.name||'').toUpperCase();
+    const lbl=mk('text');lbl.setAttribute('x',cx);lbl.setAttribute('y',cy+sz*.9);lbl.setAttribute('text-anchor','middle');lbl.setAttribute('font-size',lblFs);lbl.setAttribute('font-family','-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica Neue,Arial,sans-serif');lbl.setAttribute('font-weight','700');lbl.setAttribute('letter-spacing','.08em');lbl.setAttribute('fill',tInk());lbl.setAttribute('paint-order','stroke');lbl.setAttribute('stroke',tBg());lbl.setAttribute('stroke-width','2.5');lbl.textContent=(sw.name||'').toUpperCase();
     [box,icon,lbl].forEach(el=>g.appendChild(el));
     g.addEventListener('pointerdown',e=>{
       e.stopPropagation();
@@ -3365,10 +3506,24 @@ function _heatJob(){
   const modeDef=HEATMAP_MODES[mode]||HEATMAP_MODES.rssi;
   const bandFilter=SETTINGS.heatmapBand||'all';
   const aps=APS().filter(ap=>_bandMatches(ap,bandFilter)).map(_heatApShape);
+  // APs on the other floors, reaching this one through the slabs between.
+  // Floors are stacked in tab order; plans are assumed to cover the same
+  // footprint (positions carry over as fractions). Each AP's radius is
+  // converted from its own floor's scale to this one's, and its path is the
+  // 3-D distance across `floorHeightM` per level.
   const neighbour=[];
   if(SETTINGS.showFloorLeakage){
-    if(curFloor-1>=0)for(const ap of (FLOORS[curFloor-1].APS||[]))if(_bandMatches(ap,bandFilter))neighbour.push(_heatApShape(ap));
-    if(curFloor+1<FLOORS.length)for(const ap of (FLOORS[curFloor+1].APS||[]))if(_bandMatches(ap,bandFilter))neighbour.push(_heatApShape(ap));
+    const mppHere=(scaleM||100)/100;
+    const floorH=Number.isFinite(SETTINGS.floorHeightM)&&SETTINGS.floorHeightM>0?SETTINGS.floorHeightM:3;
+    FLOORS.forEach((f,i)=>{
+      if(i===curFloor)return;
+      const slabs=Math.abs(i-curFloor);
+      const k=((f.scaleM||100)/100)/mppHere;
+      for(const ap of (f.APS||[])){
+        if(!_bandMatches(ap,bandFilter))continue;
+        neighbour.push({..._heatApShape(ap),r:ap.r*k,slabs,verticalM:slabs*floorH});
+      }
+    });
   }
   if(!aps.length&&!neighbour.length)return null;
   return {
@@ -3603,11 +3758,13 @@ function commitAnno(x2,y2){
   const w=mapImg.naturalWidth||1,h=mapImg.naturalHeight||1;
   const fx=annoStart.x/w, fy=annoStart.y/h, fx2=x2/w, fy2=y2/h;
   if(annoSubMode==='text'){
-    const txt=prompt('Label text','');
-    if(txt!==null && txt.trim()){
+    const floor=F();   // the prompt is async — pin the floor the click was on
+    promptText('Text label','Label text','').then(txt=>{
+      if(txt===null||!txt.trim()||!FLOORS.includes(floor))return;
       snapshot();
-      ANNOS().push({id:'an'+(++nid),kind:'text',fx,fy,fx2:fx,fy2:fy,text:txt.trim()});
-    }
+      (floor.ANNOS||(floor.ANNOS=[])).push({id:'an'+(++nid),kind:'text',fx,fy,fx2:fx,fy2:fy,text:txt.trim()});
+      render();
+    });
   } else {
     snapshot();
     ANNOS().push({id:'an'+(++nid),kind:annoSubMode,fx,fy,fx2,fy2,text:''});
@@ -4153,9 +4310,9 @@ ${sections}
 function _snapshotForRevision(){
   return JSON.parse(JSON.stringify(FLOORS,stripCredsReplacer));
 }
-function newRevision(){
-  const name=prompt('Revision name (e.g., "rev B – after client walk")','rev '+String.fromCharCode(65+PROJECT_REVISIONS.length));
-  if(!name)return;
+async function newRevision(){
+  const name=await promptText('New revision','Revision name (e.g., "rev B – after client walk")','rev '+String.fromCharCode(65+PROJECT_REVISIONS.length));
+  if(!name||!name.trim())return;
   PROJECT_REVISIONS.push({
     id:'rev'+(++nid),
     name:name.trim(),
@@ -4172,11 +4329,23 @@ function restoreRevision(id){
     snapshot();
     // Snapshots hold no credentials — carry the current ones over by device id.
     const keepCreds=collectCreds(FLOORS);
+    const prevImgs=new Map(FLOORS.map(f=>[f.id,{imgId:f.imgId||'',img:f.img||'',imgName:f.imgName||''}]));
     FLOORS=JSON.parse(JSON.stringify(rev.snapshot));
     attachCreds(FLOORS,keepCreds,{overwrite:false});
     if(curFloor>=FLOORS.length)curFloor=0;
-    syncScaleFromFloor();loadFloorImage();renderFloorTabs();render();renderList();renderRP();calcCoverage();
-    toast('Restored '+rev.name);
+    selId=null;selType=null;
+    // A snapshot names its floor plan by image id only. That image may not
+    // exist here (project opened on another computer, or the plan was replaced
+    // since) — keep the current plan for that floor instead of going blank.
+    Promise.all(FLOORS.map(async f=>{
+      if(f.img)return;
+      const have=f.imgId?(_imgCache.has(f.imgId)||await idbGetImage(f.imgId).catch(()=>null)):null;
+      const cur=prevImgs.get(f.id);
+      if(!have&&cur&&(cur.imgId||cur.img)){f.imgId=cur.imgId;f.img=cur.img;f.imgName=cur.imgName;}
+    })).finally(()=>{
+      syncScaleFromFloor();loadFloorImage();renderFloorTabs();render();renderList();renderRP();calcCoverage();
+      toast('Restored '+rev.name);
+    });
   });
 }
 function _diffRevisions(a,b){
@@ -4288,7 +4457,7 @@ function showRevisions(){
 // organization actions (bulk IPs, renaming, CSV/handover exports).
 function showInventory(){
   const wrap=document.createElement('div');
-  wrap.style.cssText='font-family:Rajdhani,sans-serif;font-size:13px';
+  wrap.style.cssText='font-family:inherit;font-size:13px';
   const devs=allDevices();
   if(!devs.length){
     wrap.textContent='Nothing placed yet. Add APs, cameras or switches first.';
@@ -4309,7 +4478,7 @@ function showInventory(){
   const done=counts.live+counts.tested;
   const pct=Math.round((done/devs.length)*100);
   const pctEl=document.createElement('span');
-  pctEl.style.cssText='margin-left:auto;font-family:"Share Tech Mono",monospace;font-size:11px;opacity:.7';
+  pctEl.style.cssText='margin-left:auto;font-family:var(--font-mono);font-size:11px;opacity:.7';
   pctEl.textContent=`${pct}% tested/live`;
   prog.appendChild(pctEl);
   wrap.appendChild(prog);
@@ -4611,9 +4780,9 @@ function endDrag(){
 function doResize(cx){
   const img=vpToImg(cx,0);
   const ap=APS().find(a=>a.id===resId);
-  if(ap){ap.r=Math.max(15,Math.min(500,Math.abs(img.x-ap.fx*(mapImg.naturalWidth||1))));const slider=document.getElementById('ep-r');if(slider){slider.value=Math.round(ap.r);document.getElementById('ep-rv').textContent=Math.round(ap.r*(scaleM/100))+'m';}render();calcCoverage();return;}
+  if(ap){ap.r=Math.max(15,Math.min(radiusMaxPx(500,100),Math.abs(img.x-ap.fx*(mapImg.naturalWidth||1))));const slider=document.getElementById('ep-r');if(slider){slider.value=Math.round(ap.r);document.getElementById('ep-rv').textContent=Math.round(ap.r*(scaleM/100))+'m';}render();calcCoverage();return;}
   const dz=DZS().find(a=>a.id===resId);
-  if(dz){dz.r=Math.max(10,Math.min(300,Math.abs(img.x-dz.fx*(mapImg.naturalWidth||1))));const slider=document.getElementById('dz-r');if(slider){slider.value=Math.round(dz.r);document.getElementById('dz-rv').textContent=Math.round(dz.r*(scaleM/100))+'m';}render();}
+  if(dz){dz.r=Math.max(10,Math.min(radiusMaxPx(300,60),Math.abs(img.x-dz.fx*(mapImg.naturalWidth||1))));const slider=document.getElementById('dz-r');if(slider){slider.value=Math.round(dz.r);document.getElementById('dz-rv').textContent=Math.round(dz.r*(scaleM/100))+'m';}render();}
 }
 
 // ═══ COVERAGE CALC ════════════════════════════════
@@ -4671,7 +4840,7 @@ function promptCalibration(){
   const px=Math.hypot(rulerEnd.x-rulerStart.x,rulerEnd.y-rulerStart.y);
   if(px<2){toast('Line too short — draw a longer one');return;}
   const wrap=document.createElement('div');
-  wrap.style.cssText='font-family:Rajdhani,sans-serif;font-size:13px';
+  wrap.style.cssText='font-family:inherit;font-size:13px';
   const p=document.createElement('div');
   p.textContent=`This line is ${px.toFixed(0)} px. Enter its real-world length:`;
   p.style.marginBottom='8px';
@@ -4687,10 +4856,10 @@ function promptCalibration(){
     snapshot();
     const newScale=realM/px*100;            // metres per 100 px
     setScaleM(newScale);
-    const el=document.getElementById('scale-m');if(el)el.value=Math.round(newScale*100)/100;
+    const el=document.getElementById('scale-m');if(el)el.value=+scaleM.toPrecision(4);
     SETTINGS.archScale='';                   // now a custom, measured scale
     updateScaleBar();calcCoverage();render();renderList();renderRP();
-    toast(`Scale set: ${newScale.toFixed(2)} m / 100 px`);
+    toast(`Scale set: ${+scaleM.toPrecision(4)} m / 100 px`);
   });
   setTimeout(()=>{inp.focus();inp.select();},50);
 }
@@ -4701,7 +4870,7 @@ function updateScaleBar(){
   // 100px in image space = scaleM metres; in screen space = 100*sc px
   const screenPx=100*scale;
   document.getElementById('sbar-line').style.width=screenPx+'px';
-  document.getElementById('sbar-txt').textContent=scaleM+'m';
+  document.getElementById('sbar-txt').textContent=(+scaleM.toPrecision(3))+'m';
 }
 
 // ═══ TOGGLES ══════════════════════════════════════
@@ -4895,7 +5064,7 @@ function updImg(){
   snapshotSoon();
   item.imageUrl=v;
   // A typed URL replaces any uploaded image; release the IDB blob.
-  if(v&&item.imgId){const old=item.imgId;item.imgId='';idbDeleteImage(old).catch(()=>{});}
+  if(v&&item.imgId){const old=item.imgId;item.imgId='';_releaseImage(old);}
   _refreshDeviceImg(item,selType);
 }
 
@@ -4932,7 +5101,7 @@ function _applyDeviceImageFile(file){
       await idbPutImage(id,dataUrl);
       _imgCache.set(id,dataUrl);
       item.imgId=id;item.imageUrl='';
-      if(oldId&&oldId!==id)idbDeleteImage(oldId).catch(()=>{});
+      if(oldId&&oldId!==id)_releaseImage(oldId);
     }catch{
       item.imgId='';item.imageUrl=dataUrl;
     }
@@ -4953,7 +5122,7 @@ function uploadDeviceImage(input){
 function clearDeviceImage(){
   const item=_selectedDevice();if(!item||!(item.imgId||item.imageUrl))return;
   snapshot();
-  if(item.imgId){const old=item.imgId;item.imgId='';idbDeleteImage(old).catch(()=>{});}
+  if(item.imgId){const old=item.imgId;item.imgId='';_releaseImage(old);}
   item.imageUrl='';
   if(selType==='ap')renderAPPanel();else if(selType==='cam')renderCAMPanel();else if(selType==='sw')renderSWPanel();
   render();renderList();
@@ -5049,7 +5218,7 @@ function renderCAMPanel(){
     </div>
     <div class="ep-row ep-slider-row">
       <label class="ep-lbl">View Range</label>
-      <input class="ep-rng" id="cam-range" type="range" min="20" max="400" value="${Math.round(c.range||80)}" data-input-action="upd-cam-range"/>
+      <input class="ep-rng" id="cam-range" type="range" min="20" max="${radiusMaxPx(400,150)}" value="${Math.round(c.range||80)}" data-input-action="upd-cam-range"/>
       <span class="ep-rng-val" id="cam-range-v">${realR}m</span>
     </div>
     <div class="ep-row ep-slider-row">
@@ -5200,7 +5369,7 @@ function renderAPPanel(){
     </div>
     <div class="ep-section">Coverage Range</div>
     <div class="ep-row ep-slider-row">
-      <input class="ep-rng" id="ep-r" type="range" min="15" max="500" value="${Math.round(ap.r)}" data-input-action="upd-ap-r"/>
+      <input class="ep-rng" id="ep-r" type="range" min="15" max="${radiusMaxPx(500,100)}" value="${Math.round(ap.r)}" data-input-action="upd-ap-r"/>
       <span class="ep-rng-val" id="ep-rv">${realR}m</span>
     </div>
     <div class="ep-section">Antenna Pattern</div>
@@ -5259,7 +5428,7 @@ function renderDZPanel(){
     <div class="ep-row"><input class="ep-in" id="dz-lbl" value="${esc(dz.label)}" data-input-action="upd-dz"/></div>
     <div class="ep-section">Radius</div>
     <div class="ep-row ep-slider-row">
-      <input class="ep-rng" id="dz-r" type="range" min="10" max="300" value="${Math.round(dz.r)}" data-input-action="upd-dz-r"/>
+      <input class="ep-rng" id="dz-r" type="range" min="10" max="${radiusMaxPx(300,60)}" value="${Math.round(dz.r)}" data-input-action="upd-dz-r"/>
       <span class="ep-rng-val" id="dz-rv">${realR}m</span>
     </div>
     <label class="ep-check"><input type="checkbox" ${dz.locked?'checked':''} data-change-action="toggle-lock"/><span>Lock position</span></label>
@@ -5594,7 +5763,7 @@ function _showModalEl(title,bodyEl,okCB,cancelCB){
   const body=document.getElementById('mdl-body');
   body.replaceChildren(bodyEl);
   modalCB=okCB||null;modalCancelCB=cancelCB||null;
-  document.getElementById('mdl').classList.remove('help-modal','wide-modal');
+  document.getElementById('mdl').classList.remove('help-modal','wide-modal','settings-modal');
   const ok=document.getElementById('mdl-ok');
   if(ok){ok.style.display=okCB?'':'none';}
   const cancel=document.querySelector('#mdl .mdl-actions .btn:not(#mdl-ok)');
@@ -5737,7 +5906,10 @@ function updateCnt(){document.getElementById('ap-cnt').textContent=APS().length;
 function togglePresent(){
   pres=!pres;
   document.getElementById('btn-pres').classList.toggle('active',pres);
-  document.getElementById('btn-pres').textContent=pres?'■ Exit':'▶ Present';
+  // Icon + label, built with DOM calls (no markup strings).
+  const pb=document.getElementById('btn-pres');
+  _setIconLabel(pb,pres?'stop':'play',pres?'Exit':'Present');
+  document.body.classList.toggle('presenting',pres);   // hides the floating tool palette
   ['hint-bar','left-sb','right-sb'].forEach(id=>{const el=document.getElementById(id);if(el)el.style.display=pres?'none':'';});
   // Hide the meta + tools rows, but keep the floor-row so users can still flip floors.
   document.querySelectorAll('.topbar-meta, .topbar-tools').forEach(el=>{el.style.display=pres?'none':'';});
@@ -5908,6 +6080,39 @@ ${SETTINGS.footerLine?`<footer class="ft">${esc(SETTINGS.footerLine)}</footer>`:
 }
 
 // ═══ PDF ══════════════════════════════════════════
+// Client-facing report (coverage, equipment, sign-off). What goes in is decided
+// by ./src/clientReport.js — no IPs, MACs, VLANs, ports, notes or credentials.
+async function doClientReport(){
+  // Open the window inside the click, before any await, or it is blocked.
+  const w=window.open('','_blank');
+  if(!w){toast('Pop-up blocked — allow pop-ups to open the report');return;}
+  toast('Building client report…');
+  const floorViews=[];
+  let allC=0,allT=0;
+  for(const f of FLOORS){
+    const src=await resolveFloorImage(f).catch(()=>f.img||'')||f.img||'';
+    let cw=1000,ch=700;
+    if(src){
+      try{
+        const dims=await new Promise((res,rej)=>{const im=new Image();im.onload=()=>res({w:im.naturalWidth,h:im.naturalHeight});im.onerror=rej;im.src=src;});
+        cw=dims.w;ch=dims.h;
+      }catch(_){}
+    }
+    const overlay=buildFloorOverlaySVG(f,{naturalWidth:cw,naturalHeight:ch});
+    const cov=_sampleFloorCoverage(f,cw,ch,_COV_OPTS);
+    allC+=cov.covered;allT+=cov.total;
+    floorViews.push({src,overlay,pct:cov.total?Math.round(cov.covered/cov.total*100):0});
+  }
+  const model=buildClientReportModel({
+    settings:SETTINGS,floors:FLOORS,floorViews,
+    coveragePct:allT?Math.round(allC/allT*100):0,
+    clientCapacity:totalClientCapacity(),
+    cable:cableTotals(),storageGb:totalStorageGb(),
+  });
+  w.document.open();w.document.write(renderClientReport(model));w.document.close();
+  _wirePrintButton(w);
+  toast('Client report opened — use Print to save as PDF');
+}
 async function doPDF(){
   // Resolve each floor's image (from IDB) and load it into a temporary
   // HTMLImageElement so we know its natural dimensions for the overlay SVG.
@@ -6056,26 +6261,31 @@ window.addEventListener('resize',()=>{render();renderMM();updateScaleBar();});
 // exceed the 5MB localStorage quota — we catch that and skip silently.
 const AUTOSAVE_KEY='noctis_wifi_autosave';
 const AUTOSAVE_INTERVAL_MS=10000;
-let lastAutosavePayload='';
+let lastAutosaveBody='';
 
 let _autosaveQuotaWarned=false;
-function autosave(){
+function autosave(force){
   // Skip when the tab is not visible — the user isn't making changes, and
   // running the JSON.stringify on every tick in a backgrounded tab is wasteful.
   // Images live in IndexedDB now (referenced by imgId), so the autosave payload
   // is a few KB even with multi-floor projects.
-  if(typeof document!=='undefined'&&document.hidden)return;
+  if(force!==true&&typeof document!=='undefined'&&document.hidden)return;
   try{
     // When a credentials passphrase is set, never write plaintext creds to
-    // localStorage — strip them from the autosave payload (the encrypted copy
-    // lives only in explicitly-saved project files).
-    const replacer=_credPass
+    // localStorage — they are stripped from the devices and stored only as the
+    // encrypted vault, so a restored session can still unlock them.
+    const replacer=CREDS.pass
       ? stripCredsReplacer
       : _stripCacheReplacer;
-    const payload=JSON.stringify({version:PROJECT_VERSION,settings:SETTINGS,floors:FLOORS,revisions:PROJECT_REVISIONS,savedAt:new Date().toISOString()},replacer);
-    if(payload===lastAutosavePayload)return;  // nothing changed
-    localStorage.setItem(AUTOSAVE_KEY,payload);
-    lastAutosavePayload=payload;
+    const vault=CREDS.autosaveVault();
+    // Compared without the timestamp — with it the "nothing changed" check
+    // never matched and every tick rewrote localStorage.
+    const body=JSON.stringify({version:PROJECT_VERSION,settings:SETTINGS,floors:FLOORS,revisions:PROJECT_REVISIONS},replacer);
+    const key=body+(vault?JSON.stringify(vault):'');
+    if(key===lastAutosaveBody)return;  // nothing changed
+    const extra=(vault?',"credsVault":'+JSON.stringify(vault):'')+',"savedAt":'+JSON.stringify(new Date().toISOString());
+    localStorage.setItem(AUTOSAVE_KEY,body.slice(0,-1)+extra+'}');
+    lastAutosaveBody=key;
     _autosaveQuotaWarned=false;
   }catch(err){
     // QuotaExceededError — floor-plan images can be large. Tell the user once
@@ -6099,6 +6309,7 @@ function tryRestoreAutosave(){
     showModalText('Restore Previous Session?',`A saved session from ${when} was found.\n\nRestore it, or start fresh?`,
       async ()=>{
         const [migrated]=migrateProject(data);
+        _beginProjectSwitch();
         FLOORS=migrated.floors;
         SETTINGS={...DEFAULT_SETTINGS,...(migrated.settings||{})};
         applyStoredCatalog();
@@ -6113,6 +6324,8 @@ function tryRestoreAutosave(){
         applySettingsToBrand();
         loadFloorImage();renderFloorTabs();render();renderList();renderRP();calcCoverage();
         toast('Session restored');
+        // The autosave holds credentials only as an encrypted vault.
+        await _unlockCreds(migrated);
       },
       ()=>{localStorage.removeItem(AUTOSAVE_KEY);}
     );
@@ -6125,8 +6338,9 @@ function tryRestoreAutosave(){
 setInterval(autosave,AUTOSAVE_INTERVAL_MS);
 // Save immediately when the user returns to the tab, or is about to close it —
 // this catches changes that happened in the last interval-tick or while hidden.
-document.addEventListener('visibilitychange',()=>{if(!document.hidden)autosave();});
-window.addEventListener('beforeunload',autosave);
+// Also on hide: switching away right after an edit used to leave it unsaved.
+document.addEventListener('visibilitychange',()=>autosave(true));
+window.addEventListener('beforeunload',()=>autosave(true));
 
 renderFloorTabs();renderList();renderRP();applySettingsToBrand();
 
@@ -6141,7 +6355,7 @@ const CLICK_ACTIONS={
   'open-esx':      ()=>document.getElementById('esx-up')?.click(),
   'export-esx':    ()=>doExportEsx(),
   'show-unifi':    ()=>showUnifiDialog(),
-  'open-load':     ()=>document.getElementById('load-up').click(),
+  'open-load':     ()=>(window.plexusNative&&window.plexusNative.projectOpen)?openProjectNative():document.getElementById('load-up').click(),
   'load-sample':   ()=>loadSampleProject(),
   'save':          ()=>saveProject(),
   'share-link':    ()=>shareLink(),
@@ -6171,6 +6385,8 @@ const CLICK_ACTIONS={
   'toggle-present':()=>togglePresent(),
   'export':        ()=>doExport(),
   'pdf':           ()=>doPDF(),
+  'client-report': ()=>doClientReport(),
+  'new-from-template':()=>showTemplates(),
   'add-floor':     ()=>addFloor(),
   'modal-close':   ()=>closeModal(),
   'modal-ok':      ()=>modalOK(),
@@ -6397,6 +6613,35 @@ document.addEventListener('keydown',e=>{
 // ═══ SETTINGS PANEL ═══════════════════════════════
 // Per-project branding/locale shown in HTML & PDF exports. Built as DOM nodes
 // (no innerHTML) so user-supplied strings are inert.
+// Lay the flat settings form out like System Settings: section list on the
+// left, one grouped card per section on the right. All sections stay in the
+// page (the list scrolls to them) so nothing is hidden from find/keyboard.
+function _paneSettings(form){
+  const groups=[];let cur=null;
+  for(const k of [...form.children]){
+    if(k.classList.contains('settings-heading')){cur={title:k.textContent,nodes:[]};groups.push(cur);}
+    else{if(!cur){cur={title:'General',nodes:[]};groups.push(cur);}cur.nodes.push(k);}
+  }
+  if(groups.length<2)return;
+  const nav=document.createElement('div');nav.className='settings-nav';
+  const panes=document.createElement('div');panes.className='settings-panes';
+  const items=[];
+  groups.forEach((g,i)=>{
+    const pane=document.createElement('section');pane.className='settings-pane';
+    const h=document.createElement('div');h.className='settings-pane-title';h.textContent=g.title;
+    const card=document.createElement('div');card.className='settings-card';
+    card.append(...g.nodes);
+    pane.append(h,card);panes.appendChild(pane);
+    const b=document.createElement('button');b.type='button';b.className='settings-nav-item'+(i===0?' active':'');b.textContent=g.title;
+    b.addEventListener('click',()=>{
+      items.forEach(x=>x.classList.toggle('active',x===b));
+      pane.scrollIntoView({block:'start',behavior:'smooth'});
+    });
+    items.push(b);nav.appendChild(b);
+  });
+  form.replaceChildren(nav,panes);
+  form.classList.add('paned');
+}
 function showSettings(){
   const wrap=document.createElement('div');wrap.className='settings-form';
 
@@ -6491,7 +6736,8 @@ function showSettings(){
   addSelect('regulatoryRegion','Regulatory region',REGULATORY_REGION_KEYS.map(k=>({value:k,label:REGULATORY_REGIONS[k].label})));
   addNumber('noiseFloorDbm','Noise floor (dBm)',-110,-70,1);
   addNumber('floorSlabAttenDb','Floor slab attenuation (dB)',0,40,1);
-  addCheck('showFloorLeakage','Include neighbouring floors in heatmap');
+  addNumber('floorHeightM','Floor-to-floor height (m)',2,10,0.1);
+  addCheck('showFloorLeakage','Include other floors in heatmap (through the slabs)');
 
   // ── Architect scale ──
   addHeading('Drawing scale');
@@ -6555,7 +6801,7 @@ function showSettings(){
   const credLbl=document.createElement('label');credLbl.className='ep-lbl';credLbl.textContent='Credentials passphrase';
   const credInp=document.createElement('input');
   credInp.type='password';credInp.className='ep-in';credInp.autocomplete='new-password';
-  credInp.value=_credPass;credInp.placeholder='blank = store credentials unencrypted';
+  credInp.value=CREDS.pass;credInp.placeholder='blank = store credentials unencrypted';
   credRow.append(credLbl,credInp);wrap.appendChild(credRow);
   const credHint=document.createElement('div');credHint.className='ep-hint';
   credHint.textContent='When set, device credentials are AES-256-GCM encrypted in saved project files and never written to autosave or Share links. Session-only — not stored anywhere; you re-enter it to unlock an encrypted project.';
@@ -6575,7 +6821,7 @@ function showSettings(){
       if(String(SETTINGS[k]||'')!==val){SETTINGS[k]=val;changed=true;}
     }
     // Numbers
-    for(const k of ['noiseFloorDbm','floorSlabAttenDb','cableRoutingFactor','cableBoxM','expectedClients','perClientMbps','retentionDays']){
+    for(const k of ['noiseFloorDbm','floorSlabAttenDb','floorHeightM','cableRoutingFactor','cableBoxM','expectedClients','perClientMbps','retentionDays']){
       if(!inputs[k])continue;
       const v=parseFloat(inputs[k].value);
       if(Number.isFinite(v)&&SETTINGS[k]!==v){SETTINGS[k]=v;changed=true;}
@@ -6590,7 +6836,8 @@ function showSettings(){
     const newVlans=vlanRows.map(e=>({id:(e.id.value||'').trim(),name:(e.name.value||'').trim(),color:e.color.value||'',subnet:(e.subnet.value||'').trim(),gateway:(e.gw.value||'').trim()})).filter(v=>v.id||v.name);
     if(JSON.stringify(newVlans)!==JSON.stringify(vlanList())){SETTINGS.vlans=newVlans;changed=true;}
     // Credentials passphrase (session-only; never persisted to SETTINGS).
-    _credPass=credInp.value||'';
+    if(CREDS.locked){if(credInp.value)_tryUnlock(credInp.value);}
+    else CREDS.setPass(credInp.value);
     const opacity=parseInt(opacityIn.value,10)||100;
     if(SETTINGS.coverageOpacity!==opacity){SETTINGS.coverageOpacity=opacity;changed=true;}
     if(SETTINGS.language)setLang(SETTINGS.language);
@@ -6615,7 +6862,9 @@ function showSettings(){
       render();
     }
   };
+  _paneSettings(wrap);
   showModalNode('Project Settings',wrap,apply,cancel);
+  document.getElementById('mdl').classList.add('wide-modal','settings-modal');
 }
 
 // ═══ HELP OVERLAY ═════════════════════════════════
@@ -6694,11 +6943,20 @@ function initImage(){
 // theming via custom properties; inline SVG attribute colors (the ones that
 // can't reference CSS vars) read live values via tInk()/tBg() at render time.
 const THEME_KEY='noctis_theme';
+// Put a sprite icon (see index.html) and an optional label into a button.
+function _setIconLabel(btn,icon,label){
+  const NS='http://www.w3.org/2000/svg';
+  const svg=document.createElementNS(NS,'svg');svg.setAttribute('class','ic');svg.setAttribute('aria-hidden','true');
+  const use=document.createElementNS(NS,'use');use.setAttribute('href','#i-'+icon);
+  svg.appendChild(use);
+  btn.replaceChildren(svg);
+  if(label){const sp=document.createElement('span');sp.textContent=label;btn.appendChild(sp);}
+}
 function applyTheme(t){
   document.body.classList.toggle('theme-dark',t==='dark');
   if(typeof _resetThemeCache==='function')_resetThemeCache();
   const btn=document.getElementById('btn-theme');
-  if(btn)btn.textContent=t==='dark'?'☼':'☾';
+  if(btn)_setIconLabel(btn,t==='dark'?'sun':'moon','');
   // Inline-SVG colors are baked at render time — re-render so they pick up the
   // new tokens. Defer to next frame so this is safe to call during early init.
   if(typeof render==='function'&&typeof requestAnimationFrame!=='undefined'){
@@ -6798,6 +7056,15 @@ if(typeof window!=='undefined'&&window.plexusNative){
   // Operate mode (real-device SSH) is desktop-only — reveal its tab there.
   const op=document.getElementById('mode-operate');
   if(op)op.style.display='';
+  // File menu (New / Open / Open Recent / Save / Save As) lives in the app menu.
+  if(window.plexusNative.onMenu)window.plexusNative.onMenu(({action,arg})=>{
+    if(action==='new')newProject();
+    else if(action==='new-template')showTemplates();
+    else if(action==='open')openProjectNative();
+    else if(action==='open-recent')openProjectNative(arg);
+    else if(action==='save')saveProject();
+    else if(action==='save-as')saveProject({saveAs:true});
+  });
 }
 // Apply the initial workspace mode (hides Simulate/Operate-only controls in Design).
 if(typeof document!=='undefined')setUiMode('design');
@@ -6808,5 +7075,7 @@ if(typeof document!=='undefined')setUiMode('design');
 setTimeout(async ()=>{
   initImage();
   const loaded=await tryLoadFromHash();
-  if(!loaded)tryRestoreAutosave();
+  // A project opened before this timer fired is already autosaved (the switch
+  // saves at once) — offering to "restore" it would cover it with a dialog.
+  if(!loaded&&!_projectSwitched)tryRestoreAutosave();
 },100);
