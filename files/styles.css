@@ -1467,7 +1467,10 @@ body[data-uimode="operate"] .topbar-meta{border-bottom-color:#b23030}
   --ink-12:rgba(29,29,31,.12); --ink-08:rgba(29,29,31,.08); --ink-04:rgba(29,29,31,.04);
   --hair:rgba(0,0,0,.1); --hair-dark:rgba(0,0,0,.18);
   --sig-strong:#1d1d1f; --sig-medium:rgba(29,29,31,.55); --sig-weak:rgba(29,29,31,.3);
-  --accent:#007aff; --accent-hover:#0a6ee6; --accent-soft:rgba(0,122,255,.16); --on-accent:#fff;
+  /* Vivid green accent. White text on it would be ~2:1, so text and icons ON
+     the accent are a near-black green (~7:1); accent-coloured TEXT on a light
+     surface uses the darker --accent-text. */
+  --accent:#34c759; --accent-hover:#2ebd52; --accent-soft:rgba(52,199,89,.22); --on-accent:#04210d; --accent-text:#168f36;
   --green:#34c759; --red:#ff3b30; --orange:#ff9500;
   --fill:rgba(118,118,128,.12); --fill-hover:rgba(118,118,128,.2); --fill-press:rgba(118,118,128,.28);
   --chrome:rgba(246,246,248,.8); --popover:rgba(250,250,252,.86);
@@ -1484,7 +1487,7 @@ body.theme-dark{
   --ink-12:rgba(245,245,247,.12); --ink-08:rgba(245,245,247,.08); --ink-04:rgba(245,245,247,.04);
   --hair:rgba(255,255,255,.1); --hair-dark:rgba(255,255,255,.18);
   --sig-strong:#f5f5f7; --sig-medium:rgba(245,245,247,.55); --sig-weak:rgba(245,245,247,.3);
-  --accent:#0a84ff; --accent-hover:#3395ff; --accent-soft:rgba(10,132,255,.28); --on-accent:#fff;
+  --accent:#30d158; --accent-hover:#4bdc6f; --accent-soft:rgba(48,209,88,.28); --on-accent:#04210d; --accent-text:#30d158;
   --green:#30d158; --red:#ff453a; --orange:#ff9f0a;
   --fill:rgba(118,118,128,.24); --fill-hover:rgba(118,118,128,.36); --fill-press:rgba(118,118,128,.48);
   --chrome:rgba(42,42,44,.8); --popover:rgba(48,48,50,.86);
@@ -1589,7 +1592,8 @@ button,input,select,textarea{font-family:var(--font-ui)}
 .list-item:active{transform:none}
 .list-item.active{background:var(--accent);color:var(--on-accent)}
 .list-item.active .li-name,.list-item.active .li-sub,.list-item.active .li-sig,.list-item.active .li-del,.list-item.active .li-lock{color:var(--on-accent)}
-.list-item.active .li-sub{opacity:.8}
+.list-item.active .li-sub{opacity:.75}
+.btn.btn-primary,.btn.active,#mdl-ok,.sig-chip.on,.settings-nav-item.active{font-weight:600}
 .list-item.active .li-dot{background:var(--on-accent)}
 .li-name{font-size:13px;font-weight:500}
 .li-sub{font-size:11px}
@@ -1724,7 +1728,7 @@ body.theme-dark .settings-card{background:var(--surface-2)}
 
 /* Selection on the map uses the accent, like everywhere else. */
 .ap-sel-dot{fill:var(--accent)}
-.ap-lbl-sel{fill:var(--accent)}
+.ap-lbl-sel{fill:var(--accent-text)}
 .ap-lbl,.ap-lbl-sel{font-weight:600;stroke:var(--surface-2);stroke-width:3.5}
 
 /* Menus sit inside the (already blurred) toolbar, where a nested backdrop
