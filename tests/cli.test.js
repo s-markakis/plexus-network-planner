@@ -212,8 +212,8 @@ describe('ACL / firewall commands', () => {
       'access-list 101 deny tcp any host 10.0.1.10 eq 22',
       'access-list 101 permit ip any any']);
     expect(s.config.acls).toEqual([
-      { action: 'deny', proto: 'tcp', src: 'any', dst: '10.0.1.10/32', dport: 22 },
-      { action: 'permit', proto: 'ip', src: 'any', dst: 'any', dport: null },
+      { action: 'deny', proto: 'tcp', src: 'any', dst: '10.0.1.10/32', dport: 22, list: '101' },
+      { action: 'permit', proto: 'ip', src: 'any', dst: 'any', dport: null, list: '101' },
     ]);
   });
   it('IOS wildcard mask converts to a prefix', () => {

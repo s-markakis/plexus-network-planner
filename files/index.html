@@ -7,97 +7,133 @@
      its bundle) but blocks remote script injection, plugins, frame embedding
      and base-tag hijacking. fonts.* allow the Google Fonts webfonts; img http(s)
      allows pasted device-photo URLs; blob: covers the PDF-import worker. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' blob:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' data: https://fonts.gstatic.com; img-src 'self' data: blob: https: http:; connect-src 'self' data: blob: https://fonts.googleapis.com https://fonts.gstatic.com; worker-src 'self' blob:; object-src 'none'; base-uri 'self'"/>
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' blob:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' data: https://fonts.gstatic.com; img-src 'self' data: blob: https: http:; connect-src 'self' data: blob: https://fonts.googleapis.com https://fonts.gstatic.com; worker-src 'self' blob:; object-src 'none'; base-uri 'self'"/>
 <title>Plexus — Network Site Planner</title>
 <link rel="stylesheet" href="fonts.css"/>
 <link rel="stylesheet" href="styles.css"/>
 </head>
 <body>
+<!-- Icon sprite: one line-icon set (16px grid, 1.6 stroke) used via <use href="#i-…"> -->
+<svg xmlns="http://www.w3.org/2000/svg" style="display:none" aria-hidden="true">
+<symbol id="i-new" viewBox="0 0 16 16"><path d="M9 1.5H4.5a1 1 0 0 0-1 1v11a1 1 0 0 0 1 1h7a1 1 0 0 0 1-1V5z M9 1.5V5h3.5 M8 8v4 M6 10h4"/></symbol>
+<symbol id="i-folder" viewBox="0 0 16 16"><path d="M1.5 4.5a1 1 0 0 1 1-1h3l1.5 1.5h6.5a1 1 0 0 1 1 1v6a1 1 0 0 1-1 1h-11a1 1 0 0 1-1-1z"/></symbol>
+<symbol id="i-save" viewBox="0 0 16 16"><path d="M8 1.5v8 M5 6.5l3 3 3-3 M2.5 10.5v2a1 1 0 0 0 1 1h9a1 1 0 0 0 1-1v-2"/></symbol>
+<symbol id="i-export" viewBox="0 0 16 16"><path d="M8 9.5v-8 M5 4.5l3-3 3 3 M2.5 10.5v2a1 1 0 0 0 1 1h9a1 1 0 0 0 1-1v-2"/></symbol>
+<symbol id="i-import" viewBox="0 0 16 16"><path d="M8 1.5V9 M5 6l3 3 3-3 M1.5 9.5h3l1 2h5l1-2h3v3a1 1 0 0 1-1 1h-11a1 1 0 0 1-1-1z"/></symbol>
+<symbol id="i-image" viewBox="0 0 16 16"><path d="M2.5 3.5h11a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1h-11a1 1 0 0 1-1-1v-7a1 1 0 0 1 1-1z M1.5 10.5L5 7l3 3 2-2 4.5 4 M10.5 6.2h.01"/></symbol>
+<symbol id="i-link" viewBox="0 0 16 16"><path d="M6.5 9.5a3 3 0 0 0 4.2 0L13 7.2A3 3 0 0 0 8.8 3l-.8.8 M9.5 6.5a3 3 0 0 0-4.2 0L3 8.8A3 3 0 0 0 7.2 13l.8-.8"/></symbol>
+<symbol id="i-undo" viewBox="0 0 16 16"><path d="M5.5 3l-3 3 3 3 M2.5 6h7a4 4 0 0 1 0 8H7"/></symbol>
+<symbol id="i-redo" viewBox="0 0 16 16"><path d="M10.5 3l3 3-3 3 M13.5 6h-7a4 4 0 0 0 0 8H9"/></symbol>
+<symbol id="i-play" viewBox="0 0 16 16"><path d="M5 3v10l8-5z"/></symbol>
+<symbol id="i-stop" viewBox="0 0 16 16"><path d="M4.5 4.5h7v7h-7z"/></symbol>
+<symbol id="i-moon" viewBox="0 0 16 16"><path d="M13.5 9.5a6 6 0 0 1-7-7 6 6 0 1 0 7 7z"/></symbol>
+<symbol id="i-sun" viewBox="0 0 16 16"><path d="M8 5.2a2.8 2.8 0 1 0 0 5.6 2.8 2.8 0 0 0 0-5.6z M8 1v1.5 M8 13.5V15 M1 8h1.5 M13.5 8H15 M3 3l1.1 1.1 M11.9 11.9L13 13 M3 13l1.1-1.1 M11.9 4.1L13 3"/></symbol>
+<symbol id="i-clock" viewBox="0 0 16 16"><path d="M8 1.5a6.5 6.5 0 1 0 0 13 6.5 6.5 0 0 0 0-13z M8 4.5V8l2.5 1.5"/></symbol>
+<symbol id="i-box" viewBox="0 0 16 16"><path d="M8 1.5l5.5 3v7L8 14.5l-5.5-3v-7z M2.5 4.5L8 7.5l5.5-3 M8 7.5v7"/></symbol>
+<symbol id="i-sliders" viewBox="0 0 16 16"><path d="M2 4.5h6 M11 4.5h3 M2 8h2 M7 8h7 M2 11.5h7 M12 11.5h2 M9.5 3v3 M5.5 6.5v3 M10.5 10v3"/></symbol>
+<symbol id="i-help" viewBox="0 0 16 16"><path d="M8 1.5a6.5 6.5 0 1 0 0 13 6.5 6.5 0 0 0 0-13z M6.2 6.2a1.9 1.9 0 1 1 2.6 1.8c-.5.3-.8.7-.8 1.3 M8 11.6h.01"/></symbol>
+<symbol id="i-layers" viewBox="0 0 16 16"><path d="M8 2L1.5 5.5 8 9l6.5-3.5z M1.5 8.5L8 12l6.5-3.5 M1.5 11.2L8 14.7l6.5-3.5"/></symbol>
+<symbol id="i-sparkles" viewBox="0 0 16 16"><path d="M6 2l1.2 3.3 3.3 1.2-3.3 1.2L6 11 4.8 7.7 1.5 6.5l3.3-1.2z M12 9.5l.7 1.8 1.8.7-1.8.7-.7 1.8-.7-1.8-1.8-.7 1.8-.7z"/></symbol>
+<symbol id="i-wave" viewBox="0 0 16 16"><path d="M1.5 8c1.1-4 2.2-4 3.3 0s2.2 4 3.2 0 2.2-4 3.3 0 2.1 4 3.2 0"/></symbol>
+<symbol id="i-bolt" viewBox="0 0 16 16"><path d="M9 1.5L3.5 9H8l-1 5.5L12.5 7H8z"/></symbol>
+<symbol id="i-gauge" viewBox="0 0 16 16"><path d="M2.2 11.5a6.2 6.2 0 1 1 11.6 0 M8 8.5l3-3 M8 8.5h.01"/></symbol>
+<symbol id="i-cable" viewBox="0 0 16 16"><path d="M3 2.5v3a2 2 0 0 0 2 2h6a2 2 0 0 1 2 2v4 M1.5 2.5h3 M11.5 13.5h3"/></symbol>
+<symbol id="i-tree" viewBox="0 0 16 16"><path d="M6 1.5h4v3H6z M1.5 11.5h4v3h-4z M10.5 11.5h4v3h-4z M8 4.5V8 M3.5 11.5V8h9v3.5"/></symbol>
+<symbol id="i-check" viewBox="0 0 16 16"><path d="M8 1.5a6.5 6.5 0 1 0 0 13 6.5 6.5 0 0 0 0-13z M5 8.2l2.1 2.1L11 6"/></symbol>
+<symbol id="i-design" viewBox="0 0 16 16"><path d="M11.5 2L14 4.5 6.5 12l-3.2.7.7-3.2z M9.5 4L12 6.5"/></symbol>
+<symbol id="i-sim" viewBox="0 0 16 16"><path d="M2 5.5h11 M10.5 3L13 5.5 10.5 8 M14 10.5H3 M5.5 8L3 10.5 5.5 13"/></symbol>
+<symbol id="i-shield" viewBox="0 0 16 16"><path d="M8 1.5l5 2v4c0 3.2-2.1 5.6-5 7-2.9-1.4-5-3.8-5-7v-4z M5.8 8l1.6 1.6 3-3.1"/></symbol>
+<symbol id="i-flask" viewBox="0 0 16 16"><path d="M6 1.5h4 M6.5 1.5v4L2.8 12.3a1.5 1.5 0 0 0 1.3 2.2h7.8a1.5 1.5 0 0 0 1.3-2.2L9.5 5.5v-4 M4.5 10h7"/></symbol>
+<symbol id="i-wifi" viewBox="0 0 16 16"><path d="M1.5 6a9.5 9.5 0 0 1 13 0 M3.8 8.4a6.2 6.2 0 0 1 8.4 0 M6 10.7a3 3 0 0 1 4 0 M8 13h.01"/></symbol>
+<symbol id="i-cursor" viewBox="0 0 16 16"><path d="M3.5 2l9 4.3-3.9 1.4-1.4 3.9z"/></symbol>
+<symbol id="i-warn" viewBox="0 0 16 16"><path d="M8 2L1.5 13.5h13z M8 6.5V10 M8 12h.01"/></symbol>
+<symbol id="i-switch" viewBox="0 0 16 16"><path d="M2.5 4h11a1 1 0 0 1 1 1v1.5a1 1 0 0 1-1 1h-11a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1z M2.5 9.5h11a1 1 0 0 1 1 1V12a1 1 0 0 1-1 1h-11a1 1 0 0 1-1-1v-1.5a1 1 0 0 1 1-1z M4.5 5.8h.01 M4.5 11.3h.01"/></symbol>
+<symbol id="i-camera" viewBox="0 0 16 16"><path d="M2.5 4.5h7a1 1 0 0 1 1 1v5a1 1 0 0 1-1 1h-7a1 1 0 0 1-1-1v-5a1 1 0 0 1 1-1z M10.5 7l4-2v6l-4-2"/></symbol>
+<symbol id="i-phone" viewBox="0 0 16 16"><path d="M5 1.5h6a1 1 0 0 1 1 1v11a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1v-11a1 1 0 0 1 1-1z M7 12.5h2"/></symbol>
+<symbol id="i-ruler" viewBox="0 0 16 16"><path d="M1.5 10.5l9-9 4 4-9 9z M4.5 8.5l1.2 1.2 M6.5 6.5l1.8 1.8 M8.5 4.5l1.2 1.2"/></symbol>
+<symbol id="i-wall" viewBox="0 0 16 16"><path d="M1.5 3.5h13v9h-13z M1.5 8h13 M6 3.5V8 M10 8v4.5"/></symbol>
+<symbol id="i-text" viewBox="0 0 16 16"><path d="M3 3.5h10 M8 3.5V13 M6 13h4"/></symbol>
+<symbol id="i-signal" viewBox="0 0 16 16"><path d="M3 13v-2 M6.3 13V9 M9.7 13V6 M13 13V3"/></symbol>
+<symbol id="i-plus" viewBox="0 0 16 16"><path d="M8 3v10 M3 8h10"/></symbol>
+<symbol id="i-sync" viewBox="0 0 16 16"><path d="M2.5 8A5.5 5.5 0 0 1 12 4.2L13.5 6 M13.5 2.5V6H10 M13.5 8A5.5 5.5 0 0 1 4 11.8L2.5 10 M2.5 13.5V10H6"/></symbol>
+<symbol id="i-chevron" viewBox="0 0 16 16"><path d="M4.5 6.5L8 10l3.5-3.5"/></symbol>
+<symbol id="i-doc" viewBox="0 0 16 16"><path d="M9 1.5H4.5a1 1 0 0 0-1 1v11a1 1 0 0 0 1 1h7a1 1 0 0 0 1-1V5z M9 1.5V5h3.5 M6 8.5h4 M6 11h4"/></symbol>
+<symbol id="i-grid" viewBox="0 0 16 16"><path d="M2 2h5v5H2z M9 2h5v5H9z M2 9h5v5H2z M9 9h5v5H9z"/></symbol>
+</svg>
 <div class="shell">
   <!-- ROW 1 — Meta & actions: branding, file ops, undo/redo, commit actions, help -->
   <div class="topbar topbar-meta">
     <span class="brand" id="brand-lbl">Plexus Planner</span>
     <div class="mode-switch" role="tablist" aria-label="Workspace mode">
-      <button class="mode-tab active" data-action="set-uimode" data-arg="design" data-uimode-btn="design" title="Plan the network">◳ Design</button>
-      <button class="mode-tab" data-action="set-uimode" data-arg="simulate" data-uimode-btn="simulate" title="Practice on a simulated copy — no real devices">⇄ Simulate</button>
-      <button class="mode-tab mode-tab-operate" data-action="set-uimode" data-arg="operate" data-uimode-btn="operate" id="mode-operate" title="Connect to real devices (desktop)" style="display:none">⚡ Operate</button>
+      <button class="mode-tab active" data-action="set-uimode" data-arg="design" data-uimode-btn="design" title="Plan the network"><svg class="ic" aria-hidden="true"><use href="#i-design"/></svg><span>Design</span></button>
+      <button class="mode-tab" data-action="set-uimode" data-arg="simulate" data-uimode-btn="simulate" title="Practice on a simulated copy — no real devices"><svg class="ic" aria-hidden="true"><use href="#i-sim"/></svg><span>Simulate</span></button>
+      <button class="mode-tab mode-tab-operate" data-action="set-uimode" data-arg="operate" data-uimode-btn="operate" id="mode-operate" title="Connect to real devices (desktop)" style="display:none"><svg class="ic" aria-hidden="true"><use href="#i-bolt"/></svg><span>Operate</span></button>
     </div>
-    <div class="tsep"></div>
-    <button class="btn" data-action="new-project" title="Start a fresh project">✦ New</button>
-    <button class="btn" data-action="open-upload">↑ Upload Map</button>
-    <input type="file" id="file-up" accept="image/*,.svg,.pdf,application/pdf" style="display:none" data-change-action="upload-map"/>
-    <span class="toolgroup" data-modes="design">
-    <button class="btn" data-action="open-svg" title="Import walls from an SVG floor-plan">↺ Walls SVG</button>
-    <input type="file" id="svg-up" accept=".svg,image/svg+xml" style="display:none" data-change-action="import-svg-walls"/>
-    <button class="btn" data-action="open-dxf" title="Import walls from a DXF (LINE/POLYLINE)">↺ DXF</button>
-    <input type="file" id="dxf-up" accept=".dxf" style="display:none" data-change-action="import-dxf-walls"/>
-    <button class="btn" data-action="detect-walls" title="Auto-detect walls from the floor-plan image (Hough transform)">▦ Detect walls</button>
-    <button class="btn" data-action="open-esx" title="Import an Ekahau project (.esx)">⇊ ESX</button>
-    <input type="file" id="esx-up" accept=".esx,.zip" style="display:none" data-change-action="import-esx"/>
-    <button class="btn" data-action="open-survey" title="Import RSSI survey samples from a CSV">↺ Survey CSV</button>
-    <input type="file" id="survey-up" accept=".csv,text/csv" style="display:none" data-change-action="import-survey-csv"/>
+    <span class="toolgroup" data-modes="simulate">
+    <button class="btn" data-action="show-policies" title="State what must / must not be reachable and prove it against the plan"><svg class="ic" aria-hidden="true"><use href="#i-shield"/></svg><span>Policies</span></button>
+    <button class="btn" data-action="show-labs" title="Guided labs, graded by the simulator"><svg class="ic" aria-hidden="true"><use href="#i-flask"/></svg><span>Labs</span></button>
     </span>
-    <button class="btn" data-action="save">💾 Save</button>
-    <button class="btn" data-action="open-load">📂 Load</button>
-    <button class="btn" data-action="share-link" title="Copy a shareable URL of the current project (images not included)">🔗 Share</button>
+    <div class="tsep"></div>
+    <button class="btn btn-icon-only" data-action="new-project" title="Start a fresh project"><svg class="ic" aria-hidden="true"><use href="#i-new"/></svg></button>
+    <button class="btn" data-action="open-upload"><svg class="ic" aria-hidden="true"><use href="#i-image"/></svg><span>Upload Map</span></button>
+    <input type="file" id="file-up" accept="image/*,.svg,.pdf,application/pdf" style="display:none" data-change-action="upload-map"/>
+    <span class="toolgroup" data-modes="design"><span class="dropdown">
+    <button class="btn" data-action="toggle-menu" data-arg="import-menu" title="Import walls, Ekahau projects and survey data"><svg class="ic" aria-hidden="true"><use href="#i-import"/></svg><span>Import</span><svg class="ic" aria-hidden="true"><use href="#i-chevron"/></svg></button>
+    <div class="dropdown-menu" id="import-menu">
+    <button class="btn" data-action="open-svg" title="Import walls from an SVG floor-plan"><span>Walls from SVG…</span></button>
+    <input type="file" id="svg-up" accept=".svg,image/svg+xml" style="display:none" data-change-action="import-svg-walls"/>
+    <button class="btn" data-action="open-dxf" title="Import walls from a DXF (LINE/POLYLINE)"><span>Walls from DXF…</span></button>
+    <input type="file" id="dxf-up" accept=".dxf" style="display:none" data-change-action="import-dxf-walls"/>
+    <button class="btn" data-action="detect-walls" title="Auto-detect walls from the floor-plan image (Hough transform)"><span>Detect walls from the plan</span></button>
+    <button class="btn" data-action="open-esx" title="Import an Ekahau project (.esx)"><span>Ekahau project (.esx)…</span></button>
+    <input type="file" id="esx-up" accept=".esx,.zip" style="display:none" data-change-action="import-esx"/>
+    <button class="btn" data-action="open-survey" title="Import RSSI survey samples from a CSV"><span>Survey CSV…</span></button>
+    <input type="file" id="survey-up" accept=".csv,text/csv" style="display:none" data-change-action="import-survey-csv"/>
+    </div>
+    </span></span>
+    <button class="btn btn-icon-only" data-action="save" title="Save" aria-label="Save"><svg class="ic" aria-hidden="true"><use href="#i-save"/></svg></button>
+    <button class="btn btn-icon-only" data-action="open-load" title="Open project" aria-label="Open project"><svg class="ic" aria-hidden="true"><use href="#i-folder"/></svg></button>
+    <button class="btn btn-icon-only" data-action="share-link" title="Copy a shareable URL of the current project (images not included)"><svg class="ic" aria-hidden="true"><use href="#i-link"/></svg></button>
     <input type="file" id="load-up" accept=".json" style="display:none" data-change-action="load-project"/>
     <div class="tsep"></div>
-    <button class="btn btn-ghost" id="btn-undo" data-action="undo" title="Undo (Ctrl+Z)" disabled>↩ Undo</button>
-    <button class="btn btn-ghost" id="btn-redo" data-action="redo" title="Redo (Ctrl+Y)" disabled>↪ Redo</button>
+    <button class="btn btn-icon-only" id="btn-undo" data-action="undo" title="Undo (Ctrl+Z)" disabled><svg class="ic" aria-hidden="true"><use href="#i-undo"/></svg></button>
+    <button class="btn btn-icon-only" id="btn-redo" data-action="redo" title="Redo (Ctrl+Y)" disabled><svg class="ic" aria-hidden="true"><use href="#i-redo"/></svg></button>
 
     <div class="topbar-spacer"></div>
 
     <div class="status"><span class="sdot"></span><span id="ap-cnt">0</span> APs · <span id="fl-cnt">0</span> floors</div>
     <div class="tsep"></div>
-    <button class="btn btn-primary" id="btn-pres" data-action="toggle-present" title="Presentation mode (P)">▶ Present</button>
+    <button class="btn btn-primary" id="btn-pres" data-action="toggle-present" title="Presentation mode (P)"><svg class="ic" aria-hidden="true"><use href="#i-play"/></svg><span>Present</span></button>
     <span class="toolgroup" data-modes="design"><span class="dropdown">
-    <button class="btn btn-primary" data-action="toggle-menu" data-arg="export-menu" title="Exports, reports & deliverables">↓ Export ▾</button>
+    <button class="btn btn-primary" data-action="toggle-menu" data-arg="export-menu" title="Exports, reports & deliverables"><svg class="ic" aria-hidden="true"><use href="#i-export"/></svg><span>Export</span><svg class="ic" aria-hidden="true"><use href="#i-chevron"/></svg></button>
     <div class="dropdown-menu" id="export-menu">
-      <button class="btn" data-action="export" title="Export HTML report">↓ HTML report</button>
-      <button class="btn" data-action="pdf" title="Export PDF">⎙ PDF</button>
-      <button class="btn" data-action="export-bom" title="Export Bill of Materials (CSV)">≡ Bill of Materials</button>
-      <button class="btn" data-action="export-cables" title="Export cable schedule (CSV)">∼ Cable schedule</button>
-      <button class="btn" data-action="install-sheets" title="Per-AP install sheets PDF">⎙ Install sheets</button>
-      <button class="btn" data-action="show-inventory" title="As-built inventory, rollout status & organization tools">▤ Inventory</button>
-      <button class="btn" data-action="handover-pack" title="Zip the HTML summary + every CSV deliverable">⇩ Handover pack</button>
-      <button class="btn" data-action="export-esx" title="Export the project as an Ekahau .esx (best-effort)">⇈ Ekahau .esx</button>
+      <button class="btn" data-action="export" title="Export HTML report"><span>HTML report</span></button>
+      <button class="btn" data-action="pdf" title="Technical audit report (IPs, ports, VLANs) — for engineers"><span>Technical report (PDF)</span></button>
+      <button class="btn" data-action="client-report" title="Client report: coverage, equipment and sign-off — no IPs, ports or credentials"><span>Client report</span></button>
+      <button class="btn" data-action="export-bom" title="Export Bill of Materials (CSV)"><span>Bill of materials (CSV)</span></button>
+      <button class="btn" data-action="export-cables" title="Export cable schedule (CSV)"><span>Cable schedule (CSV)</span></button>
+      <button class="btn" data-action="install-sheets" title="Per-AP install sheets PDF"><span>Install sheets</span></button>
+      <button class="btn" data-action="show-inventory" title="As-built inventory, rollout status & organization tools"><span>Inventory…</span></button>
+      <button class="btn" data-action="handover-pack" title="Zip the HTML summary + every CSV deliverable"><span>Handover pack (zip)</span></button>
+      <button class="btn" data-action="export-esx" title="Export the project as an Ekahau .esx (best-effort)"><span>Ekahau .esx</span></button>
+      <button class="btn" data-action="device-config" title="Generate a RouterOS config for a switch from the plan, and check a real device export against it"><span>Device config & drift…</span></button>
     </div>
     </span></span>
-    <button class="btn" id="btn-unifi" data-action="show-unifi" title="Pull as-built data from / push the channel plan to a UniFi controller (desktop app)" style="display:none">⇅ UniFi</button>
-    <button class="btn btn-icon-only" id="btn-theme" data-action="toggle-theme" title="Toggle dark mode" aria-label="Toggle theme">☾</button>
-    <button class="btn btn-icon-only" data-action="show-revisions" title="Project revisions" aria-label="Revisions">⟲</button>
-    <button class="btn btn-icon-only" data-action="show-plugins" title="Custom vendor catalogs" aria-label="Plugins">+</button>
-    <button class="btn btn-icon-only" data-action="show-settings" title="Project settings" aria-label="Settings">⚙</button>
-    <button class="btn btn-icon-only" data-action="show-help" title="Keyboard shortcuts (?)" aria-label="Help">?</button>
+    <button class="btn" id="btn-unifi" data-action="show-unifi" title="Pull as-built data from / push the channel plan to a UniFi controller (desktop app)" style="display:none"><svg class="ic" aria-hidden="true"><use href="#i-sync"/></svg><span>UniFi</span></button>
+    <button class="btn btn-icon-only" id="btn-theme" data-action="toggle-theme" title="Toggle dark mode" aria-label="Toggle theme"><svg class="ic" aria-hidden="true"><use href="#i-moon"/></svg></button>
+    <button class="btn btn-icon-only" data-action="show-revisions" title="Project revisions" aria-label="Revisions"><svg class="ic" aria-hidden="true"><use href="#i-clock"/></svg></button>
+    <button class="btn btn-icon-only" data-action="show-plugins" title="Custom vendor catalogs" aria-label="Plugins"><svg class="ic" aria-hidden="true"><use href="#i-box"/></svg></button>
+    <button class="btn btn-icon-only" data-action="show-settings" title="Project settings" aria-label="Settings"><svg class="ic" aria-hidden="true"><use href="#i-sliders"/></svg></button>
+    <button class="btn btn-icon-only" data-action="show-help" title="Keyboard shortcuts (?)" aria-label="Help"><svg class="ic" aria-hidden="true"><use href="#i-help"/></svg></button>
   </div>
 
   <!-- ROW 2 — Workspace tools: modes (icon-only strip), view toggles, zoom, scale -->
   <div class="topbar topbar-tools">
-    <!-- Mode toolstrip (icon-only) -->
-    <div class="toolstrip" role="toolbar" aria-label="Drawing tools">
-      <button class="btn-tool active" id="btn-add" data-action="set-mode" data-arg="add" data-modes="design" title="Add AP (A)" aria-label="Add AP">+</button>
-      <button class="btn-tool" id="btn-sel" data-action="set-mode" data-arg="sel" title="Select (S)" aria-label="Select">↖</button>
-      <button class="btn-tool" id="btn-dz" data-action="set-mode" data-arg="dz" data-modes="design" title="Dead Zone (D)" aria-label="Dead Zone">⚠</button>
-      <button class="btn-tool" id="btn-sw" data-action="set-mode" data-arg="sw" data-modes="design simulate operate" title="Switch/Router (W)" aria-label="Switch / Router">⊞</button>
-      <button class="btn-tool" id="btn-cam" data-action="set-mode" data-arg="cam" data-modes="design" title="Camera (C)" aria-label="Camera">◉</button>
-      <button class="btn-tool" id="btn-client" data-action="set-mode" data-arg="client" data-modes="simulate" title="Wireless client (K)" aria-label="Wireless client">📱</button>
-      <button class="btn-tool" id="btn-ruler" data-action="set-mode" data-arg="ruler" data-modes="design" title="Ruler (R)" aria-label="Ruler">↔</button>
-      <button class="btn-tool" id="btn-wall" data-action="set-mode" data-arg="wall" data-modes="design" title="Wall (L)" aria-label="Wall">▌</button>
-      <button class="btn-tool" id="btn-anno" data-action="set-mode" data-arg="anno" data-modes="design" title="Annotation (N)" aria-label="Annotation">✎</button>
-      <button class="btn-tool" id="btn-sim" data-action="set-mode" data-arg="sim" data-modes="simulate" title="Packet simulation (M)" aria-label="Packet simulation">⇄</button>
-      <button class="btn-tool" id="btn-survey" data-action="set-mode" data-arg="survey" data-modes="design" title="Live WiFi survey — click the map where you stand (desktop app)" aria-label="Live survey" style="display:none">📶</button>
-    </div>
-    <div class="anno-sub-bar" id="anno-sub-bar" style="display:none" role="group" aria-label="Annotation type">
-      <button class="btn-tool active" data-action="anno-sub" data-arg="text" data-anno-sub="text" title="Text label" aria-label="Text label">T</button>
-      <button class="btn-tool" data-action="anno-sub" data-arg="arrow" data-anno-sub="arrow" title="Arrow" aria-label="Arrow">→</button>
-      <button class="btn-tool" data-action="anno-sub" data-arg="dim" data-anno-sub="dim" title="Dimension line" aria-label="Dimension line">↔</button>
-    </div>
     <span class="toolgroup" data-modes="design">
-    <div class="tsep"></div>
 
     <!-- View toggles → collapsed into a Layers menu -->
     <span class="dropdown">
-    <button class="btn" data-action="toggle-menu" data-arg="layers-menu" title="Map layers">▤ Layers ▾</button>
+    <button class="btn" data-action="toggle-menu" data-arg="layers-menu" title="Map layers"><svg class="ic" aria-hidden="true"><use href="#i-layers"/></svg><span>Layers</span><svg class="ic" aria-hidden="true"><use href="#i-chevron"/></svg></button>
     <div class="dropdown-menu" id="layers-menu">
     <button class="toggle active" id="btn-cov" data-action="toggle-coverage" title="Show/hide coverage rings (V)">
       <span class="toggle-lbl">Coverage</span>
@@ -134,25 +170,25 @@
     </div>
     </span>
     <div class="tsep"></div>
-    <button class="btn" data-action="auto-place" title="Auto-place APs to reach target coverage">✦ Auto-place</button>
-    <button class="btn" data-action="auto-channel" title="Auto-assign channels (graph coloring)">⌁ Auto-channel</button>
-    <button class="btn" data-action="auto-power" title="Auto-tune per-AP Tx power">⌁ Auto-power</button>
-    <button class="btn" data-action="show-poe" title="PoE budget summary">⚡ PoE</button>
-    <button class="btn" data-action="auto-assign-sw" title="Assign APs/cameras to nearest switch">⚯ Auto-cable</button>
-    <button class="btn" data-action="show-topology" title="Switch uplink tree & port usage">⊟ Topology</button>
-    <button class="btn" data-action="show-validation" title="Validate network wiring & PoE">✓ Validate</button>
+    <button class="btn" data-action="auto-place" title="Auto-place APs to reach target coverage"><svg class="ic" aria-hidden="true"><use href="#i-sparkles"/></svg><span>Auto-place</span></button>
+    <button class="btn" data-action="auto-channel" title="Auto-assign channels (graph coloring)"><svg class="ic" aria-hidden="true"><use href="#i-wave"/></svg><span>Auto-channel</span></button>
+    <button class="btn" data-action="auto-power" title="Auto-tune per-AP Tx power"><svg class="ic" aria-hidden="true"><use href="#i-gauge"/></svg><span>Auto-power</span></button>
+    <button class="btn" data-action="show-poe" title="PoE budget summary"><svg class="ic" aria-hidden="true"><use href="#i-bolt"/></svg><span>PoE</span></button>
+    <button class="btn" data-action="auto-assign-sw" title="Assign APs/cameras to nearest switch"><svg class="ic" aria-hidden="true"><use href="#i-cable"/></svg><span>Auto-cable</span></button>
+    <button class="btn" data-action="show-topology" title="Switch uplink tree & port usage"><svg class="ic" aria-hidden="true"><use href="#i-tree"/></svg><span>Topology</span></button>
+    <button class="btn" data-action="show-validation" title="Validate network wiring & PoE"><svg class="ic" aria-hidden="true"><use href="#i-check"/></svg><span>Validate</span></button>
     </span>
 
     <div class="topbar-spacer"></div>
 
     <!-- Scale (moved up from floor row) -->
     <div class="scale-cluster">
-      <span class="scale-lbl">SCALE</span>
-      <input id="scale-m" type="number" min="1" value="100" class="scale-in" data-input-action="update-scale"/>
-      <span class="scale-lbl">m/100px</span>
-      <button class="btn btn-ghost" data-action="calibrate-scale" title="Set scale by measuring a known dimension on the plan">⇲ Calibrate</button>
+      <span class="scale-lbl">Scale</span>
+      <input id="scale-m" type="number" min="0.01" step="any" value="100" class="scale-in" data-input-action="update-scale"/>
+      <span class="scale-lbl">m / 100 px</span>
+      <button class="btn btn-ghost" data-action="calibrate-scale" title="Set scale by measuring a known dimension on the plan"><svg class="ic" aria-hidden="true"><use href="#i-ruler"/></svg><span>Calibrate</span></button>
       <div class="tsep"></div>
-      <span class="scale-lbl">COV</span>
+      <span class="scale-lbl">Coverage</span>
       <span id="cov-pct" class="cov-val">—</span>
     </div>
     <div class="tsep"></div>
@@ -162,14 +198,8 @@
       <button class="zbtn" data-action="zoom-out" title="Zoom out (−)">−</button>
       <span class="zval" id="zval">100%</span>
       <button class="zbtn" data-action="zoom-in" title="Zoom in (+)">+</button>
-      <button class="zbtn zbtn-fit" data-action="zoom-fit" title="Fit to screen (0)">FIT</button>
+      <button class="zbtn zbtn-fit" data-action="zoom-fit" title="Fit to screen (0)">Fit</button>
     </div>
-  </div>
-
-  <!-- ROW 3 — Floor tabs only (scale moved to row 2) -->
-  <div class="topbar floor-row">
-    <div class="floor-tabs" id="floor-tabs"></div>
-    <button class="ftab-add" data-action="add-floor" title="Add floor">+</button>
   </div>
 
   <div class="workspace">
@@ -198,9 +228,36 @@
     <div class="map-area" id="map-area">
       <div id="empty-state">
         <div class="es-line">Upload a floor plan to begin</div>
-        <div class="es-sub">Click <strong>↑ Upload Map</strong> above · Press <kbd>?</kbd> for shortcuts</div>
-        <button class="btn btn-primary es-sample" data-action="load-sample" title="Open a ready-made office plan with APs, cameras, walls and a switch">▶ Load sample project</button>
+        <div class="es-sub">Click <strong>Upload Map</strong> in the toolbar · Press <kbd>?</kbd> for shortcuts</div>
+        <button class="btn btn-primary es-sample" data-action="load-sample" title="Open a ready-made office plan with APs, cameras, walls and a switch"><svg class="ic" aria-hidden="true"><use href="#i-play"/></svg><span>Load sample project</span></button>
+        <button class="btn es-sample es-template" data-action="new-from-template" title="Start from a site template: VLAN plan, policies and naming for a villa, hotel or restaurant"><svg class="ic" aria-hidden="true"><use href="#i-grid"/></svg><span>New from template…</span></button>
       </div>
+      <!-- Floating over the map: drawing tools (left) and floor tabs (top). -->
+      <div class="tool-palette" id="tool-palette">
+    <div class="toolstrip" role="toolbar" aria-label="Drawing tools">
+      <button class="btn-tool active" id="btn-add" data-action="set-mode" data-arg="add" data-modes="design" title="Add AP (A)" aria-label="Add AP"><svg class="ic" aria-hidden="true"><use href="#i-wifi"/></svg></button>
+      <button class="btn-tool" id="btn-sel" data-action="set-mode" data-arg="sel" title="Select (S)" aria-label="Select"><svg class="ic" aria-hidden="true"><use href="#i-cursor"/></svg></button>
+      <button class="btn-tool" id="btn-dz" data-action="set-mode" data-arg="dz" data-modes="design" title="Dead Zone (D)" aria-label="Dead Zone"><svg class="ic" aria-hidden="true"><use href="#i-warn"/></svg></button>
+      <button class="btn-tool" id="btn-sw" data-action="set-mode" data-arg="sw" data-modes="design simulate operate" title="Switch/Router (W)" aria-label="Switch / Router"><svg class="ic" aria-hidden="true"><use href="#i-switch"/></svg></button>
+      <button class="btn-tool" id="btn-cam" data-action="set-mode" data-arg="cam" data-modes="design" title="Camera (C)" aria-label="Camera"><svg class="ic" aria-hidden="true"><use href="#i-camera"/></svg></button>
+      <button class="btn-tool" id="btn-client" data-action="set-mode" data-arg="client" data-modes="simulate" title="Wireless client (K)" aria-label="Wireless client"><svg class="ic" aria-hidden="true"><use href="#i-phone"/></svg></button>
+      <button class="btn-tool" id="btn-ruler" data-action="set-mode" data-arg="ruler" data-modes="design" title="Ruler (R)" aria-label="Ruler"><svg class="ic" aria-hidden="true"><use href="#i-ruler"/></svg></button>
+      <button class="btn-tool" id="btn-wall" data-action="set-mode" data-arg="wall" data-modes="design" title="Wall (L)" aria-label="Wall"><svg class="ic" aria-hidden="true"><use href="#i-wall"/></svg></button>
+      <button class="btn-tool" id="btn-anno" data-action="set-mode" data-arg="anno" data-modes="design" title="Annotation (N)" aria-label="Annotation"><svg class="ic" aria-hidden="true"><use href="#i-text"/></svg></button>
+      <button class="btn-tool" id="btn-sim" data-action="set-mode" data-arg="sim" data-modes="simulate" title="Packet simulation (M)" aria-label="Packet simulation"><svg class="ic" aria-hidden="true"><use href="#i-sim"/></svg></button>
+      <button class="btn-tool" id="btn-survey" data-action="set-mode" data-arg="survey" data-modes="design" title="Live WiFi survey — click the map where you stand (desktop app)" aria-label="Live survey" style="display:none"><svg class="ic" aria-hidden="true"><use href="#i-signal"/></svg></button>
+    </div>
+    <div class="anno-sub-bar" id="anno-sub-bar" style="display:none" role="group" aria-label="Annotation type">
+      <button class="btn-tool active" data-action="anno-sub" data-arg="text" data-anno-sub="text" title="Text label" aria-label="Text label">T</button>
+      <button class="btn-tool" data-action="anno-sub" data-arg="arrow" data-anno-sub="arrow" title="Arrow" aria-label="Arrow">→</button>
+      <button class="btn-tool" data-action="anno-sub" data-arg="dim" data-anno-sub="dim" title="Dimension line" aria-label="Dimension line">↔</button>
+    </div>
+      </div>
+  <div class="topbar floor-row">
+    <div class="floor-tabs" id="floor-tabs"></div>
+    <button class="ftab-add" data-action="add-floor" title="Add floor"><svg class="ic" aria-hidden="true"><use href="#i-plus"/></svg></button>
+  </div>
+
       <div class="hint-bar" id="hint-bar" role="status" aria-live="polite">Click map to place an AP</div>
       <div class="sim-panel" id="sim-panel" style="display:none">
         <div class="sim-panel-head">Packet Simulation</div>

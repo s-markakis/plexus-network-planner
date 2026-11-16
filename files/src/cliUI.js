@@ -8,11 +8,11 @@
 // Everything the engine needs is pure and tested elsewhere; the only logic here
 // is terminal plumbing plus pingSummary (pure, tested).
 
-import { newConfig, makeSession } from './cli.js';
+import { newConfig, makeSession, complete } from './cli.js';
 import { compileTopology } from './simCompile.js';
 import { ospfNeighbors } from './ospf.js';
 import { resolve } from './dns.js';
-import { ping } from './sim.js';
+import { ping, runtimeState } from './sim.js';
 
 export function guessVendor(model = '') {
   const m = String(model).toLowerCase();
@@ -87,9 +87,21 @@ export function mountCliConsole({ root, getDevice, getProject, onConfigChange })
     out.scrollTop = out.scrollHeight;
   }
 
+  // The simulated network behind this console. It is rebuilt only when the plan
+  // changes, so what the devices learn (ARP, MAC tables, connections, NAT) stays
+  // put between commands — `ping` then `show arp` shows the entry, like real gear.
+  let live = null; // { sig, compiled }
+  function liveNet() {
+    const project = getProject();
+    let sig;
+    try { sig = JSON.stringify(project, (k, v) => (k.startsWith('_') || k === 'img' ? undefined : v)); } catch { sig = null; }
+    if (!live || sig == null || live.sig !== sig) live = { sig, compiled: compileTopology(project) };
+    return live.compiled;
+  }
+
   function execPing(target) {
     let compiled;
-    try { compiled = compileTopology(getProject()); } catch { return null; }
+    try { compiled = liveNet(); } catch { return null; }
     const ip = resolve(compiled.dns, target); // resolves an IP or a device name
     if (!ip) return { unresolved: true };
     const rid = `r:${dev.id}`;
@@ -99,10 +111,36 @@ export function mountCliConsole({ root, getDevice, getProject, onConfigChange })
   }
 
   function execShow(what) {
-    if (what !== 'ospf-neighbor') return ['% unsupported show'];
     let compiled;
-    try { compiled = compileTopology(getProject()); } catch { return ['% simulation error']; }
+    try { compiled = liveNet(); } catch { return ['% simulation error']; }
     const rid = `r:${dev.id}`;
+    const l3 = runtimeState(compiled.net, rid);
+    if (what === 'arp') {
+      if (!l3) return ['% this device has no layer-3 interface'];
+      return l3.arp.length ? ['Address          Hardware Addr', ...l3.arp.map((a) => `${a.ip.padEnd(16)} ${a.mac}`)] : ['% ARP table is empty (nothing has been resolved yet — try a ping)'];
+    }
+    if (what === 'mac') {
+      const l2 = runtimeState(compiled.net, `sw:${dev.id}`);
+      if (!l2 || !l2.mac.length) return ['% MAC address table is empty (no frames seen yet — try a ping)'];
+      return ['Vlan  Mac Address        Port', ...l2.mac.sort((a, b) => a.vlan - b.vlan).map((m) => `${String(m.vlan).padEnd(5)} ${m.mac.padEnd(18)} ${m.port}`)];
+    }
+    if (what === 'nat') {
+      if (!l3 || !l3.nat.length) return ['% no active NAT translations'];
+      return ['Inside local     Inside global', ...l3.nat.map((n) => `${n.inside.padEnd(16)} ${n.outside}`)];
+    }
+    if (what === 'conns') {
+      if (!l3 || !l3.conns.length) return ['% connection table is empty'];
+      return ['Proto  Source           Destination', ...l3.conns.map((c) => `${String(c.proto).padEnd(6)} ${c.src.padEnd(16)} ${c.dst}${c.dport != null ? ':' + c.dport : ''}`)];
+    }
+    if (what === 'stp') {
+      const sid = `sw:${dev.id}`;
+      const mine = (compiled.stp.ports || []).filter((p) => p.dev === sid);
+      const root = compiled.stp.roots.includes(sid);
+      const head = root ? 'This bridge is the root' : `Root bridge: ${compiled.stp.roots.map((r) => (compiled.meta.get(r) || {}).name || r).join(', ') || '—'}`;
+      if (!mine.length) return [head, '% no inter-switch links on this device'];
+      return [head, 'Port             Role         State', ...mine.map((p) => `${p.iface.padEnd(16)} ${p.role.padEnd(12)} ${p.role === 'blocked' ? 'discarding' : 'forwarding'}`)];
+    }
+    if (what !== 'ospf-neighbor') return ['% unsupported show'];
     if (!compiled.ospfRouters || !compiled.ospfRouters.includes(rid)) return ['% OSPF is not running on this device'];
     const peers = ospfNeighbors(compiled.net, rid).filter((n) => compiled.ospfRouters.includes(n.id));
     if (!peers.length) return ['% no OSPF neighbors'];
@@ -126,6 +164,11 @@ export function mountCliConsole({ root, getDevice, getProject, onConfigChange })
       if (line.trim()) { history.push(line); hix = history.length; }
       input.value = '';
       submit(line);
+    } else if (e.key === 'Tab') {
+      e.preventDefault();
+      const r = complete(session, input.value);
+      input.value = r.text;
+      if (r.options.length) print([`${session.prompt()} ${r.text}`, ...r.options.map((o) => `  ${o}`)], 'cli-std');
     } else if (e.key === 'ArrowUp') {
       if (hix > 0) { hix--; input.value = history[hix]; e.preventDefault(); }
     } else if (e.key === 'ArrowDown') {
@@ -143,7 +186,7 @@ export function mountCliConsole({ root, getDevice, getProject, onConfigChange })
     if (typeof onConfigChange === 'function') onConfigChange();
   });
 
-  print([`${dev.name || dev.id} console — type commands (↑/↓ history). "ping <ip>" simulates against the plan.`], 'cli-std');
+  print([`${dev.name || dev.id} console — type commands (↑/↓ history, Tab completes, ? lists commands). "ping <ip>" simulates against the plan.`], 'cli-std');
   updatePrompt();
   return { el: root, focus: () => input.focus(), session: () => session };
 }

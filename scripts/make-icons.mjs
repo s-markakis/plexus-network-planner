@@ -1,200 +1,59 @@
-// Generates the desktop-app icons into electron/resources/:
+// Generates the desktop-app icons into electron/resources/ from the vector
+// master, electron/resources/icon.svg (stacked floor plans with a signal on the
+// top one, on a dark macOS-style tile):
 //   icon.png  (1024²)  — Linux + electron-builder source
 //   icon.icns          — macOS
-//   icon.ico  (256²)   — Windows
+//   icon.ico  (256²…)  — Windows
 //
-// The 1024² master is drawn here with zero dependencies (a warm-black squircle
-// with the cream Plexus node-mesh mark). .icns/.ico are derived via `sips`/`iconutil`,
-// so run this once on a Mac and commit the results — CI just consumes them.
+// The SVG is rasterised with the Chromium that Playwright already installs for
+// the tests, so there is no extra dependency. .icns is derived with
+// `sips`/`iconutil`, so run this on a Mac and commit the results — CI just
+// consumes them.
 //
 //   node scripts/make-icons.mjs
 
-import { deflateSync } from 'node:zlib';
-import { writeFileSync, mkdirSync, rmSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, rmSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { chromium } from '@playwright/test';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const OUT = join(__dirname, '..', 'electron', 'resources');
 mkdirSync(OUT, { recursive: true });
 
-const W = 1024;
-const M = 84;            // outer margin
-const RR = 190;          // corner radius
-// Plexus palette: a warm-black tile with a cream node-mesh mark — a network of
-// interconnected nodes — matching the app's dark-theme chrome
-// (--bg #14140e, --ink #efece5).
-const MARK = [239, 236, 229];   // cream #efece5
-const BG_TOP = [30, 30, 24];    // warm near-black, subtle top→bottom gradient
-const BG_BOT = [12, 12, 9];
-// Node-mesh geometry (in the 1024² master): a centre node fully connected to a
-// triangle of three outer nodes — a small "plexus".
-const NODES = [
-  [512, 512],   // centre
-  [512, 300],   // top
-  [336, 660],   // bottom-left
-  [688, 660],   // bottom-right
-];
-const EDGES = [[0,1],[0,2],[0,3],[1,2],[1,3],[2,3]];  // full mesh
-const NODE_R = 60;              // node disc radius
-const EDGE_HALF = 17;           // half the connecting-line width
-// Subtle cream hairline frame, echoing the app's 1px panel borders.
-const FRAME_M = 150, FRAME_RR = 120, FRAME_W = 4, FRAME_ALPHA = 28;
+const svg = readFileSync(join(OUT, 'icon.svg'), 'utf8');
+const ICO_SIZES = [256, 128, 64, 48, 32, 24, 16];
 
-const lerp = (a, b, t) => a + (b - a) * t;
-
-// Signed distance to a rounded square centred in the canvas (<0 inside).
-function sdRoundRect(px, py, margin, rr) {
-  const hx = (W - 2 * margin) / 2, hy = (W - 2 * margin) / 2;
-  const dx = Math.abs(px - W / 2) - (hx - rr);
-  const dy = Math.abs(py - W / 2) - (hy - rr);
-  const outside = Math.hypot(Math.max(dx, 0), Math.max(dy, 0));
-  const inside = Math.min(Math.max(dx, dy), 0);
-  return outside + inside - rr;
-}
-
-// Distance from a point to a line segment (for the mesh edges).
-function distToSeg(px, py, ax, ay, bx, by) {
-  const dx = bx - ax, dy = by - ay;
-  const t = Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / (dx * dx + dy * dy)));
-  return Math.hypot(px - (ax + t * dx), py - (ay + t * dy));
-}
-
-// Is the point on the node-mesh (a disc at any node, or on any connecting edge)?
-function onMesh(px, py) {
-  for (const [x, y] of NODES) if (Math.hypot(px - x, py - y) <= NODE_R) return true;
-  for (const [a, b] of EDGES) {
-    if (distToSeg(px, py, NODES[a][0], NODES[a][1], NODES[b][0], NODES[b][1]) <= EDGE_HALF) return true;
-  }
-  return false;
-}
-
-function colorAt(px, py) {
-  if (sdRoundRect(px, py, M, RR) >= 0) return [0, 0, 0, 0];
-  if (onMesh(px, py)) return [MARK[0], MARK[1], MARK[2], 255];
-  const t = (py - M) / (W - 2 * M);
-  const bg = [
-    Math.round(lerp(BG_TOP[0], BG_BOT[0], t)),
-    Math.round(lerp(BG_TOP[1], BG_BOT[1], t)),
-    Math.round(lerp(BG_TOP[2], BG_BOT[2], t)),
-  ];
-  // Composite the faint hairline frame over the background.
-  if (Math.abs(sdRoundRect(px, py, FRAME_M, FRAME_RR)) <= FRAME_W / 2) {
-    const a = FRAME_ALPHA / 255;
-    return [
-      Math.round(bg[0] + (MARK[0] - bg[0]) * a),
-      Math.round(bg[1] + (MARK[1] - bg[1]) * a),
-      Math.round(bg[2] + (MARK[2] - bg[2]) * a),
-      255,
-    ];
-  }
-  return [bg[0], bg[1], bg[2], 255];
-}
-
-// Render with 3×3 supersampling for clean edges.
-function render(size) {
-  const buf = Buffer.alloc(size * size * 4);
-  const SS = 3, scale = W / size;
-  for (let y = 0; y < size; y++) {
-    for (let x = 0; x < size; x++) {
-      let r = 0, g = 0, b = 0, a = 0;
-      for (let sy = 0; sy < SS; sy++) {
-        for (let sx = 0; sx < SS; sx++) {
-          const px = (x + (sx + 0.5) / SS) * scale;
-          const py = (y + (sy + 0.5) / SS) * scale;
-          const c = colorAt(px, py);
-          r += c[0] * c[3]; g += c[1] * c[3]; b += c[2] * c[3]; a += c[3];
-        }
-      }
-      const n = SS * SS, o = (y * size + x) * 4;
-      // Premultiplied average → straight RGBA.
-      buf[o]     = a ? Math.round(r / a) : 0;
-      buf[o + 1] = a ? Math.round(g / a) : 0;
-      buf[o + 2] = a ? Math.round(b / a) : 0;
-      buf[o + 3] = Math.round(a / n);
-    }
-  }
+// One PNG per size, each rendered from the vector at its own size (sharper
+// than scaling the 1024 master down), on a transparent background.
+const browser = await chromium.launch();
+async function png(size) {
+  const page = await browser.newPage({ viewport: { width: size, height: size }, deviceScaleFactor: 1 });
+  await page.setContent(`<!doctype html><style>html,body{margin:0;background:transparent}svg{display:block;width:${size}px;height:${size}px}</style>${svg}`);
+  const buf = await page.screenshot({ omitBackground: true, clip: { x: 0, y: 0, width: size, height: size } });
+  await page.close();
   return buf;
 }
 
-// ── Minimal PNG encoder ──────────────────────────────────────────────
-const CRC_TABLE = (() => {
-  const t = new Uint32Array(256);
-  for (let n = 0; n < 256; n++) {
-    let c = n;
-    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
-    t[n] = c >>> 0;
-  }
-  return t;
-})();
-function crc32(buf) {
-  let c = 0xffffffff;
-  for (let i = 0; i < buf.length; i++) c = CRC_TABLE[(c ^ buf[i]) & 0xff] ^ (c >>> 8);
-  return (c ^ 0xffffffff) >>> 0;
-}
-function chunk(type, data) {
-  const len = Buffer.alloc(4); len.writeUInt32BE(data.length, 0);
-  const typeBuf = Buffer.from(type, 'ascii');
-  const body = Buffer.concat([typeBuf, data]);
-  const crc = Buffer.alloc(4); crc.writeUInt32BE(crc32(body), 0);
-  return Buffer.concat([len, body, crc]);
-}
-function encodePng(size, rgba) {
-  const ihdr = Buffer.alloc(13);
-  ihdr.writeUInt32BE(size, 0); ihdr.writeUInt32BE(size, 4);
-  ihdr[8] = 8; ihdr[9] = 6; // 8-bit, RGBA
-  // Filter byte 0 (none) per scanline.
-  const stride = size * 4;
-  const raw = Buffer.alloc((stride + 1) * size);
-  for (let y = 0; y < size; y++) {
-    raw[y * (stride + 1)] = 0;
-    rgba.copy(raw, y * (stride + 1) + 1, y * stride, (y + 1) * stride);
-  }
-  return Buffer.concat([
-    Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
-    chunk('IHDR', ihdr),
-    chunk('IDAT', deflateSync(raw, { level: 9 })),
-    chunk('IEND', Buffer.alloc(0)),
-  ]);
-}
-
-// ── Emit master PNG ──────────────────────────────────────────────────
-const masterPng = encodePng(W, render(W));
 const masterPath = join(OUT, 'icon.png');
-writeFileSync(masterPath, masterPng);
-console.log(`✓ icon.png (${W}²)`);
+writeFileSync(masterPath, await png(1024));
+console.log('✓ icon.png (1024)');
 
-// ── .icns via sips + iconutil ────────────────────────────────────────
-const iconset = join(OUT, 'icon.iconset');
-rmSync(iconset, { recursive: true, force: true });
-mkdirSync(iconset, { recursive: true });
-const sizes = [16, 32, 128, 256, 512];
-for (const s of sizes) {
-  for (const [px, name] of [[s, `icon_${s}x${s}.png`], [s * 2, `icon_${s}x${s}@2x.png`]]) {
-    spawnSync('sips', ['-z', String(px), String(px), masterPath, '--out', join(iconset, name)], { stdio: 'ignore' });
-  }
-}
-const icns = spawnSync('iconutil', ['-c', 'icns', iconset, '-o', join(OUT, 'icon.icns')], { stdio: 'inherit' });
-rmSync(iconset, { recursive: true, force: true });
-console.log(icns.status === 0 ? '✓ icon.icns' : '✗ icon.icns (iconutil failed — macOS only)');
-
-// ── .ico (multi-size PNG-in-ICO) ─────────────────────────────────────
-// A single 256² entry leaves Windows downscaling for the taskbar/title bar,
-// which several shell contexts skip — so the app falls back to the default
-// Electron icon. Pack the standard sizes so every context has a native one.
-const ICO_SIZES = [256, 128, 64, 48, 32, 24, 16];
+// ── .ico: a PNG-compressed entry per size ────────────────────────────
 {
-  const pngs = ICO_SIZES.map((s) => encodePng(s, render(s)));
+  const pngs = [];
+  for (const s of ICO_SIZES) pngs.push(await png(s));
   const header = Buffer.alloc(6);
   header.writeUInt16LE(0, 0); header.writeUInt16LE(1, 2); header.writeUInt16LE(ICO_SIZES.length, 4);
   let offset = 6 + 16 * ICO_SIZES.length;
   const entries = ICO_SIZES.map((s, i) => {
     const e = Buffer.alloc(16);
-    e[0] = s >= 256 ? 0 : s;            // 0 ⇒ 256
-    e[1] = s >= 256 ? 0 : s;
-    e.writeUInt16LE(1, 4);              // planes
-    e.writeUInt16LE(32, 6);            // bit depth
+    e.writeUInt8(s >= 256 ? 0 : s, 0);          // width  (0 = 256)
+    e.writeUInt8(s >= 256 ? 0 : s, 1);          // height (0 = 256)
+    e.writeUInt8(0, 2); e.writeUInt8(0, 3);     // palette, reserved
+    e.writeUInt16LE(1, 4);                      // colour planes
+    e.writeUInt16LE(32, 6);                     // bits per pixel
     e.writeUInt32LE(pngs[i].length, 8);
     e.writeUInt32LE(offset, 12);
     offset += pngs[i].length;
@@ -202,4 +61,23 @@ const ICO_SIZES = [256, 128, 64, 48, 32, 24, 16];
   });
   writeFileSync(join(OUT, 'icon.ico'), Buffer.concat([header, ...entries, ...pngs]));
   console.log(`✓ icon.ico (${ICO_SIZES.join('/')})`);
+}
+await browser.close();
+
+// ── .icns via sips + iconutil (macOS only) ───────────────────────────
+if (process.platform === 'darwin') {
+  const iconset = join(OUT, 'icon.iconset');
+  rmSync(iconset, { recursive: true, force: true });
+  mkdirSync(iconset, { recursive: true });
+  for (const base of [16, 32, 128, 256, 512]) {
+    for (const [scale, suffix] of [[1, ''], [2, '@2x']]) {
+      const px = base * scale;
+      spawnSync('sips', ['-z', String(px), String(px), masterPath, '--out', join(iconset, `icon_${base}x${base}${suffix}.png`)], { stdio: 'ignore' });
+    }
+  }
+  const icns = spawnSync('iconutil', ['-c', 'icns', iconset, '-o', join(OUT, 'icon.icns')], { stdio: 'inherit' });
+  rmSync(iconset, { recursive: true, force: true });
+  console.log(icns.status === 0 ? '✓ icon.icns' : '✗ icon.icns (iconutil failed)');
+} else {
+  console.log('· icon.icns skipped (needs macOS: sips + iconutil)');
 }

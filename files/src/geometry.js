@@ -509,13 +509,20 @@ export function mbpsAt(ap,sx,sy,imgW,imgH,walls,opts){
  * @param {number} imgW @param {number} imgH
  * @param {WallLike[]} walls
  * @param {number=} bandFactor
+ * @param {number=} arcDeg      Half-width of the radiated arc (180/absent = omni).
+ * @param {number=} headingDeg
  * @returns {boolean}
  */
-export function coveredThroughWalls(ap,sx,sy,imgW,imgH,walls,bandFactor){
+export function coveredThroughWalls(ap,sx,sy,imgW,imgH,walls,bandFactor,arcDeg,headingDeg){
   const bf=bandFactor??1;
   const ax=ap.fx*imgW, ay=ap.fy*imgH;
   const dist=Math.hypot(sx-ax,sy-ay);
   if(dist>ap.r)return false;
+  // Directional antennas only radiate inside their arc (same rule as dbmAt).
+  if(Number.isFinite(arcDeg)&&arcDeg<180){
+    const angle=Math.atan2(sy-ay,sx-ax)*180/Math.PI;
+    if(Math.abs(_angleDelta(angle,headingDeg||0))>arcDeg)return false;
+  }
   if(!walls.length)return true;
   let lossDb=0;
   for(const wl of walls){
@@ -533,9 +540,12 @@ export function coveredThroughWalls(ap,sx,sy,imgW,imgH,walls,bandFactor){
 /**
  * @param {{APS?:APLike[],WALLS?:WallLike[]}} floor
  * @param {number} imgW @param {number} imgH
+ * @param {{arcOf?:(ap:APLike)=>number}=} opts  arcOf maps an AP to its antenna
+ *   half-arc in degrees; without it every AP is treated as omni.
  * @returns {{covered:number,total:number}}
  */
-export function sampleFloorCoverage(floor,imgW,imgH){
+export function sampleFloorCoverage(floor,imgW,imgH,opts){
+  const arcOf=opts&&typeof opts.arcOf==='function'?opts.arcOf:null;
   const aps=floor.APS||[];
   if(!aps.length)return {covered:0,total:0};
   const walls=floor.WALLS||[];
@@ -544,7 +554,7 @@ export function sampleFloorCoverage(floor,imgW,imgH){
   let total=0,covered=0;
   for(let x=0;x<w;x+=step)for(let y=0;y<h;y+=step){
     total++;
-    if(aps.some(ap=>coveredThroughWalls(ap,x,y,w,h,walls,bandLossMultiplier(ap.freq))))covered++;
+    if(aps.some(ap=>coveredThroughWalls(ap,x,y,w,h,walls,bandLossMultiplier(ap.freq),arcOf?arcOf(ap):undefined,ap.heading||0)))covered++;
   }
   return {covered,total};
 }
@@ -555,9 +565,11 @@ export function sampleFloorCoverage(floor,imgW,imgH){
  * @param {{APS?:APLike[],WALLS?:WallLike[],scaleM?:number}} floor
  * @param {number} imgW @param {number} imgH
  * @param {number=} thresholdDbm
+ * @param {{arcOf?:(ap:APLike)=>number}=} opts  see sampleFloorCoverage
  * @returns {{covered:number,total:number}}
  */
-export function sampleRoamingOverlap(floor,imgW,imgH,thresholdDbm=-67){
+export function sampleRoamingOverlap(floor,imgW,imgH,thresholdDbm=-67,opts){
+  const arcOf=opts&&typeof opts.arcOf==='function'?opts.arcOf:null;
   const aps=floor.APS||[];
   if(aps.length<2)return {covered:0,total:0};
   const walls=floor.WALLS||[];
@@ -571,7 +583,7 @@ export function sampleRoamingOverlap(floor,imgW,imgH,thresholdDbm=-67){
     total++;
     let n=0;
     for(const ap of aps){
-      const d=dbmAt(ap,x,y,w,h,walls,{bandFactor:bandLossMultiplier(ap.freq),metersPerPx:mpp});
+      const d=dbmAt(ap,x,y,w,h,walls,{bandFactor:bandLossMultiplier(ap.freq),metersPerPx:mpp,arcDeg:arcOf?arcOf(ap):undefined,headingDeg:ap.heading||0});
       if(d!==null && d>=thresholdDbm){n++;if(n>=2)break;}
     }
     if(n>=2)covered++;
@@ -591,9 +603,14 @@ export function sampleRoamingOverlap(floor,imgW,imgH,thresholdDbm=-67){
  * @param {number=} bandFactor
  * @param {string=} modelKey  Propagation model key.
  * @param {number=} metersPerPx  Real-world scale → physical path loss (see dbmAt).
+ * @param {number=} slabs  Number of slabs between the AP's floor and this one
+ *   (1 = the floor directly above/below). Each one costs `slabDb`.
+ * @param {number=} verticalM  Vertical separation in metres. With a physical
+ *   scale the path is the 3-D distance, so a point straight under an AP two
+ *   floors up is ~6 m away, not 0. Ignored without `metersPerPx`.
  * @returns {number|null}
  */
-export function dbmAtThroughSlab(ap,sx,sy,imgW,imgH,slabDb,bandFactor,modelKey,metersPerPx){
+export function dbmAtThroughSlab(ap,sx,sy,imgW,imgH,slabDb,bandFactor,modelKey,metersPerPx,slabs,verticalM){
   const bf=bandFactor??1;
   const pe=PROP_EXPONENT[modelKey||'logd']??PROP_EXPONENT.logd;
   const eirp=effectiveEirp(ap);
@@ -605,10 +622,12 @@ export function dbmAtThroughSlab(ap,sx,sy,imgW,imgH,slabDb,bandFactor,modelKey,m
   const dRatio=Math.max(0.05,dist/ap.r);
   // Apply the slab loss as an extra attenuator multiplied by the band factor —
   // 2.4 GHz penetrates slabs better than 5 GHz, just like walls.
-  const effSlab=slabDb*bf;
+  const nSlabs=Number.isFinite(slabs)&&slabs>=1?slabs:1;
+  const effSlab=slabDb*bf*nSlabs;
   if(dist > ap.r*attenuationFactor(effSlab))return null;
   if(Number.isFinite(metersPerPx)&&metersPerPx>0){
-    return eirp - pathLossDb(dist*metersPerPx,bandFreqMhz(ap.freq),modelKey) - effSlab;
+    const dz=Number.isFinite(verticalM)&&verticalM>0?verticalM:0;
+    return eirp - pathLossDb(Math.hypot(dist*metersPerPx,dz),bandFreqMhz(ap.freq),modelKey) - effSlab;
   }
   const fsLoss=pe*Math.log10(1/dRatio);
   return edgeDbm + fsLoss - effSlab + eirpBoost;

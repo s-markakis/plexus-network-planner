@@ -12,6 +12,7 @@
 import {readFile, writeFile, rm, readdir} from 'node:fs/promises';
 import {fileURLToPath} from 'node:url';
 import {dirname, join} from 'node:path';
+import {createHash} from 'node:crypto';
 
 const __dirname=dirname(fileURLToPath(import.meta.url));
 const DIST=join(__dirname,'..','dist');
@@ -20,6 +21,7 @@ const INDEX=join(DIST,'index.html');
 const run=async()=>{
   let html=await readFile(INDEX,'utf8');
   const used=[];
+  const scriptHashes=[];
 
   // Inline the module script: <script type="module" ... src="./assets/x.js"></script>
   const scriptRe=/<script\b[^>]*\bsrc="([^"]+)"[^>]*><\/script>/g;
@@ -29,8 +31,17 @@ const run=async()=>{
     let js=await readFile(file,'utf8');
     // Guard against a literal </script> inside string content breaking parsing.
     js=js.replace(/<\/script>/gi,'<\\/script>');
-    return `<script type="module">\n${js}\n</script>`;
+    // The page's CSP allows no inline script ('unsafe-inline' is gone), so the
+    // one script we inline is authorised by the hash of its exact text.
+    const body=`\n${js}\n`;
+    scriptHashes.push(`'sha256-${createHash('sha256').update(body,'utf8').digest('base64')}'`);
+    return `<script type="module">${body}</script>`;
   });
+  if(scriptHashes.length){
+    const cspRe=/(<meta http-equiv="Content-Security-Policy" content="[^"]*?script-src )([^;"]*)/;
+    if(!cspRe.test(html))throw new Error('inline-singlefile: CSP script-src not found — refusing to ship an inlined script the policy would block');
+    html=html.replace(cspRe,(m,a,b)=>`${a}${b.trim()} ${scriptHashes.join(' ')}`);
+  }
 
   // Inline stylesheets: <link rel="stylesheet" ... href="./assets/x.css">
   const linkRe=/<link\b[^>]*\brel="stylesheet"[^>]*\bhref="([^"]+)"[^>]*>/g;

@@ -20,5 +20,7 @@ export function resolve(zone, name) {
   const n = normName(name);
   if (!n) return null;
   if (/^\d+\.\d+\.\d+\.\d+$/.test(n)) return n;
-  return (zone && zone[n]) || null;
+  // Own properties only — `ping constructor` must not resolve to Object's.
+  const hit = zone && Object.prototype.hasOwnProperty.call(zone, n) ? zone[n] : null;
+  return typeof hit === 'string' && hit ? hit : null;
 }

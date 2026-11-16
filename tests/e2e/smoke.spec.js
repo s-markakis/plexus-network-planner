@@ -79,7 +79,16 @@ test('settings modal opens with sectioned headings', async ({page}) => {
   await page.goto('/');
   await page.locator('[data-action="show-settings"]').click();
   await expect(page.locator('#mbg')).toHaveClass(/vis/);
-  await expect(page.locator('.settings-heading').first()).toBeVisible();
+  // Sections are a list on the left and one titled card each on the right.
+  await expect(page.locator('.settings-pane-title').first()).toBeVisible();
+  expect(await page.locator('.settings-nav-item').count()).toBeGreaterThan(3);
+  await expect(page.locator('.settings-card .ep-in').first()).toBeVisible();
+  // Nothing may stick out of the dialog (the old form was clipped on the right).
+  const fits = await page.evaluate(() => {
+    const m = document.getElementById('mdl').getBoundingClientRect();
+    return [...document.querySelectorAll('.settings-card .ep-in, .settings-card .ep-sel')].every((e) => e.getBoundingClientRect().right <= m.right);
+  });
+  expect(fits).toBe(true);
   await page.keyboard.press('Escape');
   await expect(page.locator('#mbg')).not.toHaveClass(/vis/);
 });

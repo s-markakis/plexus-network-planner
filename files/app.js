@@ -55,7 +55,13 @@ import {
 import {runLengthM,analyzeLoad,nextFreeIp as netNextFreeIp,ipInCidr,subnetUsage,airtimeUtilization} from './src/network.js';
 import {formatName,nameMatches,patternHasNumber} from './src/naming.js';
 import {zipStore} from './src/zip.js';
-import {encryptObject,decryptObject} from './src/crypto.js';
+import {collectCreds,stripCredsReplacer,attachCreds,hasPlaintextPasswords} from './src/credsVault.js';
+import {createCredsSession} from './src/credsSession.js';
+import {buildClientReportModel,renderClientReport} from './src/clientReport.js';
+import {SITE_TEMPLATES,buildTemplateProject} from './src/siteTemplates.js';
+import {routerWifiSpec,routerAsAp,rfAps,rfFloor} from './src/routerWifi.js';
+import {createHistory} from './src/history.js';
+import {createImageTrash,imageIdsIn} from './src/imageTrash.js';
 // PDF floor-plan import. The worker is bundled inline (?worker&inline) so the
 // portable single-file build still works from file:// with no external fetch.
 import * as pdfjsLib from 'pdfjs-dist';
@@ -66,15 +72,21 @@ import {parseDxf} from './src/dxf.js';
 import {importEsx,buildEsxZip} from './src/esx.js';
 import {CAM_RES_HPX,DORI_LEVELS,doriDistancesM,cameraBitrateMbps,storageGb} from './src/cameras.js';
 import {buildSampleProject} from './src/sampleProject.js';
-import {sshTarget,sshCommand} from './src/sshConnect.js';
+import {sshTarget,sshCommand,sshTargetIsSafe,sshVendor} from './src/sshConnect.js';
 import {
   idbPutImage, idbGetImage, idbDeleteImage,
   newImgId as _newImgId,
   imgCache as _imgCache,
   resolveFloorImage,
 } from './src/imageStore.js';
-import {mountSimPanel} from './src/simUI.js';
+import {mountSimPanel,matrixRows} from './src/simUI.js';
 import {mountCliConsole} from './src/cliUI.js';
+import {mountDeviceConfig} from './src/deviceConfigUI.js';
+import {mountPolicies} from './src/policyUI.js';
+import {mountLabs} from './src/labsUI.js';
+import {evaluatePolicies} from './src/policy.js';
+import {compileTopology} from './src/simCompile.js';
+import {reachabilityMatrix} from './src/simMatrix.js';
 import {bestAp} from './src/wireless.js';
 
 // AP_MODEL_GROUPS, AP_RANGE_M, SW_MODEL_GROUPS, AP_COLORS, WALL_MATERIAL_KEYS
@@ -87,6 +99,8 @@ import {bestAp} from './src/wireless.js';
 // polygon's SVG path on the AP object and invalidate it only when walls or
 // AP position/radius change. The actual ray-cast lives in geometry.js.
 const COVERAGE_RAYS=72;   // one ray every 5°.
+// Coverage-% sampling must honour the antenna pattern, like the map and heatmap do.
+const _COV_OPTS={arcOf:ap=>(AP_PATTERNS[ap.pattern]||AP_PATTERNS.omni).arc};
 
 function _apPatternOpts(ap){
   const pat=AP_PATTERNS[ap.pattern]||AP_PATTERNS.omni;
@@ -131,6 +145,8 @@ function rangeMToPx(m){return Math.round(m*100/(scaleM||100));}
 
 // HTML-escape for safely interpolating user-controlled strings into templates.
 function esc(s){return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
+// A colour from a project file, for use inside markup: hex only, else ''.
+function safeColor(c){return typeof c==='string'&&/^#[0-9a-fA-F]{3,8}$/.test(c)?c:'';}
 
 // Convert "#rrggbb" to "rgba(r,g,b,a)" — used for AP color fills where we want
 // the stroke at full opacity but the fill semi-transparent so overlaps blend.
@@ -209,7 +225,9 @@ let SETTINGS={...DEFAULT_SETTINGS,vlans:[]};
 // Session-only credentials passphrase. When set, device credentials are
 // AES-GCM encrypted in saved/exported project files and stripped from autosave
 // and Share links. Never persisted to SETTINGS or disk.
-let _credPass='';
+// Passphrase, locked vault and the autosave's encrypted copy — see
+// ./src/credsSession.js for the rules (unit-tested).
+const CREDS=createCredsSession({getFloors:()=>FLOORS,onVaultReady:()=>autosave(true)});
 
 // ═══ STATE ════════════════════════════════════════
 let FLOORS=[{id:'f1',name:'Floor 1',img:'',imgName:'',APS:[],DZS:[],SWS:[],WALLS:[],CAMS:[],ANNOS:[],SAMPLES:[],scaleM:100}];
@@ -225,10 +243,35 @@ let pendDel=null,modalCB=null;
 // Reads happen on every render; writes go through setScaleM() which updates
 // both the global and the current floor.
 let scaleM=100; // metres per 100px (mirror of current floor's scaleM)
-function syncScaleFromFloor(){scaleM=F().scaleM||100;const el=document.getElementById('scale-m');if(el)el.value=scaleM;}
-function setScaleM(v){scaleM=Math.max(1,parseFloat(v)||100);F().scaleM=scaleM;}
+function syncScaleFromFloor(){scaleM=F().scaleM||100;const el=document.getElementById('scale-m');if(el)el.value=+scaleM.toPrecision(4);}
+// Radii (ap.r, dz.r, cam.range) are stored in image px, so a scale change must
+// rescale them or every device's real-world range silently changes with it.
+// Kept unrounded: the scale box fires per keystroke and rounding would drift.
+const MIN_SCALE_M=0.01; // hi-res plans are routinely well under 1 m per 100 px
+function setScaleM(v){
+  const f=F(),old=f.scaleM||scaleM||100;
+  const p=parseFloat(v);
+  scaleM=p>0?Math.max(MIN_SCALE_M,p):100;
+  f.scaleM=scaleM;
+  if(old!==scaleM){
+    const k=old/scaleM;
+    (f.APS||[]).forEach(a=>{if(a.r>0)a.r*=k;});
+    (f.DZS||[]).forEach(d=>{if(d.r>0)d.r*=k;});
+    (f.CAMS||[]).forEach(c=>{if(c.range>0)c.range*=k;});
+    invalidateCoverageCache();
+  }
+}
+// Slider/drag ceilings in px: the legacy px cap, or `m` metres at the current
+// scale if that is larger (otherwise a calibrated hi-res plan caps at ~4 m).
+function radiusMaxPx(basePx,m){return Math.max(basePx,rangeMToPx(m));}
 // Undo/redo
-let undoStack=[],redoStack=[];
+// Rules live in ./src/history.js (unit-tested); these keep the toolbar in sync.
+function _syncUndoButtons(){
+  const u=document.getElementById('btn-undo'),r=document.getElementById('btn-redo');
+  if(u)u.disabled=!HISTORY.canUndo();
+  if(r)r.disabled=!HISTORY.canRedo();
+}
+const HISTORY=createHistory({serialize:()=>_serializeState(),restore:st=>_restoreState(st),onChange:()=>{_syncUndoButtons();_markDirty();}});
 // Zoom/pan
 let scale=1,panX=0,panY=0;
 let panning=false,panStartX=0,panStartY=0,panPrevX=0,panPrevY=0;
@@ -340,8 +383,8 @@ function deleteFloor(i){
   if(i<0||i>=FLOORS.length)return;
   snapshot();
   const removed=FLOORS[i];
-  if(removed&&removed.imgId)idbDeleteImage(removed.imgId).catch(()=>{});
   FLOORS.splice(i,1);
+  imageIdsIn([removed]).forEach(_releaseImage);
   // Adjust curFloor so we stay on a valid index. If we deleted the current
   // floor, move to the one before it (or stay at 0 if it was the first).
   if(curFloor===i)curFloor=Math.max(0,i-1);
@@ -409,7 +452,7 @@ function loadFloorImage(){
   // render correctly during the transition.
   const applySrc=(src,name)=>{
     mapImg.src=src||'';if(mmImg)mmImg.src=src||'';
-    document.getElementById('brand-lbl').textContent=src?(SETTINGS.company||'Plexus')+' · '+(name||''):(SETTINGS.company||'Plexus')+' Planner';
+    document.getElementById('brand-lbl').textContent=src?'Plexus · '+(name||''):'Plexus';
     if(src&&mapImg.complete&&mapImg.naturalWidth>0){fitZoom();render();renderMM();updateScaleBar();calcCoverage();}
     updateEmptyState();
   };
@@ -433,15 +476,15 @@ async function _applyMapDataUrl(dataUrl,name,label){
     _imgCache.set(id,dataUrl);
     F().img='';F().imgId=id;F().imgName=name;
     mapImg.src=dataUrl;if(mmImg)mmImg.src=dataUrl;
-    document.getElementById('brand-lbl').textContent=(SETTINGS.company||'Plexus')+' · '+name;
+    document.getElementById('brand-lbl').textContent='Plexus · '+name;
     updateEmptyState();
     toast('Map loaded: '+label);
-    if(oldId&&oldId!==id)idbDeleteImage(oldId).catch(()=>{});
+    if(oldId&&oldId!==id)_releaseImage(oldId);
   }catch(err){
     // IndexedDB unavailable or quota exceeded — fall back to inline.
     F().img=dataUrl;F().imgName=name;F().imgId='';
     mapImg.src=dataUrl;if(mmImg)mmImg.src=dataUrl;
-    document.getElementById('brand-lbl').textContent=(SETTINGS.company||'Plexus')+' · '+name;
+    document.getElementById('brand-lbl').textContent='Plexus · '+name;
     updateEmptyState();
     toast('Map loaded (inline fallback)');
   }
@@ -490,6 +533,21 @@ function uploadMap(input){
 // currently-uncovered points. Stop when target % is reached or max APs hit.
 // Not optimal in the strict NP-hard sense; good enough in practice and
 // finishes in well under a second for realistic floor sizes.
+// Every new AP — clicked or auto-placed — starts from the same record. Auto-
+// placed APs used to lack the RF fields (antenna gain, Tx power, width…), so
+// their heatmap changed after a save + reload filled them in.
+function _newAp(id,name,model,fx,fy){
+  return {
+    id,name,model,
+    freq:'2.4 / 5 GHz',channel:'auto',txPower:'auto',sig:'strong',color:'',
+    ip:'',mac:'',port:'',vlan:'',notes:'',comment:'',
+    fx,fy,r:rangeMToPx(AP_RANGE_M[model]),locked:false,
+    pattern:'omni',heading:0,swId:'',
+    antennaGainDbi:AP_ANTENNA_GAIN_DBI[model]??4,
+    cableLossDb:0,txPowerDbm:20,mountHeightM:2.7,downtiltDeg:0,
+    capacityClients:25,chanWidth:40,
+  };
+}
 function autoPlaceAPs(){
   const w=mapImg.naturalWidth,h=mapImg.naturalHeight;
   if(!w||!h){toast('Upload a map first');return;}
@@ -552,7 +610,7 @@ function autoPlaceAPs(){
     const c=candidates[bestIdx];
     const id='ap'+nid++;
     const num=nextNameSuffix(APS(),/^AP-(\d+)/);
-    APS().push({id,name:'AP-'+String(num).padStart(2,'0'),model,freq:'2.4 / 5 GHz',channel:'auto',txPower:'auto',sig:'strong',color:'',ip:'',mac:'',swId:'',port:'',vlan:'',notes:'',fx:c.x/w,fy:c.y/h,r,pattern:'omni',heading:0,locked:false});
+    APS().push(_newAp(id,'AP-'+String(num).padStart(2,'0'),model,c.x/w,c.y/h));
     placedNow.push(id);
   }
   invalidateCoverageCache();
@@ -902,7 +960,7 @@ function autoRenameDevices(){
 // usage and PoE-class fit. Footer offers auto-assign and full validation.
 function showPoESummary(){
   const wrap=document.createElement('div');
-  wrap.style.cssText='font-family:Rajdhani,sans-serif;font-size:13px';
+  wrap.style.cssText='font-family:inherit;font-size:13px';
   const sws=SWS();
   if(!sws.length){
     wrap.textContent='No switches placed yet. Drop a switch on the map (W) then assign APs/cameras to it.';
@@ -916,8 +974,8 @@ function showPoESummary(){
     const sec=document.createElement('div');sec.style.cssText='margin-bottom:14px;padding-bottom:10px;border-bottom:1px solid rgba(0,0,0,.08)';
     const head=document.createElement('div');head.style.cssText='display:flex;justify-content:space-between;font-weight:600;margin-bottom:4px';
     const portStr=a.ports!=null?` · ${a.used}/${a.ports} ports`:` · ${a.used} ports`;
-    head.innerHTML=`<span>${esc(sw.name)} <span style="font-family:'Share Tech Mono';font-size:10px;opacity:.6">${esc(sw.model||'')}${esc(portStr)}</span></span>
-      <span style="font-family:'Share Tech Mono';color:${a.overBudget?'#c0382b':'#1e7d3c'}">${a.draw.toFixed(1)} W${a.budget>0?` / ${a.budget} W${a.headroom!=null?` · ${a.headroom}%`:''}`:''}</span>`;
+    head.innerHTML=`<span>${esc(sw.name)} <span style="font-family:var(--font-mono);font-size:10px;opacity:.6">${esc(sw.model||'')}${esc(portStr)}</span></span>
+      <span style="font-family:var(--font-mono);color:${a.overBudget?'#c0382b':'#1e7d3c'}">${a.draw.toFixed(1)} W${a.budget>0?` / ${a.budget} W${a.headroom!=null?` · ${a.headroom}%`:''}`:''}</span>`;
     sec.appendChild(head);
     if(!a.clients.length){
       const empty=document.createElement('div');empty.style.cssText='font-size:11px;opacity:.6;font-style:italic';empty.textContent='No devices assigned.';
@@ -926,7 +984,7 @@ function showPoESummary(){
       for(const c of a.clients){
         const bad=a.classFails.includes(c);
         const li=document.createElement('div');li.style.cssText='display:flex;justify-content:space-between;font-size:11px;padding:2px 8px;opacity:.85';
-        li.innerHTML=`<span>${c.type==='AP'?'●':'◉'} ${esc(c.name)} <span style="opacity:.5">${esc(c.model)}</span></span><span style="font-family:'Share Tech Mono'${bad?';color:#c0382b;font-weight:700':''}">${c.w} W${c.cls?` ${c.cls}`:''}</span>`;
+        li.innerHTML=`<span>${c.type==='AP'?'●':'◉'} ${esc(c.name)} <span style="opacity:.5">${esc(c.model)}</span></span><span style="font-family:var(--font-mono)${bad?';color:#c0382b;font-weight:700':''}">${c.w} W${c.cls?` ${c.cls}`:''}</span>`;
         sec.appendChild(li);
       }
     }
@@ -937,7 +995,7 @@ function showPoESummary(){
     wrap.appendChild(sec);
   }
   const total=document.createElement('div');total.style.cssText='margin-top:8px;padding-top:8px;border-top:1px solid #000;font-weight:600;display:flex;justify-content:space-between';
-  total.innerHTML=`<span>Total</span><span style="font-family:'Share Tech Mono'">${totalDraw.toFixed(1)} W${totalBudget>0?` / ${totalBudget} W`:''}</span>`;
+  total.innerHTML=`<span>Total</span><span style="font-family:var(--font-mono)">${totalDraw.toFixed(1)} W${totalBudget>0?` / ${totalBudget} W`:''}</span>`;
   wrap.appendChild(total);
   const foot=document.createElement('div');foot.style.cssText='margin-top:12px;display:flex;gap:8px;flex-wrap:wrap';
   const mkBtn=(label,fn)=>{const b=document.createElement('button');b.className='btn';b.textContent=label;b.addEventListener('click',fn);foot.appendChild(b);};
@@ -1030,7 +1088,7 @@ function showValidation(){
   };
   if(hasMap){APS().forEach(ap=>checkRun(ap,ap.name));CAMS().forEach(c=>checkRun(c,c.name));}
   // Unassigned devices (informational).
-  APS().forEach(ap=>{if(!ap.swId)infos.push(`${ap.name} is not assigned to a switch.`);});
+  APS().forEach(ap=>{if(!ap.swId)infos.push(`${esc(ap.name)} is not assigned to a switch.`);});
   CAMS().forEach(c=>{if(!c.swId)infos.push(`${c.name} is not assigned to a switch.`);});
   // Duplicate IPs across all floor devices + switches.
   const ipMap=new Map();
@@ -1083,10 +1141,22 @@ function showValidation(){
     for(const ap of APS()){
       if(!(ap.capacityClients>0))continue;
       const pct=apAirtimePct(ap,f);
-      if(pct===Infinity)errors.push(`${ap.name}: expected ${ap.capacityClients} clients but the cell delivers no usable throughput.`);
-      else if(pct>100)errors.push(`${ap.name}: airtime ~${pct}% — ${ap.capacityClients} clients × ${parseFloat(SETTINGS.perClientMbps)||5} Mbps exceeds what this cell can carry.`);
-      else if(pct>80)warns.push(`${ap.name}: airtime ~${pct}% — near saturation; consider a wider channel or another AP.`);
+      if(pct===Infinity)errors.push(`${esc(ap.name)}: expected ${ap.capacityClients} clients but the cell delivers no usable throughput.`);
+      else if(pct>100)errors.push(`${esc(ap.name)}: airtime ~${pct}% — ${ap.capacityClients} clients × ${parseFloat(SETTINGS.perClientMbps)||5} Mbps exceeds what this cell can carry.`);
+      else if(pct>80)warns.push(`${esc(ap.name)}: airtime ~${pct}% — near saturation; consider a wider channel or another AP.`);
     }
+  }
+  // Policies (reachability intent): a violated policy is a design error.
+  if(Array.isArray(SETTINGS.policies)&&SETTINGS.policies.length){
+    try{
+      const pr=evaluatePolicies(simProject(),SETTINGS.policies).results;
+      for(const r of pr){
+        if(r.status==='fail'){const v=r.violations[0];errors.push(`Policy violated — ${r.label}: ${v.from} (${v.fromIp}) → ${v.to} (${v.toIp})${r.violations.length>1?` (+${r.violations.length-1} more)`:''}.`);}
+        else if(r.status==='skipped')warns.push(`Policy not testable — ${r.label}: ${r.reason}.`);
+      }
+      const okN=pr.filter(r=>r.status==='pass').length;
+      if(okN)infos.push(`${okN} reachability polic${okN===1?'y holds':'ies hold'}.`);
+    }catch(_){warns.push('Policies could not be evaluated (the plan does not simulate).');}
   }
   // Client-capacity rollup (building-wide; only when an expectation is set).
   const expected=parseInt(SETTINGS.expectedClients,10)||0;
@@ -1103,7 +1173,7 @@ function showValidation(){
   }
 
   const wrap=document.createElement('div');
-  wrap.style.cssText='font-family:Rajdhani,sans-serif;font-size:13px';
+  wrap.style.cssText='font-family:inherit;font-size:13px';
   // The ✓ banner keys off problems only — informational lines (e.g. the NVR
   // storage rollup) still print below a passing result.
   if(!errors.length&&!warns.length){
@@ -1130,7 +1200,7 @@ function showValidation(){
 // showing each switch's port usage. Read-only documentation aid.
 function showTopology(){
   const wrap=document.createElement('div');
-  wrap.style.cssText='font-family:Rajdhani,sans-serif;font-size:13px';
+  wrap.style.cssText='font-family:inherit;font-size:13px';
   const {all,children,roots}=topologyModel();
   if(!all.length){wrap.textContent='No switches placed yet.';showModalNode('Network topology',wrap,null);return;}
   const multiFloor=FLOORS.length>1;
@@ -1145,8 +1215,8 @@ function showTopology(){
     row.style.cssText=`padding:3px 0 3px ${depth*18}px;display:flex;justify-content:space-between;gap:10px`;
     const portStr=a.ports!=null?`${a.used}/${a.ports}`:`${a.used}`;
     const floorTag=multiFloor?` <span style="opacity:.45;font-size:9px">[${esc(e.floor.name||('Floor '+(e.floorIdx+1)))}]</span>`:'';
-    row.innerHTML=`<span>${depth?'└ ':''}⊞ <strong>${esc(e.sw.name)}</strong> <span style="opacity:.55;font-family:'Share Tech Mono';font-size:10px">${esc(e.sw.model||'')}</span>${floorTag}</span>
-      <span style="font-family:'Share Tech Mono';font-size:10px;opacity:.7">${portStr} ports · ${a.draw.toFixed(0)} W</span>`;
+    row.innerHTML=`<span>${depth?'└ ':''}⊞ <strong>${esc(e.sw.name)}</strong> <span style="opacity:.55;font-family:var(--font-mono);font-size:10px">${esc(e.sw.model||'')}</span>${floorTag}</span>
+      <span style="font-family:var(--font-mono);font-size:10px;opacity:.7">${portStr} ports · ${a.draw.toFixed(0)} W</span>`;
     tree.appendChild(row);
     children.get(e.sw.id).forEach(c=>renderNode(c,depth+1));
   };
@@ -1157,7 +1227,7 @@ function showTopology(){
   for(const e of all){
     const a=analyzeSwitch(e.sw,e.floor);
     const unit=document.createElement('div');unit.style.cssText='margin-bottom:8px;padding:6px 8px;border:1px solid var(--ink-04);border-radius:3px';
-    unit.innerHTML=`<div style="display:flex;justify-content:space-between;font-size:11px;margin-bottom:4px"><span><strong>${esc(e.sw.name)}</strong> <span style="opacity:.55;font-size:10px">${esc(e.sw.model||'')}</span></span><span style="font-family:'Share Tech Mono';opacity:.7">${a.ports!=null?`${a.used}/${a.ports}`:`${a.used}/?`}${a.overPorts?' ⚠':''}</span></div>${portGridHtml(a)}`;
+    unit.innerHTML=`<div style="display:flex;justify-content:space-between;font-size:11px;margin-bottom:4px"><span><strong>${esc(e.sw.name)}</strong> <span style="opacity:.55;font-size:10px">${esc(e.sw.model||'')}</span></span><span style="font-family:var(--font-mono);opacity:.7">${a.ports!=null?`${a.used}/${a.ports}`:`${a.used}/?`}${a.overPorts?' ⚠':''}</span></div>${portGridHtml(a)}`;
     wrap.appendChild(unit);
   }
   // Cabling rollup.
@@ -1271,9 +1341,17 @@ async function tryLoadFromHash(){
     const json=await _gunzip(bytes);
     const raw=JSON.parse(json);
     const [data,warnings]=migrateProject(raw);
+    // A link is untrusted input that would silently replace the session (and be
+    // autosaved over it) — never apply it without the user saying so.
+    if(!confirm('Open the project embedded in this link?\n\nIt replaces what is currently on screen. Only open links from people you trust.')){
+      history.replaceState(null,'',location.pathname+location.search);
+      return false;
+    }
+    _beginProjectSwitch();
     FLOORS=data.floors;
     SETTINGS={...DEFAULT_SETTINGS,...(data.settings||{})};
     applyStoredCatalog();
+    PROJECT_REVISIONS=[];   // a link carries none; don't keep the previous project's
     curFloor=0;selId=null;selType=null;
     syncScaleFromFloor();syncNidFromFloors();
     await _rehydrateImages();
@@ -1282,6 +1360,7 @@ async function tryLoadFromHash(){
     // Strip the hash so a reload doesn't keep loading the same project.
     history.replaceState(null,'',location.pathname+location.search);
     toast(warnings.length?warnings[0]:'Project loaded from link');
+    _endProjectSwitch();
     return true;
   }catch(err){
     toast('Could not decode shared link');
@@ -1469,7 +1548,8 @@ function importEsxFile(input){
         FLOORS.push(floor);
       }
       // Migration pass fills schema defaults on everything just imported.
-      migrateProject({version:PROJECT_VERSION,floors:FLOORS});
+      // migrateProject returns a sanitized copy (it no longer edits in place).
+      FLOORS=migrateProject({version:PROJECT_VERSION,floors:FLOORS})[0].floors;
       syncNidFromFloors();
       switchFloor(firstNew);
       warnings.forEach(w=>console.warn('[esx import]',w));
@@ -1565,7 +1645,7 @@ function showUnifiDialog(){
   const user=field('Username','text',SETTINGS.unifiUser,'admin');
   const pass=field('Password','password',_unifiPass,'');
   const status=document.createElement('div');
-  status.style.cssText='font-family:"Share Tech Mono";font-size:11px;white-space:pre-wrap;margin:8px 0;min-height:16px';
+  status.style.cssText='font-family:var(--font-mono);font-size:11px;white-space:pre-wrap;margin:8px 0;min-height:16px';
   const saveFields=()=>{
     SETTINGS.unifiUrl=(url.value||'').trim();
     SETTINGS.unifiSite=(site.value||'default').trim();
@@ -1581,9 +1661,23 @@ function showUnifiDialog(){
   const pullBtn=mkBtn('⇊ Pull devices','Fetch the controller device list and fill in IP / firmware / serial / Live status');
   const pushBtn=mkBtn('⇈ Push channel plan','Write planned channels/width/tx-power to matching APs on the controller');
   const busy=(on)=>{pullBtn.disabled=on;pushBtn.disabled=on;};
+  // Certificate trust (desktop main process pins controller certs). On first
+  // contact, or if the certificate changed, the user has to approve the exact
+  // fingerprint before any credentials are sent.
+  const callUnifi=async(fn,extra)=>{
+    let res=await fn({...cfg(),...extra});
+    if(res&&res.needsTrust){
+      const msg=res.changed
+        ?`⚠ The certificate of ${res.host} has CHANGED.\n\nTrusted before:\n${res.pinned}\n\nPresented now:\n${res.fingerprint}\n\nThis happens after a controller reset or firmware reinstall — or when someone is intercepting the connection. Trust the new certificate?`
+        :`First connection to ${res.host}.\n\nCertificate fingerprint (SHA-256):\n${res.fingerprint}\n\nCompare it with the controller's own certificate if you can. Trust it for future connections?`;
+      if(!confirm(msg))return {ok:false,error:res.changed?'Certificate change not accepted — nothing was sent':'Certificate not trusted — nothing was sent'};
+      res=await fn({...cfg(),...extra,trust:res.fingerprint});
+    }
+    return res;
+  };
   pullBtn.addEventListener('click',async()=>{
     saveFields();busy(true);status.textContent='Connecting…';
-    const res=await window.plexusNative.unifiPull(cfg());
+    const res=await callUnifi(window.plexusNative.unifiPull,{});
     busy(false);
     if(!res.ok){status.textContent='✕ '+res.error;return;}
     const n=_applyUnifiDevices(res.devices);
@@ -1595,7 +1689,7 @@ function showUnifiDialog(){
     if(!changes.length){status.textContent='✕ No APs with a concrete channel — run ⌁ Auto-channel first.';return;}
     if(!confirm(`Push channel/width/tx settings for ${changes.length} AP(s) to the controller? Radios will briefly drop clients when they retune.`))return;
     busy(true);status.textContent='Pushing…';
-    const res=await window.plexusNative.unifiPush({...cfg(),changes});
+    const res=await callUnifi(window.plexusNative.unifiPush,{changes});
     busy(false);
     if(!res.ok){status.textContent='✕ '+res.error;return;}
     const okN=res.results.filter(r=>r.ok).length;
@@ -1617,7 +1711,49 @@ function showUnifiDialog(){
 // Strip per-item cache fields (`_coveragePath`, `_coverageFor`, etc.) so saved
 // JSON stays small and never round-trips stale geometry into a future load.
 function _stripCacheReplacer(k,v){return k.startsWith('_')?undefined:v;}
-async function saveProject(){
+// The file this project was opened from / last saved to (desktop app only), and
+// whether the plan changed since. Paths are only ever handed out by the main
+// process after a native dialog — see electron/projectFiles.cjs.
+let _projectFile=null,_dirty=false;
+const _BASE_TITLE=typeof document!=='undefined'?document.title:'Plexus';
+function _syncTitle(){
+  if(typeof document==='undefined')return;
+  document.title=_projectFile?`${_dirty?'• ':''}${_projectFile.name} — Plexus`:_BASE_TITLE;
+}
+function _setProjectFile(f){
+  _projectFile=f&&f.path?{path:f.path,name:f.name||'project'}:null;
+  _dirty=false;_syncTitle();
+}
+function _markDirty(){if(!_dirty){_dirty=true;_syncTitle();}}
+function _suggestedFileName(){
+  const base=(SETTINGS.siteCode||SETTINGS.company||(F()&&F().imgName)||'plexus_project').trim()||'plexus_project';
+  return base.replace(/[^\p{L}\p{N}._ -]+/gu,'_').slice(0,80)+'.plexus.json';
+}
+function _savedToast(){
+  return CREDS.locked?(_hasPlaintextCreds()?'Project saved — locked credentials kept; ones added since are NOT encrypted until you unlock':'Project saved (locked credentials kept)'):CREDS.pass?'Project saved (credentials encrypted)':'Project saved';
+}
+// Desktop: write to the project's file (Save) or ask where (Save As / first
+// save). Web build: download, as before.
+async function saveProject(opts){
+  const text=await _buildProjectText();
+  const native=typeof window!=='undefined'&&window.plexusNative;
+  if(native&&native.projectSave){
+    const res=_projectFile&&!(opts&&opts.saveAs)
+      ? await native.projectSave({path:_projectFile.path,text})
+      : await native.projectSaveAs({text,suggestedName:_projectFile?_projectFile.name:_suggestedFileName()});
+    if(res&&res.cancelled)return;
+    if(!res||!res.ok){toast('Could not save: '+((res&&res.error)||'unknown error'));return;}
+    _setProjectFile(res);
+    toast(_savedToast()+' — '+res.name);
+    return;
+  }
+  const blob=new Blob([text],{type:'application/json'});
+  const a=document.createElement('a');a.href=URL.createObjectURL(blob);
+  a.download='plexus_project.json';a.click();
+  _dirty=false;_syncTitle();
+  toast(_savedToast());
+}
+async function _buildProjectText(){
   // Inline the IDB-stored images into the saved file so the project remains
   // self-contained when shared. The in-memory FLOORS keeps `imgId` only —
   // we serialize a copy with `img` populated for portability.
@@ -1645,52 +1781,53 @@ async function saveProject(){
   // When a credentials passphrase is set, encrypt every device's creds into a
   // single vault and strip the plaintext from the exported devices.
   await _encryptCredsInto(data);
-  const blob=new Blob([JSON.stringify(data,_stripCacheReplacer,2)],{type:'application/json'});
-  const a=document.createElement('a');a.href=URL.createObjectURL(blob);
-  a.download='plexus_project.json';a.click();
-  toast(_credPass?'Project saved (credentials encrypted)':'Project saved');
+  return JSON.stringify(data,_stripCacheReplacer,2);
 }
 // ── Credential vault (encrypt-at-rest for saved/exported projects) ─────────
 // Gather {deviceId: creds} across floors.
-function _collectCreds(floors){
-  const map={};
-  for(const f of (floors||[]))for(const key of ['APS','CAMS','SWS'])
-    for(const d of (f[key]||[]))if(d&&d.creds&&d.id)map[d.id]=d.creds;
-  return map;
-}
+// Credential rules live in ./src/credsVault.js (pure, unit-tested).
 // If a passphrase is set, move creds into data.credsVault and strip the inline
 // plaintext from copies of the affected devices (never mutating live FLOORS).
 async function _encryptCredsInto(data){
-  if(!_credPass)return;
-  const map=_collectCreds(data.floors);
-  if(!Object.keys(map).length)return;
-  data.credsVault=await encryptObject(map,_credPass);
-  for(const f of data.floors)for(const key of ['APS','CAMS','SWS']){
-    if(!Array.isArray(f[key]))continue;
-    f[key]=f[key].map(d=>{if(d&&d.creds){const c={...d};delete c.creds;return c;}return d;});
-  }
+  await CREDS.sealInto(data);
+}
+// Try a passphrase against the locked vault; on success reattach its creds.
+// Devices that got credentials while it was locked keep the newer ones.
+async function _tryUnlock(pass){
+  const ok=await CREDS.tryUnlock(pass);
+  if(ok){render();renderRP();toast('Credentials unlocked');}
+  else toast('Wrong passphrase — credentials stay locked (kept in the file; retry in Settings → Credentials passphrase)');
+  return ok;
 }
 // After loading a project whose creds are encrypted, prompt for the passphrase
 // and reattach the decrypted creds to the in-memory devices.
 async function _unlockCreds(data){
   if(!data||!data.credsVault)return;
+  CREDS.lock(data.credsVault);
   const pass=await promptPassphrase('This project’s credentials are encrypted.\nEnter the passphrase to unlock them, or Cancel to keep them locked:');
-  if(pass==null)return;
-  try{
-    const map=await decryptObject(data.credsVault,pass);
-    _credPass=pass;   // remember so a re-save stays encrypted with the same key
-    for(const f of FLOORS)for(const key of ['APS','CAMS','SWS'])
-      for(const d of (f[key]||[]))if(map[d.id])d.creds=map[d.id];
-    render();renderRP();
-    toast('Credentials unlocked');
-  }catch{
-    toast('Wrong passphrase — credentials stay locked');
-  }
+  if(pass==null){toast('Credentials stay locked — they are kept when you save');return;}
+  await _tryUnlock(pass);   // remembers the passphrase so a re-save stays encrypted
+}
+// Modal text prompt → resolves to the string, or null if cancelled. Replaces
+// window.prompt(), which Electron does not implement (it returns null), so
+// text labels and revisions could not be created in the desktop app.
+function promptText(title,message,initial){
+  return new Promise(resolve=>{
+    const wrap=document.createElement('div');wrap.style.cssText='font-family:inherit;font-size:13px';
+    wrap.appendChild(document.createTextNode(String(message||'')));
+    const inp=document.createElement('input');inp.type='text';inp.className='ep-in';inp.autocomplete='off';
+    inp.value=initial||'';inp.style.cssText='width:100%;margin-top:10px';
+    inp.addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();e.stopPropagation();modalOK();}});
+    wrap.appendChild(inp);
+    let done=false;
+    showModalNode(title,wrap,()=>{done=true;resolve(inp.value||'');},()=>{if(!done)resolve(null);});
+    setTimeout(()=>{inp.focus();inp.select();},50);
+  });
 }
 // Modal password prompt → resolves to the string, or null if cancelled.
 function promptPassphrase(message){
   return new Promise(resolve=>{
-    const wrap=document.createElement('div');wrap.style.cssText='font-family:Rajdhani,sans-serif;font-size:13px';
+    const wrap=document.createElement('div');wrap.style.cssText='font-family:inherit;font-size:13px';
     String(message).split('\n').forEach((line,i,arr)=>{wrap.appendChild(document.createTextNode(line));if(i<arr.length-1)wrap.appendChild(document.createElement('br'));});
     const inp=document.createElement('input');inp.type='password';inp.className='ep-in';inp.autocomplete='off';
     inp.style.cssText='width:100%;margin-top:10px';
@@ -1709,7 +1846,7 @@ function newProject(){
   const doIt=async ()=>{
     // Drop any IDB-stored images for the floors we're discarding so the
     // database doesn't grow without bound across "New Project" cycles.
-    const oldIds=FLOORS.map(f=>f.imgId).filter(Boolean);
+    _beginProjectSwitch();
     // Mutate FLOORS in place rather than reassigning the binding — this keeps
     // any existing references (tests, inspector debugging, closures) valid.
     FLOORS.length=0;
@@ -1718,8 +1855,8 @@ function newProject(){
     curFloor=0;selId=null;selType=null;nid=1;
     syncScaleFromFloor();
     try{localStorage.removeItem(AUTOSAVE_KEY);}catch(_){}
-    for(const id of oldIds){idbDeleteImage(id).catch(()=>{});}
-    lastAutosavePayload='';
+    lastAutosaveBody='';
+    _sweepImages();
     invalidateCoverageCache();
     loadFloorImage();renderFloorTabs();render();renderList();renderRP();calcCoverage();
     toast('New project');
@@ -1730,38 +1867,55 @@ function newProject(){
     doIt();
   }
 }
+// Replace the session with the project in `text`. `file` ({path,name}) is set
+// when it came from a file on disk in the desktop app, so Save writes back.
+async function _loadProjectText(text,file){
+  try{
+    const raw=JSON.parse(text);
+    const [data,warnings]=migrateProject(raw);
+    _beginProjectSwitch();
+    FLOORS=data.floors;
+    SETTINGS={...DEFAULT_SETTINGS,...(data.settings||{})};
+    applyStoredCatalog();
+    PROJECT_REVISIONS=Array.isArray(data.revisions)?data.revisions:[];
+    // Apply the persisted UI language (i18n bundle) right away.
+    if(SETTINGS.language)setLang(SETTINGS.language);
+    curFloor=0;selId=null;selType=null;
+    syncScaleFromFloor();
+    syncNidFromFloors();
+    // Import any inline floor/device images into IDB (and warm the cache) so
+    // the project is portable across laptops; keeps autosaves tiny afterward.
+    await _rehydrateImages();
+    applySettingsToBrand();
+    loadFloorImage();renderFloorTabs();render();renderList();renderRP();calcCoverage();
+    if(warnings.length){toast(warnings[0]);}else{toast(file?'Opened '+file.name:'Project loaded');}
+    CREDS.lock(data.credsVault);   // before the autosave below, so a crash mid-prompt keeps it
+    _setProjectFile(file||null);
+    _endProjectSwitch();
+    await _unlockCreds(data);   // prompt for the passphrase if creds are encrypted
+  }catch(err){toast('Error loading project: '+(err.message||'invalid file'));}
+}
 function loadProject(input){
   const file=input.files[0];if(!file)return;
   const reader=new FileReader();
-  reader.onload=async e=>{
-    try{
-      const raw=JSON.parse(e.target.result);
-      const [data,warnings]=migrateProject(raw);
-      FLOORS=data.floors;
-      SETTINGS={...DEFAULT_SETTINGS,...(data.settings||{})};
-      applyStoredCatalog();
-      PROJECT_REVISIONS=Array.isArray(data.revisions)?data.revisions:[];
-      // Apply the persisted UI language (i18n bundle) right away.
-      if(SETTINGS.language)setLang(SETTINGS.language);
-      curFloor=0;selId=null;selType=null;
-      syncScaleFromFloor();
-      syncNidFromFloors();
-      // Import any inline floor/device images into IDB (and warm the cache) so
-      // the project is portable across laptops; keeps autosaves tiny afterward.
-      await _rehydrateImages();
-      applySettingsToBrand();
-      loadFloorImage();renderFloorTabs();render();renderList();renderRP();calcCoverage();
-      if(warnings.length){toast(warnings[0]);}else{toast('Project loaded');}
-      await _unlockCreds(data);   // prompt for the passphrase if creds are encrypted
-    }catch(err){toast('Error loading project: '+(err.message||'invalid file'));}
-  };
+  reader.onload=e=>_loadProjectText(e.target.result,null);
   reader.readAsText(file);input.value='';
+}
+// Desktop: native Open dialog / a recent file. The main process reads the file
+// and only for paths the user picked (see electron/projectFiles.cjs).
+async function openProjectNative(recentPath){
+  const native=window.plexusNative;
+  const res=recentPath?await native.projectOpenRecent(recentPath):await native.projectOpen();
+  if(!res||res.cancelled)return;
+  if(!res.ok){toast('Could not open: '+(res.error||'unknown error'));return;}
+  await _loadProjectText(res.text,{path:res.path,name:res.name});
 }
 // Load the bundled sample project (empty-state button). Same pipeline as
 // loadProject, minus the file read — the sample is generated in-memory.
 async function loadSampleProject(){
   try{
     const [data,warnings]=migrateProject(buildSampleProject());
+    _beginProjectSwitch();
     FLOORS=data.floors;
     SETTINGS={...DEFAULT_SETTINGS,...(data.settings||{})};
     applyStoredCatalog();
@@ -1774,6 +1928,7 @@ async function loadSampleProject(){
     applySettingsToBrand();
     loadFloorImage();renderFloorTabs();render();renderList();renderRP();calcCoverage();
     if(warnings.length){toast(warnings[0]);}else{toast('Sample project loaded — drag things around');}
+    _endProjectSwitch();
   }catch(err){toast('Error loading sample: '+(err.message||'unknown'));}
 }
 // Update the top-bar brand label to whatever the current SETTINGS specify.
@@ -1781,9 +1936,9 @@ async function loadSampleProject(){
 function applySettingsToBrand(){
   const lbl=document.getElementById('brand-lbl');
   if(lbl){
-    const co=SETTINGS.company||'Plexus';
+    // The app is always "Plexus" here; the Company setting brands the reports.
     const f=F();
-    lbl.textContent=f&&f.imgName?co+' · '+f.imgName:co+' Planner';
+    lbl.textContent=f&&f.imgName?'Plexus · '+f.imgName:'Plexus';
   }
   _syncToolbarFromSettings();
 }
@@ -1841,6 +1996,7 @@ function applyT(){
     }
   }
   canvas.style.transform=`translate(${panX}px,${panY}px) scale(${scale})`;
+  if(rulerStart)renderRuler();   // its label is sized for the current zoom
   document.getElementById('zval').textContent=Math.round(scale*100)+'%';
   renderMM();updateScaleBar();
 }
@@ -1977,69 +2133,58 @@ function _restoreState(json){
   syncScaleFromFloor();
   invalidateCoverageCache();
 }
-function snapshot(){
-  // Cancel any pending debounced snapshot — committing one synchronously
-  // means we already have the right "before" state captured here.
-  _snapPending=false;clearTimeout(_snapT);_snapT=null;
-  undoStack.push(_serializeState());
-  if(undoStack.length>50)undoStack.shift();
-  redoStack=[];
-  document.getElementById('btn-undo').disabled=false;
-  document.getElementById('btn-redo').disabled=true;
-}
+function snapshot(){HISTORY.snapshot();}
 // Debounced snapshot for streaming edits (sliders, text inputs). The first
 // call within a quiet window captures the *pre-edit* state, then 400ms after
 // the last call we commit. This way Undo jumps back across the whole edit
 // burst (one visible step) instead of per-keystroke (many).
-let _snapT=null,_snapPending=false,_snapPreState=null;
-function snapshotSoon(){
-  if(!_snapPending){
-    _snapPending=true;
-    _snapPreState=_serializeState();
-  }
-  clearTimeout(_snapT);
-  _snapT=setTimeout(()=>{
-    if(!_snapPending)return;
-    _snapPending=false;
-    undoStack.push(_snapPreState);
-    if(undoStack.length>50)undoStack.shift();
-    redoStack=[];
-    document.getElementById('btn-undo').disabled=false;
-    document.getElementById('btn-redo').disabled=true;
-    _snapPreState=null;
-  },400);
+
+// ── Image lifetime ─────────────────────────────────────────────────────────
+// Stored images are deleted only once no floor, revision or undo entry can
+// bring them back — see ./src/imageTrash.js (unit-tested). Always drop an
+// image through _releaseImage(), never idbDeleteImage() directly.
+function _liveImgIds(){
+  const ids=imageIdsIn(FLOORS);
+  for(const r of PROJECT_REVISIONS||[])imageIdsIn(r&&r.snapshot,ids);
+  return ids;
 }
+const IMG_TRASH=createImageTrash({
+  liveIds:_liveImgIds,
+  isHeld:id=>HISTORY.mentions('"'+id+'"'),
+  drop:id=>{_imgCache.delete(id);idbDeleteImage(id).catch(()=>{});},
+});
+function _releaseImage(id){IMG_TRASH.release(id);}
+function _sweepImages(){IMG_TRASH.sweep();}
+
+// Call BEFORE replacing the whole project (load / new / sample / link / lab /
+// session restore). Undo history and the credentials passphrase belong to the
+// project being left: keeping them let Undo resurrect the previous project's
+// floors and re-encrypted the next project with the wrong passphrase.
+let _projectSwitched=false;
+function _beginProjectSwitch(){
+  _projectSwitched=true;
+  IMG_TRASH.retire(_liveImgIds());
+  HISTORY.reset();
+  CREDS.reset();
+  _setProjectFile(null);   // after reset(): its change notification marks dirty
+}
+// Call AFTER the new project is in place: persist it first so the autosave no
+// longer points at the old project's images, then drop those images.
+function _endProjectSwitch(){autosave(true);_sweepImages();}
+function snapshotSoon(){HISTORY.snapshotSoon();}
 // Force commit immediately — call from blur handlers so leaving a field
 // finalizes its snapshot without waiting for the timer.
-function snapshotFlush(){
-  if(!_snapPending)return;
-  clearTimeout(_snapT);_snapT=null;
-  _snapPending=false;
-  undoStack.push(_snapPreState);
-  if(undoStack.length>50)undoStack.shift();
-  redoStack=[];
-  document.getElementById('btn-undo').disabled=false;
-  document.getElementById('btn-redo').disabled=true;
-  _snapPreState=null;
-}
+function snapshotFlush(){HISTORY.flush();}
 function undo(){
-  if(!undoStack.length)return;
-  redoStack.push(_serializeState());
-  _restoreState(undoStack.pop());
+  if(!HISTORY.undo())return;
   selId=null;selType=null;
   loadFloorImage();renderFloorTabs();render();renderList();renderRP();calcCoverage();
-  document.getElementById('btn-undo').disabled=!undoStack.length;
-  document.getElementById('btn-redo').disabled=false;
   toast('Undo');
 }
 function redo(){
-  if(!redoStack.length)return;
-  undoStack.push(_serializeState());
-  _restoreState(redoStack.pop());
+  if(!HISTORY.redo())return;
   selId=null;selType=null;
   loadFloorImage();renderFloorTabs();render();renderList();renderRP();calcCoverage();
-  document.getElementById('btn-redo').disabled=!redoStack.length;
-  document.getElementById('btn-undo').disabled=false;
   toast('Redo');
 }
 
@@ -2087,7 +2232,7 @@ function setUiMode(m){
   document.body.dataset.uimode=m;
   // Entering Operate with plaintext passwords in the file is a leak risk — nudge
   // toward the encrypted-creds vault (Settings → Credentials passphrase).
-  if(m==='operate'&&!_credPass&&_hasPlaintextCreds())toast('⚠ Stored passwords are unencrypted — set a Credentials passphrase in Settings to protect this project file.');
+  if(m==='operate'&&!CREDS.pass&&_hasPlaintextCreds())toast('⚠ Stored passwords are unencrypted — set a Credentials passphrase in Settings to protect this project file.');
   document.querySelectorAll('[data-modes]').forEach(el=>{el.hidden=!el.dataset.modes.split(/\s+/).includes(m);});
   document.querySelectorAll('[data-uimode-btn]').forEach(b=>b.classList.toggle('active',b.dataset.uimodeBtn===m));
   // Pick a sensible tool for the mode, and never leave a now-hidden tool active.
@@ -2127,6 +2272,122 @@ if(typeof document!=='undefined'){
 // (reassigned on load/undo), so the panel always compiles the current plan.
 // onFocus reuses the normal select+zoom so stepping walks the packet on the map.
 let _simPanel=null;
+// Policies: reachability intent, proven against the simulated plan.
+function showPolicies(){
+  const wrap=document.createElement('div');
+  mountPolicies({
+    root:wrap,
+    getProject:simProject,
+    getPolicies:()=>Array.isArray(SETTINGS.policies)?SETTINGS.policies:[],
+    setPolicies:p=>{SETTINGS.policies=p;autosave();},
+  });
+  showModalNode('Policies',wrap,null);
+}
+// Labs: guided scenarios graded by the simulator. Starting one replaces the
+// current plan, so it asks first; the active lab id is session-only.
+let _activeLab='';
+function showLabs(){
+  const wrap=document.createElement('div');
+  mountLabs({
+    root:wrap,
+    getProject:simProject,
+    getActive:()=>_activeLab,
+    onStart:lab=>{
+      if(!confirm(`Start "${lab.title}"?\n\nThis replaces the plan on screen with the lab's starting plan. Save your work first if you need it.`))return;
+      _activeLab=lab.id;
+      _loadProjectObject(lab.build(),`Lab loaded: ${lab.title}`);
+    },
+  });
+  showModalNode('Labs',wrap,null);
+}
+// Load an in-memory project object through the same pipeline as a file load.
+async function _loadProjectObject(obj,okMsg){
+  try{
+    const [data,warnings]=migrateProject(obj);
+    _beginProjectSwitch();
+    FLOORS=data.floors;
+    SETTINGS={...DEFAULT_SETTINGS,...(data.settings||{})};
+    applyStoredCatalog();
+    PROJECT_REVISIONS=Array.isArray(data.revisions)?data.revisions:[];
+    curFloor=0;selId=null;selType=null;
+    syncScaleFromFloor();
+    syncNidFromFloors();
+    await _rehydrateImages();
+    applySettingsToBrand();
+    loadFloorImage();renderFloorTabs();render();renderList();renderRP();calcCoverage();
+    if(_simPanel)_simPanel.refresh();
+    toast(warnings.length?warnings[0]:okMsg);
+    _endProjectSwitch();
+  }catch(err){toast('Could not load: '+(err.message||'unknown error'));}
+}
+// "New from template": a new project pre-loaded with a site kind's VLAN plan,
+// policies and naming (./src/siteTemplates.js). Replaces what is on screen.
+function showTemplates(){
+  const wrap=document.createElement('div');wrap.className='tpl-list';
+  const hasWork=FLOORS.some(f=>(f.APS?.length||f.DZS?.length||f.SWS?.length||f.CAMS?.length||(f.WALLS&&f.WALLS.length)||f.img||f.imgId));
+  if(hasWork){
+    const warn=document.createElement('div');warn.className='ep-hint';
+    warn.textContent='Starting from a template replaces the plan on screen. Save your work first if you need it.';
+    wrap.appendChild(warn);
+  }
+  for(const t of SITE_TEMPLATES){
+    const row=document.createElement('button');row.className='btn tpl-item';row.dataset.template=t.id;
+    const title=document.createElement('strong');title.textContent=t.title;
+    const sub=document.createElement('span');sub.className='tpl-sub';
+    sub.textContent=`${t.summary} ${t.settings.vlans.length} VLANs · ${t.settings.policies.length} policies.`;
+    row.append(title,sub);
+    row.addEventListener('click',()=>{
+      closeModal();
+      _loadProjectObject(buildTemplateProject(t.id),`Template loaded: ${t.title} — upload a floor plan to begin`);
+    });
+    wrap.appendChild(row);
+  }
+  showModalNode('New from template',wrap,null);
+}
+// Plan → device: RouterOS config for a switch + drift check against its /export.
+function showDeviceConfig(){
+  const wrap=document.createElement('div');
+  mountDeviceConfig({
+    root:wrap,
+    getProject:()=>({settings:SETTINGS,floors:FLOORS}),
+    switchId:selType==='sw'?selId:undefined,
+    onChange:()=>autosave(),
+    onDownload:(name,text)=>_downloadFile(name,text,'text/plain'),
+    // Desktop only: read the device's config over SSH. Touching a real device
+    // is always an explicit, per-click decision.
+    onPull:(window.plexusNative&&window.plexusNative.sshPullConfig)?async sw=>{
+      const t=sshTarget(sw);
+      if(!t)return {ok:false,error:'No IP or host set on this device'};
+      if(!sshTargetIsSafe(t))return {ok:false,error:'Host, user or key contains characters that are not allowed'};
+      if(!confirm(`Connect to ${t.user?t.user+'@':''}${t.host} over SSH and read its configuration?\n\nRead-only: runs "/export" and nothing else.`))return null;
+      return window.plexusNative.sshPullConfig({host:t.host,user:t.user,port:t.port,key:t.key,vendor:sshVendor(sw.model)});
+    }:undefined,
+    // Desktop only: hand the script to rosconf as a DRY RUN in a terminal. The
+    // app never passes --apply — pushing to the device is the user's own step.
+    onDeploy:(window.plexusNative&&window.plexusNative.deployRosconf)?async (sw,name,text)=>{
+      const t=sshTarget(sw);
+      if(!t)return {ok:false,error:'No IP or host set on this device'};
+      if(!sshTargetIsSafe(t))return {ok:false,error:'Host, user or key contains characters that are not allowed'};
+      return window.plexusNative.deployRosconf({target:{host:t.host,user:t.user,port:t.port,key:t.key},name,text});
+    }:undefined,
+    // Remember how the device compared with the plan the last time it was checked.
+    onDrift:(sw,r)=>{sw.drift={at:new Date().toISOString(),errors:r.errors,warnings:r.warnings};autosave();},
+  });
+  showModalNode('Device config & drift',wrap,null);
+}
+// VLAN reachability table for the report, from the same simulation the Simulate
+// mode runs. Empty string when the plan has fewer than two addressed VLANs (or
+// the plan can't be compiled) — the report simply omits the section.
+function _vlanMatrixHtml(){
+  let m;
+  try{m=reachabilityMatrix(compileTopology(simProject()));}catch(_){return '';}
+  if(m.vlans.length<2)return '';
+  const cls={allowed:'ok',blocked:'bad',unreachable:'warn','n/a':'muted'};
+  const rows=matrixRows(m);
+  const body=rows.slice(1).map((r,i)=>`<tr><th>${esc(r[0])}</th>${r.slice(1).map((c,j)=>`<td class="mx-${cls[m.cells[i][j].status]||'muted'}">${esc(c)}</td>`).join('')}</tr>`).join('');
+  return `<h2>VLAN reachability</h2><p class="muted">Simulated from the plan: ✓ allowed · ⛔ blocked by a firewall rule · ✗ no route · · not testable (one device).</p>`+
+    `<table class="mx"><thead><tr>${rows[0].map(h=>`<th>${esc(h)}</th>`).join('')}</tr></thead><tbody>${body}</tbody></table>`;
+}
 function toggleSimPanel(show){
   const panel=document.getElementById('sim-panel');
   if(!panel)return;
@@ -2232,16 +2493,7 @@ viewport.addEventListener('click',e=>{
     // Remember last-used model: new APs default to whatever model the user
     // last selected or placed in this session (or the project default).
     const defaultModel=AP_RANGE_M[SETTINGS.lastModel]?SETTINGS.lastModel:'U6 Pro';
-    APS().push({
-      id,name:'AP-'+String(num).padStart(2,'0'),model:defaultModel,
-      freq:'2.4 / 5 GHz',channel:'auto',txPower:'auto',sig:'strong',color:'',
-      ip:'',mac:'',port:'',vlan:'',notes:'',comment:'',
-      fx,fy,r:rangeMToPx(AP_RANGE_M[defaultModel]),locked:false,
-      pattern:'omni',heading:0,swId:'',
-      antennaGainDbi:AP_ANTENNA_GAIN_DBI[defaultModel]??4,
-      cableLossDb:0,txPowerDbm:20,mountHeightM:2.7,downtiltDeg:0,
-      capacityClients:25,chanWidth:40,
-    });
+    APS().push(_newAp(id,'AP-'+String(num).padStart(2,'0'),defaultModel,fx,fy));
     sel(id,'ap');setMode('sel');render();renderList();calcCoverage();toast('AP placed — edit in panel');
   }else if(mode==='dz'){
     snapshot();
@@ -2365,6 +2617,10 @@ function renderRuler(){
   const distPx=Math.hypot(b.x-a.x,b.y-a.y);
   const distM=(distPx*(scaleM/100)).toFixed(1);
   const mx=(a.x+b.x)/2,my=(a.y+b.y)/2;
+  // The ruler is drawn in plan pixels, which shrink with the zoom: on a large
+  // plan fitted to the window the label was a couple of pixels tall. Size
+  // everything by 1/zoom so it is the same on screen at any zoom level.
+  const k=1/(scale||1);
 
   const line=mk('line');
   line.setAttribute('x1',a.x);line.setAttribute('y1',a.y);
@@ -2375,13 +2631,13 @@ function renderRuler(){
   // Endpoint markers
   for(const p of [a,b]){
     const c=mk('circle');
-    c.setAttribute('cx',p.x);c.setAttribute('cy',p.y);c.setAttribute('r',4);
+    c.setAttribute('cx',p.x);c.setAttribute('cy',p.y);c.setAttribute('r',5*k);
     c.setAttribute('class','ruler-pt');
     rulerLayer.appendChild(c);
   }
   // Tick marks at each end, perpendicular to the line
   const angle=Math.atan2(b.y-a.y,b.x-a.x);
-  const tickLen=10;
+  const tickLen=11*k;
   const perp={x:-Math.sin(angle)*tickLen,y:Math.cos(angle)*tickLen};
   for(const p of [a,b]){
     const tick=mk('line');
@@ -2391,16 +2647,18 @@ function renderRuler(){
     rulerLayer.appendChild(tick);
   }
   // Distance label — background pill + text
+  const text=distM+' m';
+  const fs=17*k;                                   // 17 px on screen
+  const lblW=(text.length*0.62+1.6)*fs,lblH=fs*1.75;
   const lblBg=mk('rect');
-  const lblW=60,lblH=18;
   lblBg.setAttribute('x',mx-lblW/2);lblBg.setAttribute('y',my-lblH/2);
   lblBg.setAttribute('width',lblW);lblBg.setAttribute('height',lblH);
-  lblBg.setAttribute('rx',9);lblBg.setAttribute('class','ruler-lbl-bg');
+  lblBg.setAttribute('rx',lblH/2);lblBg.setAttribute('class','ruler-lbl-bg');
   rulerLayer.appendChild(lblBg);
   const lbl=mk('text');
   lbl.setAttribute('x',mx);lbl.setAttribute('y',my);
-  lbl.setAttribute('class','ruler-lbl');
-  lbl.textContent=distM+' m';
+  lbl.setAttribute('class','ruler-lbl');lbl.style.fontSize=fs+'px';   // inline: the class sets a size too
+  lbl.textContent=text;
   rulerLayer.appendChild(lbl);
 }
 function updateRuler(cx,cy){
@@ -2827,7 +3085,8 @@ function renderAPs(){
 
     // On-map label: just the AP name. Model + all other technical details are
     // visible in the right-side properties panel when an AP is selected.
-    const lbl=mk('text');lbl.setAttribute('x',cx);lbl.setAttribute('y',cy);
+    // Below the dot (7 px radius), so the name never sits on top of the marker.
+    const lbl=mk('text');lbl.setAttribute('x',cx);lbl.setAttribute('y',cy+9+ls*.75);
     lbl.setAttribute('class',isSel?'ap-lbl-sel':'ap-lbl');lbl.setAttribute('font-size',ls);lbl.textContent=ap.name;
     if(apColor)lbl.style.fill=apColor;
 
@@ -2872,7 +3131,7 @@ function renderDZs(){
     pulse.setAttribute('class','dz-pulse');pulse.style.transformOrigin=`${cx}px ${cy}px`;pulse.style.animation='dzs 8s linear infinite';
     if(isSel){pulse.style.stroke=tInk();pulse.style.strokeWidth='2.5';pulse.style.fill=tInk(.1);}
     const icon=mk('text');icon.setAttribute('x',cx);icon.setAttribute('y',cy);icon.setAttribute('text-anchor','middle');icon.setAttribute('dominant-baseline','central');icon.setAttribute('font-size','18');icon.setAttribute('fill',tInk());icon.textContent='⚠';
-    const lbl=mk('text');lbl.setAttribute('x',cx);lbl.setAttribute('y',cy+dz.r+11);lbl.setAttribute('text-anchor','middle');lbl.setAttribute('font-size','10');lbl.setAttribute('font-family','Rajdhani,sans-serif');lbl.setAttribute('font-weight','700');lbl.setAttribute('letter-spacing','.1em');lbl.setAttribute('fill',tInk());lbl.setAttribute('paint-order','stroke');lbl.setAttribute('stroke',tBg());lbl.setAttribute('stroke-width','3');lbl.textContent=(dz.label||'').toUpperCase();
+    const lbl=mk('text');lbl.setAttribute('x',cx);lbl.setAttribute('y',cy+dz.r+11);lbl.setAttribute('text-anchor','middle');lbl.setAttribute('font-size','10');lbl.setAttribute('font-family','-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica Neue,Arial,sans-serif');lbl.setAttribute('font-weight','700');lbl.setAttribute('letter-spacing','.1em');lbl.setAttribute('fill',tInk());lbl.setAttribute('paint-order','stroke');lbl.setAttribute('stroke',tBg());lbl.setAttribute('stroke-width','3');lbl.textContent=(dz.label||'').toUpperCase();
     if(isSel&&!dz.locked){const rh=mk('circle');rh.setAttribute('cx',cx+dz.r);rh.setAttribute('cy',cy);rh.setAttribute('r',8);rh.setAttribute('class','rh-sel');rh.dataset.resizeDz=dz.id;rh.style.pointerEvents='all';rh.addEventListener('pointerdown',e=>{e.stopPropagation();resId=dz.id;resizeStartX=e.clientX;resizeStartR=dz.r;});g.appendChild(rh);}
     [pulse,icon,lbl].forEach(el=>g.appendChild(el));
     g.addEventListener('pointerdown',e=>{e.stopPropagation();if(e.shiftKey&&mode==='sel'){toggleSelection(dz.id,'dz');return;}sel(dz.id,'dz');if(!dz.locked){const img=vpToImg(e.clientX,e.clientY);dragOffX=dz.fx*w-img.x;dragOffY=dz.fy*h-img.y;dragId=dz.id;dragType='dz';_dragInitialFx=dz.fx;_dragInitialFy=dz.fy;}});
@@ -3102,7 +3361,17 @@ function renderSWs(){
     box.setAttribute('fill',isSel?tInk(.1):tInk(.04));
     box.setAttribute('stroke',tInk());box.setAttribute('stroke-width',isSel?'2':'1.2');
     const icon=mk('text');icon.setAttribute('x',cx);icon.setAttribute('y',cy);icon.setAttribute('text-anchor','middle');icon.setAttribute('dominant-baseline','central');icon.setAttribute('font-size',iconFs);icon.setAttribute('fill',tInk());icon.textContent='⊞';
-    const lbl=mk('text');lbl.setAttribute('x',cx);lbl.setAttribute('y',cy+sz*.9);lbl.setAttribute('text-anchor','middle');lbl.setAttribute('font-size',lblFs);lbl.setAttribute('font-family','Rajdhani,sans-serif');lbl.setAttribute('font-weight','700');lbl.setAttribute('letter-spacing','.08em');lbl.setAttribute('fill',tInk());lbl.setAttribute('paint-order','stroke');lbl.setAttribute('stroke',tBg());lbl.setAttribute('stroke-width','2.5');lbl.textContent=(sw.name||'').toUpperCase();
+    const lbl=mk('text');lbl.setAttribute('x',cx);lbl.setAttribute('y',cy+sz*.9);lbl.setAttribute('text-anchor','middle');lbl.setAttribute('font-size',lblFs);lbl.setAttribute('font-family','-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica Neue,Arial,sans-serif');lbl.setAttribute('font-weight','700');lbl.setAttribute('letter-spacing','.08em');lbl.setAttribute('fill',tInk());lbl.setAttribute('paint-order','stroke');lbl.setAttribute('stroke',tBg());lbl.setAttribute('stroke-width','2.5');lbl.textContent=(sw.name||'').toUpperCase();
+    // A router with a built-in radio covers the floor like an AP: draw its
+    // ring (clipped by walls) under the device box.
+    const wifiAp=showCoverage?routerAsAp(sw,F().scaleM):null;
+    if(wifiAp){
+      const ring=mk('path');ring.setAttribute('d',getCoveragePath(wifiAp));
+      ring.setAttribute('class',isSel?'ap-sel-outer':'ap-outer');ring.style.pointerEvents='none';
+      const covOp=Math.max(0,Math.min(1,(SETTINGS.coverageOpacity??100)/100));
+      if(covOp<1)ring.setAttribute('opacity',covOp);
+      g.appendChild(ring);
+    }
     [box,icon,lbl].forEach(el=>g.appendChild(el));
     g.addEventListener('pointerdown',e=>{
       e.stopPropagation();
@@ -3254,11 +3523,26 @@ function _heatJob(){
   const mode=SETTINGS.heatmapMode||'rssi';
   const modeDef=HEATMAP_MODES[mode]||HEATMAP_MODES.rssi;
   const bandFilter=SETTINGS.heatmapBand||'all';
-  const aps=APS().filter(ap=>_bandMatches(ap,bandFilter)).map(_heatApShape);
+  // WiFi routers radiate too (./src/routerWifi.js).
+  const aps=rfAps(F()).filter(ap=>_bandMatches(ap,bandFilter)).map(_heatApShape);
+  // APs on the other floors, reaching this one through the slabs between.
+  // Floors are stacked in tab order; plans are assumed to cover the same
+  // footprint (positions carry over as fractions). Each AP's radius is
+  // converted from its own floor's scale to this one's, and its path is the
+  // 3-D distance across `floorHeightM` per level.
   const neighbour=[];
   if(SETTINGS.showFloorLeakage){
-    if(curFloor-1>=0)for(const ap of (FLOORS[curFloor-1].APS||[]))if(_bandMatches(ap,bandFilter))neighbour.push(_heatApShape(ap));
-    if(curFloor+1<FLOORS.length)for(const ap of (FLOORS[curFloor+1].APS||[]))if(_bandMatches(ap,bandFilter))neighbour.push(_heatApShape(ap));
+    const mppHere=(scaleM||100)/100;
+    const floorH=Number.isFinite(SETTINGS.floorHeightM)&&SETTINGS.floorHeightM>0?SETTINGS.floorHeightM:3;
+    FLOORS.forEach((f,i)=>{
+      if(i===curFloor)return;
+      const slabs=Math.abs(i-curFloor);
+      const k=((f.scaleM||100)/100)/mppHere;
+      for(const ap of rfAps(f)){
+        if(!_bandMatches(ap,bandFilter))continue;
+        neighbour.push({..._heatApShape(ap),r:ap.r*k,slabs,verticalM:slabs*floorH});
+      }
+    });
   }
   if(!aps.length&&!neighbour.length)return null;
   return {
@@ -3493,11 +3777,13 @@ function commitAnno(x2,y2){
   const w=mapImg.naturalWidth||1,h=mapImg.naturalHeight||1;
   const fx=annoStart.x/w, fy=annoStart.y/h, fx2=x2/w, fy2=y2/h;
   if(annoSubMode==='text'){
-    const txt=prompt('Label text','');
-    if(txt!==null && txt.trim()){
+    const floor=F();   // the prompt is async — pin the floor the click was on
+    promptText('Text label','Label text','').then(txt=>{
+      if(txt===null||!txt.trim()||!FLOORS.includes(floor))return;
       snapshot();
-      ANNOS().push({id:'an'+(++nid),kind:'text',fx,fy,fx2:fx,fy2:fy,text:txt.trim()});
-    }
+      (floor.ANNOS||(floor.ANNOS=[])).push({id:'an'+(++nid),kind:'text',fx,fy,fx2:fx,fy2:fy,text:txt.trim()});
+      render();
+    });
   } else {
     snapshot();
     ANNOS().push({id:'an'+(++nid),kind:annoSubMode,fx,fy,fx2,fy2,text:''});
@@ -3516,7 +3802,7 @@ function updateApStickReadout(){
   if(!el)return;
   if(!apStickStart || !dragId || dragType!=='ap'){el.style.display='none';return;}
   const w=mapImg.naturalWidth||1,h=mapImg.naturalHeight||1;
-  const cur=_sampleFloorCoverage(F(),w,h);
+  const cur=_sampleFloorCoverage(rfFloor(F()),w,h,_COV_OPTS);
   const curPct=cur.total?cur.covered/cur.total*100:0;
   if(apStickBest===null||curPct>apStickBest)apStickBest=curPct;
   const delta=curPct-apStickStart.covPct;
@@ -3529,7 +3815,7 @@ function updateApStickReadout(){
 function startApStick(apId){
   if(!apId)return;
   const w=mapImg.naturalWidth||1,h=mapImg.naturalHeight||1;
-  const cur=_sampleFloorCoverage(F(),w,h);
+  const cur=_sampleFloorCoverage(rfFloor(F()),w,h,_COV_OPTS);
   const ap=APS().find(a=>a.id===apId);
   if(!ap)return;
   apStickStart={id:apId,fx:ap.fx,fy:ap.fy,covPct:cur.total?cur.covered/cur.total*100:0};
@@ -3721,6 +4007,11 @@ function _csvEscape(v){
   const s=String(v??'');
   if(/[",\n]/.test(s))return '"'+s.replace(/"/g,'""')+'"';
   return s;
+}
+// The print popups are written by this page, so they inherit its CSP — which
+// forbids inline handlers. Attach the click from here instead.
+function _wirePrintButton(w){
+  try{const b=w.document.querySelector('.print-btn');if(b)b.addEventListener('click',()=>w.print());}catch(_){}
 }
 function _downloadFile(filename,content,mime){
   const blob=new Blob([content],{type:mime||'text/plain'});
@@ -3936,6 +4227,7 @@ td{font-size:12px;padding:5px 8px;border-bottom:1px solid rgba(0,0,0,.1)}
 <div>${statusRow}</div>
 ${floorSections}
 ${reportNetworkHtml()}
+${_vlanMatrixHtml()}
 <div class="note">Generated by Plexus — Network Site Planner. The CSVs in this pack (inventory, IP plan, port map, BoM, cable schedule) carry the same data in machine-readable form.${SETTINGS.footerLine?' · '+esc(SETTINGS.footerLine):''}</div>
 </body></html>`;
 }
@@ -4025,19 +4317,21 @@ table.install td{font-size:12px;padding:6px 9px;border-bottom:1px solid rgba(0,0
 </style></head><body>
 <div class="cover"><h1>${esc(SETTINGS.company||'Plexus')} — AP install sheets</h1><div class="sub">${new Date().toLocaleDateString()} · ${allAps.length} sheets</div></div>
 ${sections}
-<button class="print-btn" onclick="window.print()">Print / Save as PDF</button>
+<button class="print-btn">Print / Save as PDF</button>
 </body></html>`;
-  if(w){w.document.open();w.document.write(html);w.document.close();toast(t('toast.installs_exported'));}
+  if(w){w.document.open();w.document.write(html);w.document.close();_wirePrintButton(w);toast(t('toast.installs_exported'));}
   else toast('Allow pop-ups to open the install sheets');
 }
 
 // ═══ REVISIONS + DIFF ═════════════════════════════
+// Revision snapshots never carry device credentials: they are saved outside the
+// credentials vault, so a copy here would defeat the passphrase.
 function _snapshotForRevision(){
-  return JSON.parse(JSON.stringify(FLOORS,_stripCacheReplacer));
+  return JSON.parse(JSON.stringify(FLOORS,stripCredsReplacer));
 }
-function newRevision(){
-  const name=prompt('Revision name (e.g., "rev B – after client walk")','rev '+String.fromCharCode(65+PROJECT_REVISIONS.length));
-  if(!name)return;
+async function newRevision(){
+  const name=await promptText('New revision','Revision name (e.g., "rev B – after client walk")','rev '+String.fromCharCode(65+PROJECT_REVISIONS.length));
+  if(!name||!name.trim())return;
   PROJECT_REVISIONS.push({
     id:'rev'+(++nid),
     name:name.trim(),
@@ -4052,10 +4346,25 @@ function restoreRevision(id){
   if(!rev)return;
   showModal('Restore revision',`Replace current floors with revision <strong>${esc(rev.name)}</strong>? Current state will be lost (consider saving a fresh revision first).`,()=>{
     snapshot();
+    // Snapshots hold no credentials — carry the current ones over by device id.
+    const keepCreds=collectCreds(FLOORS);
+    const prevImgs=new Map(FLOORS.map(f=>[f.id,{imgId:f.imgId||'',img:f.img||'',imgName:f.imgName||''}]));
     FLOORS=JSON.parse(JSON.stringify(rev.snapshot));
+    attachCreds(FLOORS,keepCreds,{overwrite:false});
     if(curFloor>=FLOORS.length)curFloor=0;
-    syncScaleFromFloor();loadFloorImage();renderFloorTabs();render();renderList();renderRP();calcCoverage();
-    toast('Restored '+rev.name);
+    selId=null;selType=null;
+    // A snapshot names its floor plan by image id only. That image may not
+    // exist here (project opened on another computer, or the plan was replaced
+    // since) — keep the current plan for that floor instead of going blank.
+    Promise.all(FLOORS.map(async f=>{
+      if(f.img)return;
+      const have=f.imgId?(_imgCache.has(f.imgId)||await idbGetImage(f.imgId).catch(()=>null)):null;
+      const cur=prevImgs.get(f.id);
+      if(!have&&cur&&(cur.imgId||cur.img)){f.imgId=cur.imgId;f.img=cur.img;f.imgName=cur.imgName;}
+    })).finally(()=>{
+      syncScaleFromFloor();loadFloorImage();renderFloorTabs();render();renderList();renderRP();calcCoverage();
+      toast('Restored '+rev.name);
+    });
   });
 }
 function _diffRevisions(a,b){
@@ -4167,7 +4476,7 @@ function showRevisions(){
 // organization actions (bulk IPs, renaming, CSV/handover exports).
 function showInventory(){
   const wrap=document.createElement('div');
-  wrap.style.cssText='font-family:Rajdhani,sans-serif;font-size:13px';
+  wrap.style.cssText='font-family:inherit;font-size:13px';
   const devs=allDevices();
   if(!devs.length){
     wrap.textContent='Nothing placed yet. Add APs, cameras or switches first.';
@@ -4188,7 +4497,7 @@ function showInventory(){
   const done=counts.live+counts.tested;
   const pct=Math.round((done/devs.length)*100);
   const pctEl=document.createElement('span');
-  pctEl.style.cssText='margin-left:auto;font-family:"Share Tech Mono",monospace;font-size:11px;opacity:.7';
+  pctEl.style.cssText='margin-left:auto;font-family:var(--font-mono);font-size:11px;opacity:.7';
   pctEl.textContent=`${pct}% tested/live`;
   prog.appendChild(pctEl);
   wrap.appendChild(prog);
@@ -4463,7 +4772,7 @@ function doDrag(cx,cy){
   // new position. Other types use a cheap transform on the existing group.
   if(dragType==='cam'||dragType==='client'){render();return;} // re-render so the association line follows
   const layer=dragType==='ap'?apLayer:dragType==='dz'?dzLayer:swLayer;
-  const grp=layer.querySelector(`[data-id="${dragId}"]`);
+  const grp=layer.querySelector(`[data-id="${CSS.escape(dragId)}"]`);
   if(grp){
     const dx=(fx-_dragInitialFx)*w;
     const dy=(fy-_dragInitialFy)*h;
@@ -4480,7 +4789,7 @@ function endDrag(){
   // Clear the per-element transform and do one full render so the item's real
   // coords (now updated on the data) are reflected everywhere.
   const layer=dragType==='ap'?apLayer:dragType==='dz'?dzLayer:dragType==='sw'?swLayer:dragType==='cam'?camLayer:null;
-  if(layer){const grp=layer.querySelector(`[data-id="${dragId}"]`);if(grp)grp.removeAttribute('transform');}
+  if(layer){const grp=layer.querySelector(`[data-id="${CSS.escape(dragId)}"]`);if(grp)grp.removeAttribute('transform');}
   if(dragType==='ap')invalidateCoverageCache();
   // AP-on-stick: clear the live coverage readout.
   if(dragType==='ap')endApStick();
@@ -4490,16 +4799,16 @@ function endDrag(){
 function doResize(cx){
   const img=vpToImg(cx,0);
   const ap=APS().find(a=>a.id===resId);
-  if(ap){ap.r=Math.max(15,Math.min(500,Math.abs(img.x-ap.fx*(mapImg.naturalWidth||1))));const slider=document.getElementById('ep-r');if(slider){slider.value=Math.round(ap.r);document.getElementById('ep-rv').textContent=Math.round(ap.r*(scaleM/100))+'m';}render();calcCoverage();return;}
+  if(ap){ap.r=Math.max(15,Math.min(radiusMaxPx(500,100),Math.abs(img.x-ap.fx*(mapImg.naturalWidth||1))));const slider=document.getElementById('ep-r');if(slider){slider.value=Math.round(ap.r);document.getElementById('ep-rv').textContent=Math.round(ap.r*(scaleM/100))+'m';}render();calcCoverage();return;}
   const dz=DZS().find(a=>a.id===resId);
-  if(dz){dz.r=Math.max(10,Math.min(300,Math.abs(img.x-dz.fx*(mapImg.naturalWidth||1))));const slider=document.getElementById('dz-r');if(slider){slider.value=Math.round(dz.r);document.getElementById('dz-rv').textContent=Math.round(dz.r*(scaleM/100))+'m';}render();}
+  if(dz){dz.r=Math.max(10,Math.min(radiusMaxPx(300,60),Math.abs(img.x-dz.fx*(mapImg.naturalWidth||1))));const slider=document.getElementById('dz-r');if(slider){slider.value=Math.round(dz.r);document.getElementById('dz-rv').textContent=Math.round(dz.r*(scaleM/100))+'m';}render();}
 }
 
 // ═══ COVERAGE CALC ════════════════════════════════
 // Defers to the pure sampler in geometry.js so logic stays in one place.
 function sampleFloorCoverage(floor){
   const w=mapImg.naturalWidth||1,h=mapImg.naturalHeight||1;
-  return _sampleFloorCoverage(floor,w,h);
+  return _sampleFloorCoverage(rfFloor(floor),w,h,_COV_OPTS);
 }
 // Wall-aware sampling is heavier than the old circle check, so coalesce calls
 // during fast operations (drag, slider scrub). `calcCoverage()` schedules the
@@ -4550,14 +4859,14 @@ function promptCalibration(){
   const px=Math.hypot(rulerEnd.x-rulerStart.x,rulerEnd.y-rulerStart.y);
   if(px<2){toast('Line too short — draw a longer one');return;}
   const wrap=document.createElement('div');
-  wrap.style.cssText='font-family:Rajdhani,sans-serif;font-size:13px';
+  wrap.style.cssText='font-family:inherit;font-size:15px;line-height:1.45';
   const p=document.createElement('div');
   p.textContent=`This line is ${px.toFixed(0)} px. Enter its real-world length:`;
   p.style.marginBottom='8px';
   const row=document.createElement('div');row.style.cssText='display:flex;gap:6px;align-items:center';
   const inp=document.createElement('input');
   inp.type='number';inp.min='0.1';inp.step='0.1';inp.className='ep-in';
-  inp.value=(px*(scaleM/100)).toFixed(1);inp.style.width='130px';
+  inp.value=(px*(scaleM/100)).toFixed(1);inp.style.cssText='width:150px;font-size:18px;min-height:36px';
   const unit=document.createElement('span');unit.textContent='metres';
   row.append(inp,unit);wrap.append(p,row);
   showModalNode('Calibrate scale',wrap,()=>{
@@ -4566,10 +4875,10 @@ function promptCalibration(){
     snapshot();
     const newScale=realM/px*100;            // metres per 100 px
     setScaleM(newScale);
-    const el=document.getElementById('scale-m');if(el)el.value=Math.round(newScale*100)/100;
+    const el=document.getElementById('scale-m');if(el)el.value=+scaleM.toPrecision(4);
     SETTINGS.archScale='';                   // now a custom, measured scale
     updateScaleBar();calcCoverage();render();renderList();renderRP();
-    toast(`Scale set: ${newScale.toFixed(2)} m / 100 px`);
+    toast(`Scale set: ${+scaleM.toPrecision(4)} m / 100 px`);
   });
   setTimeout(()=>{inp.focus();inp.select();},50);
 }
@@ -4580,7 +4889,7 @@ function updateScaleBar(){
   // 100px in image space = scaleM metres; in screen space = 100*sc px
   const screenPx=100*scale;
   document.getElementById('sbar-line').style.width=screenPx+'px';
-  document.getElementById('sbar-txt').textContent=scaleM+'m';
+  document.getElementById('sbar-txt').textContent=(+scaleM.toPrecision(3))+'m';
 }
 
 // ═══ TOGGLES ══════════════════════════════════════
@@ -4672,6 +4981,7 @@ function connectSsh(item){
     }).catch(err=>toast('SSH: '+((err&&err.message)||err)));
     return;
   }
+  if(!sshTargetIsSafe(t)){toast('SSH: host, user or key contains characters that are not allowed');return;}
   const cmd=sshCommand(item);
   if(cmd&&navigator.clipboard&&navigator.clipboard.writeText){
     navigator.clipboard.writeText(cmd).then(()=>toast('SSH command copied: '+cmd)).catch(()=>toast(cmd));
@@ -4773,7 +5083,7 @@ function updImg(){
   snapshotSoon();
   item.imageUrl=v;
   // A typed URL replaces any uploaded image; release the IDB blob.
-  if(v&&item.imgId){const old=item.imgId;item.imgId='';idbDeleteImage(old).catch(()=>{});}
+  if(v&&item.imgId){const old=item.imgId;item.imgId='';_releaseImage(old);}
   _refreshDeviceImg(item,selType);
 }
 
@@ -4810,7 +5120,7 @@ function _applyDeviceImageFile(file){
       await idbPutImage(id,dataUrl);
       _imgCache.set(id,dataUrl);
       item.imgId=id;item.imageUrl='';
-      if(oldId&&oldId!==id)idbDeleteImage(oldId).catch(()=>{});
+      if(oldId&&oldId!==id)_releaseImage(oldId);
     }catch{
       item.imgId='';item.imageUrl=dataUrl;
     }
@@ -4831,7 +5141,7 @@ function uploadDeviceImage(input){
 function clearDeviceImage(){
   const item=_selectedDevice();if(!item||!(item.imgId||item.imageUrl))return;
   snapshot();
-  if(item.imgId){const old=item.imgId;item.imgId='';idbDeleteImage(old).catch(()=>{});}
+  if(item.imgId){const old=item.imgId;item.imgId='';_releaseImage(old);}
   item.imageUrl='';
   if(selType==='ap')renderAPPanel();else if(selType==='cam')renderCAMPanel();else if(selType==='sw')renderSWPanel();
   render();renderList();
@@ -4927,7 +5237,7 @@ function renderCAMPanel(){
     </div>
     <div class="ep-row ep-slider-row">
       <label class="ep-lbl">View Range</label>
-      <input class="ep-rng" id="cam-range" type="range" min="20" max="400" value="${Math.round(c.range||80)}" data-input-action="upd-cam-range"/>
+      <input class="ep-rng" id="cam-range" type="range" min="20" max="${radiusMaxPx(400,150)}" value="${Math.round(c.range||80)}" data-input-action="upd-cam-range"/>
       <span class="ep-rng-val" id="cam-range-v">${realR}m</span>
     </div>
     <div class="ep-row ep-slider-row">
@@ -5053,7 +5363,7 @@ function renderAPPanel(){
   rpBody.innerHTML=`
     ${deviceImageBlock(ap,'ap')}
     <div class="ep-section">Identity</div>
-    <div class="ep-row"><label class="ep-lbl">Name</label><input class="ep-in" id="ep-name" value="${ap.name}" data-input-action="upd-ap"/></div>
+    <div class="ep-row"><label class="ep-lbl">Name</label><input class="ep-in" id="ep-name" value="${esc(ap.name)}" data-input-action="upd-ap"/></div>
     <div class="ep-row"><label class="ep-lbl">AP Model</label><select class="ep-sel" id="ep-model" data-input-action="upd-ap">${mOpts}</select></div>
     <div class="ep-row"><label class="ep-lbl">Frequency</label>
       <select class="ep-sel" id="ep-freq" data-input-action="upd-ap">
@@ -5078,7 +5388,7 @@ function renderAPPanel(){
     </div>
     <div class="ep-section">Coverage Range</div>
     <div class="ep-row ep-slider-row">
-      <input class="ep-rng" id="ep-r" type="range" min="15" max="500" value="${Math.round(ap.r)}" data-input-action="upd-ap-r"/>
+      <input class="ep-rng" id="ep-r" type="range" min="15" max="${radiusMaxPx(500,100)}" value="${Math.round(ap.r)}" data-input-action="upd-ap-r"/>
       <span class="ep-rng-val" id="ep-rv">${realR}m</span>
     </div>
     <div class="ep-section">Antenna Pattern</div>
@@ -5104,7 +5414,7 @@ function renderAPPanel(){
     <div class="ep-row"><label class="ep-lbl">Airtime est.</label><span class="ep-rng-val" id="ep-airtime-v">${_airtimeLabel(ap)}</span></div>
     <div class="ep-section">Network Info</div>
     <div class="ep-row"><label class="ep-lbl">IP Address</label><input class="ep-in" id="ep-ip" value="${esc(ap.ip||'')}" data-input-action="upd-ap" placeholder="192.168.1.x"/><button class="btn" style="flex:0 0 auto;padding:4px 8px" data-action="suggest-ip-ap" title="Suggest next free IP in this device's VLAN subnet">IP+</button></div>
-    <div class="ep-row"><label class="ep-lbl">MAC Address</label><input class="ep-in ep-mono" id="ep-mac" value="${ap.mac||''}" data-input-action="upd-ap" placeholder="aa:bb:cc:dd:ee:ff"/></div>
+    <div class="ep-row"><label class="ep-lbl">MAC Address</label><input class="ep-in ep-mono" id="ep-mac" value="${esc(ap.mac||'')}" data-input-action="upd-ap" placeholder="aa:bb:cc:dd:ee:ff"/></div>
     <div class="ep-row"><label class="ep-lbl">Switch</label>
       <select class="ep-sel" id="ep-sw" data-input-action="upd-ap">
         <option value=""${!ap.swId?' selected':''}>— None —</option>
@@ -5123,7 +5433,7 @@ function renderAPPanel(){
     </div>
     ${credsBlock(ap)}
     <div class="ep-section">Notes</div>
-    <div class="ep-row"><textarea class="ep-txt" id="ep-notes" rows="4" data-input-action="upd-ap" placeholder="Cable run, switch port, install notes...">${ap.notes||''}</textarea></div>
+    <div class="ep-row"><textarea class="ep-txt" id="ep-notes" rows="4" data-input-action="upd-ap" placeholder="Cable run, switch port, install notes...">${esc(ap.notes||'')}</textarea></div>
     <button class="btn ep-del" data-action="ask-del">✕ Delete AP</button>`;
   _wireDeviceImg();
 }
@@ -5134,10 +5444,10 @@ function renderDZPanel(){
   const realR=Math.round(dz.r*(scaleM/100));
   rpBody.innerHTML=`
     <div class="ep-section">Label</div>
-    <div class="ep-row"><input class="ep-in" id="dz-lbl" value="${dz.label}" data-input-action="upd-dz"/></div>
+    <div class="ep-row"><input class="ep-in" id="dz-lbl" value="${esc(dz.label)}" data-input-action="upd-dz"/></div>
     <div class="ep-section">Radius</div>
     <div class="ep-row ep-slider-row">
-      <input class="ep-rng" id="dz-r" type="range" min="10" max="300" value="${Math.round(dz.r)}" data-input-action="upd-dz-r"/>
+      <input class="ep-rng" id="dz-r" type="range" min="10" max="${radiusMaxPx(300,60)}" value="${Math.round(dz.r)}" data-input-action="upd-dz-r"/>
       <span class="ep-rng-val" id="dz-rv">${realR}m</span>
     </div>
     <label class="ep-check"><input type="checkbox" ${dz.locked?'checked':''} data-change-action="toggle-lock"/><span>Lock position</span></label>
@@ -5148,6 +5458,9 @@ function renderDZPanel(){
 
 function renderSWPanel(){
   const sw=SWS().find(a=>a.id===selId);if(!sw)return;
+  // Built-in WiFi (only for models that have a radio — ./src/routerWifi.js).
+  const wifiSpec=routerWifiSpec(sw.model);
+  const wifiRow=wifiSpec?`<label class="ep-check"><input type="checkbox" id="sw-wifi" ${sw.wifi===false?'':'checked'} data-input-action="upd-sw"/><span>Built-in WiFi — ${esc(wifiSpec.std)}, ${esc(wifiSpec.freq)}, about ${esc(wifiSpec.rangeM)} m (shown as coverage)</span></label>`:'';
   document.getElementById('rp-head').textContent='Edit Switch/Router';
   const mOpts=buildGroupedOptions(SW_MODEL_GROUPS,sw.model||'USW-24-PoE');
   // If the stored model isn't in our known list, treat it as a custom override
@@ -5159,6 +5472,11 @@ function renderSWPanel(){
   const uplinkOpts=FLOORS.map((f,i)=>{
     const opts=(f.SWS||[]).filter(s=>s.id!==sw.id)
       .map(s=>`<option value="${esc(s.id)}"${s.id===sw.uplinkId?' selected':''}>${esc(s.name)} · ${esc(s.model||'')}</option>`).join('');
+    return opts?`<optgroup label="${esc(f.name||('Floor '+(i+1)))}">${opts}</optgroup>`:'';
+  }).join('');
+  const uplink2Opts=FLOORS.map((f,i)=>{
+    const opts=(f.SWS||[]).filter(s=>s.id!==sw.id)
+      .map(s=>`<option value="${esc(s.id)}"${s.id===sw.uplink2Id?' selected':''}>${esc(s.name)} · ${esc(s.model||'')}</option>`).join('');
     return opts?`<optgroup label="${esc(f.name||('Floor '+(i+1)))}">${opts}</optgroup>`:'';
   }).join('');
   const statusColor=a.overBudget||a.overPorts||a.classFails.length?'#c0382b':'#1e7d3c';
@@ -5188,7 +5506,14 @@ function renderSWPanel(){
         <option value="routed"${sw.uplinkMode==='routed'?' selected':''}>Routed (L3 /30)</option>
       </select>
     </div>
+    <div class="ep-row"><label class="ep-lbl">Redundant uplink</label>
+      <select class="ep-sel" id="sw-uplink2" data-input-action="upd-sw" title="A second trunk to another switch. Spanning tree blocks one link and fails over to the other.">
+        <option value=""${!sw.uplink2Id?' selected':''}>— None —</option>${uplink2Opts}
+      </select>
+    </div>
+    <div class="ep-row"><label class="ep-lbl">STP priority</label><input class="ep-in ep-mono" id="sw-stp" type="number" min="0" max="61440" step="4096" value="${Number.isFinite(sw.stpPriority)?sw.stpPriority:''}" data-input-action="upd-sw" placeholder="32768 (lowest becomes root)"/></div>
     <label class="ep-check"><input type="checkbox" id="sw-l3" ${sw.role==='l3'?'checked':''} data-input-action="upd-sw"/><span>Layer 3 — routes between VLANs (set a gateway IP per VLAN in Project Settings)</span></label>
+    ${wifiRow}
     <div class="ep-row"><button class="btn" data-action="open-console" style="width:100%">⌨ CLI Console (IOS / RouterOS)</button></div>
     <div class="ep-row" style="font-family:'Share Tech Mono';font-size:11px;color:${statusColor};opacity:.9">${esc(statusLine)}</div>
     <div class="ep-section">Connected Devices (${a.used})</div>
@@ -5203,7 +5528,7 @@ function renderSWPanel(){
     ${inventoryBlock(sw,'sw','upd-sw')}
     ${credsBlock(sw)}
     <div class="ep-section">Notes</div>
-    <div class="ep-row"><textarea class="ep-txt" id="sw-notes" rows="3" data-input-action="upd-sw" placeholder="Location, uplink, config notes...">${sw.notes||''}</textarea></div>
+    <div class="ep-row"><textarea class="ep-txt" id="sw-notes" rows="3" data-input-action="upd-sw" placeholder="Location, uplink, config notes...">${esc(sw.notes||'')}</textarea></div>
     <label class="ep-check"><input type="checkbox" ${sw.locked?'checked':''} data-change-action="toggle-lock"/><span>Lock position</span></label>
     <button class="btn ep-del" data-action="ask-del">✕ Delete</button>`;
   _wireDeviceImg();
@@ -5295,8 +5620,15 @@ function updSW(){
   if(upEl)sw.uplinkId=upEl.value;
   const umEl=document.getElementById('sw-uplinkmode');
   if(umEl)sw.uplinkMode=umEl.value;
+  const up2El=document.getElementById('sw-uplink2');
+  if(up2El){if(up2El.value&&up2El.value!==sw.uplinkId)sw.uplink2Id=up2El.value;else delete sw.uplink2Id;}
+  const stpEl=document.getElementById('sw-stp');
+  if(stpEl){const n=parseInt(stpEl.value,10);if(Number.isFinite(n)&&n>=0&&n<=61440)sw.stpPriority=n;else delete sw.stpPriority;}
   const l3El=document.getElementById('sw-l3');
   if(l3El)sw.role=l3El.checked?'l3':'switch';
+  // Built-in radio switch: stored only when turned OFF (on is the default).
+  const wifiEl=document.getElementById('sw-wifi');
+  if(wifiEl){if(wifiEl.checked)delete sw.wifi;else sw.wifi=false;}
   sw.notes=document.getElementById('sw-notes').value;
   // Switching to a different known model: adopt its default PoE budget unless
   // the user had set a custom one (i.e. it still matches the old model's default).
@@ -5305,7 +5637,9 @@ function updSW(){
     if(wasDefault){sw.poeBudget=SW_POE_BUDGET_W[sw.model];if(poeEl)poeEl.value=sw.poeBudget;}
   }
   _refreshDeviceImg(sw,'sw');
-  render();renderList();
+  // A different model can gain or lose a radio: redraw the panel row for it.
+  if(sw.model!==prevModel&&(!!routerWifiSpec(sw.model))!==(!!routerWifiSpec(prevModel)))renderSWPanel();
+  render();renderList();calcCoverage();
 }
 function updSWSize(v){
   const sw=SWS().find(a=>a.id===selId);if(!sw)return;
@@ -5327,12 +5661,7 @@ function credBadge(d){
 // True if any device stores a plaintext password and no credentials passphrase
 // is set — used to nudge toward the encrypted-creds vault on entering Operate.
 function _hasPlaintextCreds(){
-  for(const f of FLOORS){
-    for(const key of ['APS','SWS','CAMS']){
-      for(const d of (f[key]||[])){if(d&&d.creds&&d.creds.pass)return true;}
-    }
-  }
-  return false;
+  return hasPlaintextPasswords(FLOORS);
 }
 function renderList(){
   leftList.innerHTML='';
@@ -5380,7 +5709,7 @@ function renderList(){
       const sigDots={strong:'●●●',medium:'●●○',weak:'●○○'}[ap.sig||'strong'];
       const sigClass={strong:'sig-s',medium:'sig-m',weak:'sig-w'}[ap.sig||'strong'];
       const dotStyle=ap.color?` style="background:${esc(ap.color)}"`:'';
-      d.innerHTML=`<div class="li-dot"${dotStyle}></div><div class="li-info"><div class="li-name">${esc(ap.name)}<span class="li-status" style="background:${statusMeta(ap).color}" title="${esc(statusMeta(ap).label)}"></span>${credBadge(ap)}</div><div class="li-sub">${esc(ap.model||'U6 Pro')}</div></div><span class="li-sig ${sigClass}">${sigDots}</span>${ap.locked?'<span class="li-lock">🔒</span>':''}<button class="li-del" data-action="quick-del" data-id="${ap.id}" data-type="ap">✕</button>`;
+      d.innerHTML=`<div class="li-dot"${dotStyle}></div><div class="li-info"><div class="li-name">${esc(ap.name)}<span class="li-status" style="background:${statusMeta(ap).color}" title="${esc(statusMeta(ap).label)}"></span>${credBadge(ap)}</div><div class="li-sub">${esc(ap.model||'U6 Pro')}</div></div><span class="li-sig ${sigClass}">${sigDots}</span>${ap.locked?'<span class="li-lock">🔒</span>':''}<button class="li-del" data-action="quick-del" data-id="${esc(ap.id)}" data-type="ap">✕</button>`;
       d.addEventListener('click',e=>{if(e.target.closest('.li-del'))return;sel(ap.id,'ap',{zoom:true});setMode('sel');});leftList.appendChild(d);
     });
   }
@@ -5388,7 +5717,7 @@ function renderList(){
     const h=document.createElement('div');h.className='sec-lbl';h.textContent='Switches/Routers';leftList.appendChild(h);
     filteredSWs.forEach(sw=>{
       const d=document.createElement('div');d.className='list-item sw-item'+(sw.id===selId?' active':'');
-      d.innerHTML=`<span style="font-size:12px">⊞</span><div class="li-info"><div class="li-name">${esc(sw.name)}<span class="li-status" style="background:${statusMeta(sw).color}" title="${esc(statusMeta(sw).label)}"></span>${credBadge(sw)}</div><div class="li-sub">${esc(sw.model||'')}</div></div><button class="li-del" data-action="quick-del" data-id="${sw.id}" data-type="sw">✕</button>`;
+      d.innerHTML=`<span style="font-size:12px">⊞</span><div class="li-info"><div class="li-name">${esc(sw.name)}<span class="li-status" style="background:${statusMeta(sw).color}" title="${esc(statusMeta(sw).label)}"></span>${credBadge(sw)}</div><div class="li-sub">${esc(sw.model||'')}</div></div><button class="li-del" data-action="quick-del" data-id="${esc(sw.id)}" data-type="sw">✕</button>`;
       d.addEventListener('click',e=>{if(e.target.closest('.li-del'))return;sel(sw.id,'sw',{zoom:true});setMode('sel');});leftList.appendChild(d);
     });
   }
@@ -5397,7 +5726,7 @@ function renderList(){
     filteredCAMs.forEach(c=>{
       const d=document.createElement('div');d.className='list-item cam-item'+(c.id===selId?' active':'')+(c.locked?' locked':'');
       const dotStyle=c.color?` style="background:${esc(c.color)}"`:'';
-      d.innerHTML=`<div class="li-dot"${dotStyle}></div><div class="li-info"><div class="li-name">${esc(c.name)}<span class="li-status" style="background:${statusMeta(c).color}" title="${esc(statusMeta(c).label)}"></span>${credBadge(c)}</div><div class="li-sub">${esc(c.model||'')} · ${esc(c.resolution||'')}</div></div>${c.locked?'<span class="li-lock">🔒</span>':''}<button class="li-del" data-action="quick-del" data-id="${c.id}" data-type="cam">✕</button>`;
+      d.innerHTML=`<div class="li-dot"${dotStyle}></div><div class="li-info"><div class="li-name">${esc(c.name)}<span class="li-status" style="background:${statusMeta(c).color}" title="${esc(statusMeta(c).label)}"></span>${credBadge(c)}</div><div class="li-sub">${esc(c.model||'')} · ${esc(c.resolution||'')}</div></div>${c.locked?'<span class="li-lock">🔒</span>':''}<button class="li-del" data-action="quick-del" data-id="${esc(c.id)}" data-type="cam">✕</button>`;
       d.addEventListener('click',e=>{if(e.target.closest('.li-del'))return;sel(c.id,'cam',{zoom:true});setMode('sel');});leftList.appendChild(d);
     });
   }
@@ -5405,7 +5734,7 @@ function renderList(){
     const h=document.createElement('div');h.className='sec-lbl';h.textContent='Dead Zones';leftList.appendChild(h);
     filteredDZs.forEach(dz=>{
       const d=document.createElement('div');d.className='list-item dz-item'+(dz.id===selId?' active':'');
-      d.innerHTML=`<span style="font-size:12px">⚠</span><span class="li-name">${esc(dz.label)}</span><button class="li-del" data-action="quick-del" data-id="${dz.id}" data-type="dz">✕</button>`;
+      d.innerHTML=`<span style="font-size:12px">⚠</span><span class="li-name">${esc(dz.label)}</span><button class="li-del" data-action="quick-del" data-id="${esc(dz.id)}" data-type="dz">✕</button>`;
       d.addEventListener('click',e=>{if(e.target.closest('.li-del'))return;sel(dz.id,'dz',{zoom:true});setMode('sel');});leftList.appendChild(d);
     });
   }
@@ -5419,7 +5748,7 @@ function renderList(){
       const lenM=(Math.hypot(wpx.x2-wpx.x1,wpx.y2-wpx.y1)*(scaleM/100)).toFixed(1);
       const d=document.createElement('div');
       d.className='list-item'+(w.id===selId?' active':'');
-      d.innerHTML=`<span style="font-size:12px">▌</span><div class="li-info"><div class="li-name">Wall ${i+1}</div><div class="li-sub">${esc(mat.label)} · ${lenM} m</div></div><button class="li-del" data-action="quick-del" data-id="${w.id}" data-type="wall">✕</button>`;
+      d.innerHTML=`<span style="font-size:12px">▌</span><div class="li-info"><div class="li-name">Wall ${i+1}</div><div class="li-sub">${esc(mat.label)} · ${lenM} m</div></div><button class="li-del" data-action="quick-del" data-id="${esc(w.id)}" data-type="wall">✕</button>`;
       d.addEventListener('click',e=>{if(e.target.closest('.li-del'))return;sel(w.id,'wall',{zoom:true});setMode('sel');});
       leftList.appendChild(d);
     });
@@ -5462,12 +5791,17 @@ function _showModalEl(title,bodyEl,okCB,cancelCB){
   const body=document.getElementById('mdl-body');
   body.replaceChildren(bodyEl);
   modalCB=okCB||null;modalCancelCB=cancelCB||null;
-  document.getElementById('mdl').classList.remove('help-modal','wide-modal');
+  document.getElementById('mdl').classList.remove('help-modal','wide-modal','settings-modal');
   const ok=document.getElementById('mdl-ok');
   if(ok){ok.style.display=okCB?'':'none';}
   const cancel=document.querySelector('#mdl .mdl-actions .btn:not(#mdl-ok)');
   if(cancel)cancel.textContent=okCB?'Cancel':'Close';
   document.getElementById('mbg').classList.add('vis');
+  // Dialogs with wide content (device config, policies, matrices) used to be
+  // clipped at the edges of the 420 px default. Measured once visible: if the
+  // body overflows sideways, give the dialog the wide layout.
+  const _mb=document.getElementById('mdl-body');
+  if(_mb.scrollWidth>_mb.clientWidth+1)document.getElementById('mdl').classList.add('wide-modal');
   // Move focus into the dialog so screen readers announce it and Tab is trapped.
   const mdl=document.getElementById('mdl');
   const first=mdl.querySelector('input,select,textarea,button');
@@ -5605,7 +5939,10 @@ function updateCnt(){document.getElementById('ap-cnt').textContent=APS().length;
 function togglePresent(){
   pres=!pres;
   document.getElementById('btn-pres').classList.toggle('active',pres);
-  document.getElementById('btn-pres').textContent=pres?'■ Exit':'▶ Present';
+  // Icon + label, built with DOM calls (no markup strings).
+  const pb=document.getElementById('btn-pres');
+  _setIconLabel(pb,pres?'stop':'play',pres?'Exit':'Present');
+  document.body.classList.toggle('presenting',pres);   // hides the floating tool palette
   ['hint-bar','left-sb','right-sb'].forEach(id=>{const el=document.getElementById(id);if(el)el.style.display=pres?'none':'';});
   // Hide the meta + tools rows, but keep the floor-row so users can still flip floors.
   document.querySelectorAll('.topbar-meta, .topbar-tools').forEach(el=>{el.style.display=pres?'none':'';});
@@ -5634,7 +5971,7 @@ function buildFloorOverlaySVG(floor,imgEl){
     if(!Number.isFinite(ap.fx)||!Number.isFinite(ap.fy)||!Number.isFinite(ap.r)||ap.r<=0)return '';
     const cx=(ap.fx*cw).toFixed(1),cy=(ap.fy*ch).toFixed(1),r=ap.r,ri=(r*.54).toFixed(1);
     const ls=Math.max(8,Math.min(14,r*.17)).toFixed(1);
-    const col=ap.color||'';
+    const col=safeColor(ap.color);
     const oc=col||({strong:'#000',medium:'rgba(0,0,0,.55)',weak:'rgba(0,0,0,.3)'}[ap.sig]);
     const of=col?hexToRgba(col,.08):({strong:'rgba(0,0,0,.04)',medium:'rgba(0,0,0,.035)',weak:'rgba(0,0,0,.025)'}[ap.sig]);
     const innerFill=col?hexToRgba(col,.12):'rgba(0,0,0,.05)';
@@ -5680,7 +6017,7 @@ ${innerShape}
     if(!Number.isFinite(c.fx)||!Number.isFinite(c.fy))return '';
     const cx=c.fx*cw, cy=c.fy*ch;
     const fov=c.fov||80,heading=c.heading||0,range=c.range||80;
-    const col=c.color||'#000';
+    const col=safeColor(c.color)||'#000';
     let cone;
     if(fov>=350){
       cone=`<circle cx="${cx.toFixed(1)}" cy="${cy.toFixed(1)}" r="${range}" fill="${hexToRgba(col,.12)}" stroke="${col}" stroke-width="1.2" opacity=".85"/>`;
@@ -5707,7 +6044,7 @@ async function doExport(){
   const {cw,ch,innerSVG}=buildMapOverlaySVG();
   const name=f.imgName||'WiFi Map';
   const apImg=await _resolveExportImages(APS());
-  const html=`<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width,initial-scale=1.0"/><title>${name} — Coverage | Plexus</title><link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Rajdhani:wght@500;600;700&display=swap" rel="stylesheet"><style>
+  const html=`<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width,initial-scale=1.0"/><title>${esc(name)} — Coverage | Plexus</title><link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Rajdhani:wght@500;600;700&display=swap" rel="stylesheet"><style>
 *{box-sizing:border-box;margin:0;padding:0}
 html,body{background:#efece5;min-height:100vh;display:flex;flex-direction:column;align-items:center;padding:28px 18px 40px;font-family:'Rajdhani',sans-serif;color:#000}
 .tb{width:100%;max-width:1200px;display:flex;align-items:center;justify-content:space-between;margin-bottom:16px}
@@ -5767,15 +6104,48 @@ html,body{background:#efece5;min-height:100vh;display:flex;flex-direction:column
 </style></head><body>
 <header class="mh"><div class="mhl">${SETTINGS.logoDataUrl?`<img class="mhlogo" src="${esc(SETTINGS.logoDataUrl)}" alt=""/>`:''}<div class="mht">${esc(SETTINGS.reportTitle||name)}</div><div class="mhs">${esc(SETTINGS.company||'Plexus')}${SETTINGS.tagline?' · '+esc(SETTINGS.tagline):''}</div></div><div class="mhm">${esc(SETTINGS.metaLine||'WiFi Coverage Audit')}</div></header>
 <div id="mw">
-<div class="mb"><img id="mi" src="${imgSrc}" alt="Coverage Map"/><div id="ov"><svg id="sl" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${cw} ${ch}" preserveAspectRatio="xMidYMid meet"><defs><filter id="gf"><feGaussianBlur stdDeviation="3" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter></defs>${innerSVG}</svg></div></div>
+<div class="mb"><img id="mi" src="${esc(imgSrc)}" alt="Coverage Map"/><div id="ov"><svg id="sl" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${cw} ${ch}" preserveAspectRatio="xMidYMid meet"><defs><filter id="gf"><feGaussianBlur stdDeviation="3" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter></defs>${innerSVG}</svg></div></div>
 <div class="ml"><div class="li"><div class="ld"></div>AP</div><div class="li"><div class="lr"></div>Coverage</div><div class="li">⚠ Dead Zone</div><div class="li">⊞ Switch</div><span class="lb">${esc(SETTINGS.company||'Plexus')}</span></div></div>
-${APS().length?`<table class="at"><thead><tr><th>#</th><th>Name</th><th>Model</th><th>Freq</th><th>Ch</th><th>TX</th><th>Signal</th><th>IP</th><th>MAC</th><th>Port</th><th>VLAN</th><th>Notes</th></tr></thead><tbody>${APS().map((ap,i)=>`<tr><td>${i+1}</td><td>${apImg.has(ap)?`<img class="thumb" src="${apImg.get(ap)}" alt=""/>`:''}${ap.name}</td><td>${ap.model||''}</td><td>${ap.freq}</td><td style="font-family:'Share Tech Mono',monospace;font-size:10px">${ap.channel||'auto'}</td><td style="font-family:'Share Tech Mono',monospace;font-size:10px">${ap.txPower||'auto'}</td><td class="${{strong:'ss',medium:'sm',weak:'sw'}[ap.sig]}">${{strong:'● Strong',medium:'● Medium',weak:'● Weak'}[ap.sig]}</td><td style="font-family:'Share Tech Mono',monospace;font-size:10px">${ap.ip||'—'}</td><td style="font-family:'Share Tech Mono',monospace;font-size:10px">${ap.mac||'—'}</td><td>${ap.port||'—'}</td><td>${ap.vlan||'—'}</td><td style="font-size:10px;color:rgba(0,0,0,.55)">${esc(ap.comment||ap.notes||'—')}</td></tr>`).join('')}</tbody></table>`:''}
+${APS().length?`<table class="at"><thead><tr><th>#</th><th>Name</th><th>Model</th><th>Freq</th><th>Ch</th><th>TX</th><th>Signal</th><th>IP</th><th>MAC</th><th>Port</th><th>VLAN</th><th>Notes</th></tr></thead><tbody>${APS().map((ap,i)=>`<tr><td>${i+1}</td><td>${apImg.has(ap)?`<img class="thumb" src="${apImg.get(ap)}" alt=""/>`:''}${esc(ap.name)}</td><td>${esc(ap.model||'')}</td><td>${esc(ap.freq)}</td><td style="font-family:'Share Tech Mono',monospace;font-size:10px">${esc(ap.channel||'auto')}</td><td style="font-family:'Share Tech Mono',monospace;font-size:10px">${esc(ap.txPower||'auto')}</td><td class="${{strong:'ss',medium:'sm',weak:'sw'}[ap.sig]}">${{strong:'● Strong',medium:'● Medium',weak:'● Weak'}[ap.sig]}</td><td style="font-family:'Share Tech Mono',monospace;font-size:10px">${esc(ap.ip||'—')}</td><td style="font-family:'Share Tech Mono',monospace;font-size:10px">${esc(ap.mac||'—')}</td><td>${esc(ap.port||'—')}</td><td>${esc(ap.vlan||'—')}</td><td style="font-size:10px;color:rgba(0,0,0,.55)">${esc(ap.comment||ap.notes||'—')}</td></tr>`).join('')}</tbody></table>`:''}
 ${SETTINGS.footerLine?`<footer class="ft">${esc(SETTINGS.footerLine)}</footer>`:''}
 </body></html>`;
   const blob=new Blob([html],{type:'text/html'});const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=(name||'wifi').replace(/\s+/g,'_')+'_coverage.html';a.click();toast('Exported!');
 }
 
 // ═══ PDF ══════════════════════════════════════════
+// Client-facing report (coverage, equipment, sign-off). What goes in is decided
+// by ./src/clientReport.js — no IPs, MACs, VLANs, ports, notes or credentials.
+async function doClientReport(){
+  // Open the window inside the click, before any await, or it is blocked.
+  const w=window.open('','_blank');
+  if(!w){toast('Pop-up blocked — allow pop-ups to open the report');return;}
+  toast('Building client report…');
+  const floorViews=[];
+  let allC=0,allT=0;
+  for(const f of FLOORS){
+    const src=await resolveFloorImage(f).catch(()=>f.img||'')||f.img||'';
+    let cw=1000,ch=700;
+    if(src){
+      try{
+        const dims=await new Promise((res,rej)=>{const im=new Image();im.onload=()=>res({w:im.naturalWidth,h:im.naturalHeight});im.onerror=rej;im.src=src;});
+        cw=dims.w;ch=dims.h;
+      }catch(_){}
+    }
+    const overlay=buildFloorOverlaySVG(f,{naturalWidth:cw,naturalHeight:ch});
+    const cov=_sampleFloorCoverage(rfFloor(f),cw,ch,_COV_OPTS);
+    allC+=cov.covered;allT+=cov.total;
+    floorViews.push({src,overlay,pct:cov.total?Math.round(cov.covered/cov.total*100):0});
+  }
+  const model=buildClientReportModel({
+    settings:SETTINGS,floors:FLOORS,floorViews,
+    coveragePct:allT?Math.round(allC/allT*100):0,
+    clientCapacity:totalClientCapacity(),
+    cable:cableTotals(),storageGb:totalStorageGb(),
+  });
+  w.document.open();w.document.write(renderClientReport(model));w.document.close();
+  _wirePrintButton(w);
+  toast('Client report opened — use Print to save as PDF');
+}
 async function doPDF(){
   // Resolve each floor's image (from IDB) and load it into a temporary
   // HTMLImageElement so we know its natural dimensions for the overlay SVG.
@@ -5795,14 +6165,14 @@ async function doPDF(){
       }catch(_){}
     }
     const overlay=buildFloorOverlaySVG(f,{naturalWidth:cw,naturalHeight:ch});
-    const cov=_sampleFloorCoverage(f,cw,ch);
+    const cov=_sampleFloorCoverage(rfFloor(f),cw,ch,_COV_OPTS);
     const pct=cov.total?Math.round(cov.covered/cov.total*100):0;
     floorRecords.push({floor:f,src,overlay,pct});
   }
   // Whole-building coverage rollup (weighted by floor sample counts).
   let allC=0,allT=0;
   for(const r of floorRecords){
-    const c=_sampleFloorCoverage(r.floor,r.overlay.cw,r.overlay.ch);
+    const c=_sampleFloorCoverage(rfFloor(r.floor),r.overlay.cw,r.overlay.ch,_COV_OPTS);
     allC+=c.covered;allT+=c.total;
   }
   const buildingPct=allT?Math.round(allC/allT*100):0;
@@ -5839,7 +6209,7 @@ async function doPDF(){
     }).join('')}</tbody></table>`:'';
     const dzTable=dzs.length?`<h3>Dead Zones (${dzs.length})</h3><table><thead><tr><th>Label</th><th>Notes</th></tr></thead><tbody>${dzs.map(dz=>`<tr><td>${esc(dz.label||'—')}</td><td class="muted">${esc(dz.comment||dz.notes||'—')}</td></tr>`).join('')}</tbody></table>`:'';
     const mapBlock=r.src
-      ? `<div class="map-wrap"><img src="${r.src}" alt="Map"/><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${r.overlay.cw} ${r.overlay.ch}" preserveAspectRatio="xMidYMid meet">${r.overlay.innerSVG}</svg></div>`
+      ? `<div class="map-wrap"><img src="${esc(r.src)}" alt="Map"/><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${r.overlay.cw} ${r.overlay.ch}" preserveAspectRatio="xMidYMid meet">${r.overlay.innerSVG}</svg></div>`
       : `<div class="map-wrap empty"><span>No floor plan uploaded for this floor.</span></div>`;
     return `<section class="floor-sec${fi>0?' page-break':''}">
   <h2>${esc(f.name||('Floor '+(fi+1)))}<span class="floor-cov"> · ${r.pct}% coverage</span></h2>
@@ -5884,6 +6254,7 @@ img.thumb{height:26px;width:auto;max-width:44px;object-fit:contain;vertical-alig
 .footer{margin-top:48px;padding-top:16px;border-top:1px solid #000;font-size:9px;color:#000;font-family:'Share Tech Mono',monospace;display:flex;justify-content:space-between;letter-spacing:.15em;text-transform:uppercase;font-weight:700}
 .print-btn{margin-top:24px;padding:12px 28px;background:#000;color:#efece5;border:none;border-radius:2px;font-size:11px;cursor:pointer;font-family:'Share Tech Mono',monospace;font-weight:700;letter-spacing:.2em;text-transform:uppercase}
 .print-btn:hover{background:rgba(0,0,0,.8)}
+table.mx{width:auto}table.mx th,table.mx td{text-align:center;padding:5px 12px}.mx-ok{color:#1e7d3c}.mx-bad{color:#c0382b;font-weight:700}.mx-warn{color:#b26a00}
 @media print{body{padding:24px 28px;background:#fff}.print-btn{display:none}.cover{page-break-after:always}h2,h3{page-break-after:avoid}table{page-break-inside:auto}tr{page-break-inside:avoid}.floor-sec{page-break-inside:avoid}}
 </style></head><body>
 <div class="cover">
@@ -5904,11 +6275,13 @@ img.thumb{height:26px;width:auto;max-width:44px;object-fit:contain;vertical-alig
 </div>
 ${floorSections}
 ${reportNetworkHtml()}
+${_vlanMatrixHtml()}
 <div class="footer"><span>${esc(SETTINGS.company||'Plexus')}${SETTINGS.contact?' · '+esc(SETTINGS.contact):''}</span><span>Generated ${new Date().toLocaleString(SETTINGS.locale||'en-GB')}</span></div>
 ${SETTINGS.footerLine?`<div class="footer-line">${esc(SETTINGS.footerLine)}</div>`:''}
-<button class="print-btn" onclick="window.print()">Print / Save as PDF</button>
+<button class="print-btn">Print / Save as PDF</button>
 </body></html>`);
   w.document.close();
+  _wirePrintButton(w);
   toast('PDF preview opened — use Print to save as PDF');
 }
 
@@ -5919,28 +6292,44 @@ window.addEventListener('resize',()=>{render();renderMM();updateScaleBar();});
 // Silent save every 10s; full state is captured so a refresh doesn't lose work.
 // Note: if the user has a very large embedded floor-plan image, the payload may
 // exceed the 5MB localStorage quota — we catch that and skip silently.
-const AUTOSAVE_KEY='noctis_wifi_autosave';
+// Keys were renamed to plexus_*; adopt a value saved under the old name once
+// so an existing session, theme and sidebar width survive the update.
+function _adoptLegacyKey(key,legacy){
+  try{
+    if(localStorage.getItem(key)===null){
+      const old=localStorage.getItem(legacy);
+      if(old!==null){localStorage.setItem(key,old);localStorage.removeItem(legacy);}
+    }
+  }catch(_){}
+  return key;
+}
+const AUTOSAVE_KEY=_adoptLegacyKey('plexus_autosave','noctis_wifi_autosave');
 const AUTOSAVE_INTERVAL_MS=10000;
-let lastAutosavePayload='';
+let lastAutosaveBody='';
 
 let _autosaveQuotaWarned=false;
-function autosave(){
+function autosave(force){
   // Skip when the tab is not visible — the user isn't making changes, and
   // running the JSON.stringify on every tick in a backgrounded tab is wasteful.
   // Images live in IndexedDB now (referenced by imgId), so the autosave payload
   // is a few KB even with multi-floor projects.
-  if(typeof document!=='undefined'&&document.hidden)return;
+  if(force!==true&&typeof document!=='undefined'&&document.hidden)return;
   try{
     // When a credentials passphrase is set, never write plaintext creds to
-    // localStorage — strip them from the autosave payload (the encrypted copy
-    // lives only in explicitly-saved project files).
-    const replacer=_credPass
-      ? (k,v)=>(k.startsWith('_')||k==='creds')?undefined:v
+    // localStorage — they are stripped from the devices and stored only as the
+    // encrypted vault, so a restored session can still unlock them.
+    const replacer=CREDS.pass
+      ? stripCredsReplacer
       : _stripCacheReplacer;
-    const payload=JSON.stringify({version:PROJECT_VERSION,settings:SETTINGS,floors:FLOORS,revisions:PROJECT_REVISIONS,savedAt:new Date().toISOString()},replacer);
-    if(payload===lastAutosavePayload)return;  // nothing changed
-    localStorage.setItem(AUTOSAVE_KEY,payload);
-    lastAutosavePayload=payload;
+    const vault=CREDS.autosaveVault();
+    // Compared without the timestamp — with it the "nothing changed" check
+    // never matched and every tick rewrote localStorage.
+    const body=JSON.stringify({version:PROJECT_VERSION,settings:SETTINGS,floors:FLOORS,revisions:PROJECT_REVISIONS},replacer);
+    const key=body+(vault?JSON.stringify(vault):'');
+    if(key===lastAutosaveBody)return;  // nothing changed
+    const extra=(vault?',"credsVault":'+JSON.stringify(vault):'')+',"savedAt":'+JSON.stringify(new Date().toISOString());
+    localStorage.setItem(AUTOSAVE_KEY,body.slice(0,-1)+extra+'}');
+    lastAutosaveBody=key;
     _autosaveQuotaWarned=false;
   }catch(err){
     // QuotaExceededError — floor-plan images can be large. Tell the user once
@@ -5964,6 +6353,7 @@ function tryRestoreAutosave(){
     showModalText('Restore Previous Session?',`A saved session from ${when} was found.\n\nRestore it, or start fresh?`,
       async ()=>{
         const [migrated]=migrateProject(data);
+        _beginProjectSwitch();
         FLOORS=migrated.floors;
         SETTINGS={...DEFAULT_SETTINGS,...(migrated.settings||{})};
         applyStoredCatalog();
@@ -5978,6 +6368,8 @@ function tryRestoreAutosave(){
         applySettingsToBrand();
         loadFloorImage();renderFloorTabs();render();renderList();renderRP();calcCoverage();
         toast('Session restored');
+        // The autosave holds credentials only as an encrypted vault.
+        await _unlockCreds(migrated);
       },
       ()=>{localStorage.removeItem(AUTOSAVE_KEY);}
     );
@@ -5990,8 +6382,9 @@ function tryRestoreAutosave(){
 setInterval(autosave,AUTOSAVE_INTERVAL_MS);
 // Save immediately when the user returns to the tab, or is about to close it —
 // this catches changes that happened in the last interval-tick or while hidden.
-document.addEventListener('visibilitychange',()=>{if(!document.hidden)autosave();});
-window.addEventListener('beforeunload',autosave);
+// Also on hide: switching away right after an edit used to leave it unsaved.
+document.addEventListener('visibilitychange',()=>autosave(true));
+window.addEventListener('beforeunload',()=>autosave(true));
 
 renderFloorTabs();renderList();renderRP();applySettingsToBrand();
 
@@ -6006,7 +6399,7 @@ const CLICK_ACTIONS={
   'open-esx':      ()=>document.getElementById('esx-up')?.click(),
   'export-esx':    ()=>doExportEsx(),
   'show-unifi':    ()=>showUnifiDialog(),
-  'open-load':     ()=>document.getElementById('load-up').click(),
+  'open-load':     ()=>(window.plexusNative&&window.plexusNative.projectOpen)?openProjectNative():document.getElementById('load-up').click(),
   'load-sample':   ()=>loadSampleProject(),
   'save':          ()=>saveProject(),
   'share-link':    ()=>shareLink(),
@@ -6036,6 +6429,8 @@ const CLICK_ACTIONS={
   'toggle-present':()=>togglePresent(),
   'export':        ()=>doExport(),
   'pdf':           ()=>doPDF(),
+  'client-report': ()=>doClientReport(),
+  'new-from-template':()=>showTemplates(),
   'add-floor':     ()=>addFloor(),
   'modal-close':   ()=>closeModal(),
   'modal-ok':      ()=>modalOK(),
@@ -6053,6 +6448,9 @@ const CLICK_ACTIONS={
   'install-sheets':()=>doInstallSheets(),
   // Organization features
   'show-inventory':()=>showInventory(),
+  'device-config': ()=>showDeviceConfig(),
+  'show-policies': ()=>showPolicies(),
+  'show-labs':     ()=>showLabs(),
   'handover-pack': ()=>doHandoverPack(),
   'export-ip-plan':()=>doIpPlanCsv(),
   'export-port-map':()=>doPortMapCsv(),
@@ -6259,6 +6657,35 @@ document.addEventListener('keydown',e=>{
 // ═══ SETTINGS PANEL ═══════════════════════════════
 // Per-project branding/locale shown in HTML & PDF exports. Built as DOM nodes
 // (no innerHTML) so user-supplied strings are inert.
+// Lay the flat settings form out like System Settings: section list on the
+// left, one grouped card per section on the right. All sections stay in the
+// page (the list scrolls to them) so nothing is hidden from find/keyboard.
+function _paneSettings(form){
+  const groups=[];let cur=null;
+  for(const k of [...form.children]){
+    if(k.classList.contains('settings-heading')){cur={title:k.textContent,nodes:[]};groups.push(cur);}
+    else{if(!cur){cur={title:'General',nodes:[]};groups.push(cur);}cur.nodes.push(k);}
+  }
+  if(groups.length<2)return;
+  const nav=document.createElement('div');nav.className='settings-nav';
+  const panes=document.createElement('div');panes.className='settings-panes';
+  const items=[];
+  groups.forEach((g,i)=>{
+    const pane=document.createElement('section');pane.className='settings-pane';
+    const h=document.createElement('div');h.className='settings-pane-title';h.textContent=g.title;
+    const card=document.createElement('div');card.className='settings-card';
+    card.append(...g.nodes);
+    pane.append(h,card);panes.appendChild(pane);
+    const b=document.createElement('button');b.type='button';b.className='settings-nav-item'+(i===0?' active':'');b.textContent=g.title;
+    b.addEventListener('click',()=>{
+      items.forEach(x=>x.classList.toggle('active',x===b));
+      pane.scrollIntoView({block:'start',behavior:'smooth'});
+    });
+    items.push(b);nav.appendChild(b);
+  });
+  form.replaceChildren(nav,panes);
+  form.classList.add('paned');
+}
 function showSettings(){
   const wrap=document.createElement('div');wrap.className='settings-form';
 
@@ -6353,7 +6780,8 @@ function showSettings(){
   addSelect('regulatoryRegion','Regulatory region',REGULATORY_REGION_KEYS.map(k=>({value:k,label:REGULATORY_REGIONS[k].label})));
   addNumber('noiseFloorDbm','Noise floor (dBm)',-110,-70,1);
   addNumber('floorSlabAttenDb','Floor slab attenuation (dB)',0,40,1);
-  addCheck('showFloorLeakage','Include neighbouring floors in heatmap');
+  addNumber('floorHeightM','Floor-to-floor height (m)',2,10,0.1);
+  addCheck('showFloorLeakage','Include other floors in heatmap (through the slabs)');
 
   // ── Architect scale ──
   addHeading('Drawing scale');
@@ -6417,7 +6845,7 @@ function showSettings(){
   const credLbl=document.createElement('label');credLbl.className='ep-lbl';credLbl.textContent='Credentials passphrase';
   const credInp=document.createElement('input');
   credInp.type='password';credInp.className='ep-in';credInp.autocomplete='new-password';
-  credInp.value=_credPass;credInp.placeholder='blank = store credentials unencrypted';
+  credInp.value=CREDS.pass;credInp.placeholder='blank = store credentials unencrypted';
   credRow.append(credLbl,credInp);wrap.appendChild(credRow);
   const credHint=document.createElement('div');credHint.className='ep-hint';
   credHint.textContent='When set, device credentials are AES-256-GCM encrypted in saved project files and never written to autosave or Share links. Session-only — not stored anywhere; you re-enter it to unlock an encrypted project.';
@@ -6437,7 +6865,7 @@ function showSettings(){
       if(String(SETTINGS[k]||'')!==val){SETTINGS[k]=val;changed=true;}
     }
     // Numbers
-    for(const k of ['noiseFloorDbm','floorSlabAttenDb','cableRoutingFactor','cableBoxM','expectedClients','perClientMbps','retentionDays']){
+    for(const k of ['noiseFloorDbm','floorSlabAttenDb','floorHeightM','cableRoutingFactor','cableBoxM','expectedClients','perClientMbps','retentionDays']){
       if(!inputs[k])continue;
       const v=parseFloat(inputs[k].value);
       if(Number.isFinite(v)&&SETTINGS[k]!==v){SETTINGS[k]=v;changed=true;}
@@ -6452,7 +6880,8 @@ function showSettings(){
     const newVlans=vlanRows.map(e=>({id:(e.id.value||'').trim(),name:(e.name.value||'').trim(),color:e.color.value||'',subnet:(e.subnet.value||'').trim(),gateway:(e.gw.value||'').trim()})).filter(v=>v.id||v.name);
     if(JSON.stringify(newVlans)!==JSON.stringify(vlanList())){SETTINGS.vlans=newVlans;changed=true;}
     // Credentials passphrase (session-only; never persisted to SETTINGS).
-    _credPass=credInp.value||'';
+    if(CREDS.locked){if(credInp.value)_tryUnlock(credInp.value);}
+    else CREDS.setPass(credInp.value);
     const opacity=parseInt(opacityIn.value,10)||100;
     if(SETTINGS.coverageOpacity!==opacity){SETTINGS.coverageOpacity=opacity;changed=true;}
     if(SETTINGS.language)setLang(SETTINGS.language);
@@ -6477,7 +6906,9 @@ function showSettings(){
       render();
     }
   };
+  _paneSettings(wrap);
   showModalNode('Project Settings',wrap,apply,cancel);
+  document.getElementById('mdl').classList.add('wide-modal','settings-modal');
 }
 
 // ═══ HELP OVERLAY ═════════════════════════════════
@@ -6555,12 +6986,21 @@ function initImage(){
 // inverts the palette while keeping all role tokens intact. CSS handles most
 // theming via custom properties; inline SVG attribute colors (the ones that
 // can't reference CSS vars) read live values via tInk()/tBg() at render time.
-const THEME_KEY='noctis_theme';
+const THEME_KEY=_adoptLegacyKey('plexus_theme','noctis_theme');
+// Put a sprite icon (see index.html) and an optional label into a button.
+function _setIconLabel(btn,icon,label){
+  const NS='http://www.w3.org/2000/svg';
+  const svg=document.createElementNS(NS,'svg');svg.setAttribute('class','ic');svg.setAttribute('aria-hidden','true');
+  const use=document.createElementNS(NS,'use');use.setAttribute('href','#i-'+icon);
+  svg.appendChild(use);
+  btn.replaceChildren(svg);
+  if(label){const sp=document.createElement('span');sp.textContent=label;btn.appendChild(sp);}
+}
 function applyTheme(t){
   document.body.classList.toggle('theme-dark',t==='dark');
   if(typeof _resetThemeCache==='function')_resetThemeCache();
   const btn=document.getElementById('btn-theme');
-  if(btn)btn.textContent=t==='dark'?'☼':'☾';
+  if(btn)_setIconLabel(btn,t==='dark'?'sun':'moon','');
   // Inline-SVG colors are baked at render time — re-render so they pick up the
   // new tokens. Defer to next frame so this is safe to call during early init.
   if(typeof render==='function'&&typeof requestAnimationFrame!=='undefined'){
@@ -6596,7 +7036,7 @@ function clearSearch(){
 // User drags the right edge of the left sidebar to resize. Width is stored as
 // a CSS custom property on :root, so existing flex layout stays correct.
 // Persisted to localStorage so the chosen width sticks across sessions.
-const SB_W_KEY='noctis_sb_w';
+const SB_W_KEY=_adoptLegacyKey('plexus_sb_w','noctis_sb_w');
 const SB_MIN=180,SB_MAX=520;
 function setSidebarWidth(px){
   const w=Math.max(SB_MIN,Math.min(SB_MAX,Math.round(px)));
@@ -6660,6 +7100,15 @@ if(typeof window!=='undefined'&&window.plexusNative){
   // Operate mode (real-device SSH) is desktop-only — reveal its tab there.
   const op=document.getElementById('mode-operate');
   if(op)op.style.display='';
+  // File menu (New / Open / Open Recent / Save / Save As) lives in the app menu.
+  if(window.plexusNative.onMenu)window.plexusNative.onMenu(({action,arg})=>{
+    if(action==='new')newProject();
+    else if(action==='new-template')showTemplates();
+    else if(action==='open')openProjectNative();
+    else if(action==='open-recent')openProjectNative(arg);
+    else if(action==='save')saveProject();
+    else if(action==='save-as')saveProject({saveAs:true});
+  });
 }
 // Apply the initial workspace mode (hides Simulate/Operate-only controls in Design).
 if(typeof document!=='undefined')setUiMode('design');
@@ -6670,5 +7119,7 @@ if(typeof document!=='undefined')setUiMode('design');
 setTimeout(async ()=>{
   initImage();
   const loaded=await tryLoadFromHash();
-  if(!loaded)tryRestoreAutosave();
+  // A project opened before this timer fired is already autosaved (the switch
+  // saves at once) — offering to "restore" it would cover it with a dialog.
+  if(!loaded&&!_projectSwitched)tryRestoreAutosave();
 },100);

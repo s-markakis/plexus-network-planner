@@ -3,6 +3,7 @@
 
 import {WALL_MATERIALS} from './geometry.js';
 import {AP_ANTENNA_GAIN_DBI,DEVICE_STATUSES} from './constants.js';
+import {sanitizeProject} from './validate.js';
 
 export const PROJECT_VERSION=11;
 
@@ -22,6 +23,7 @@ export const DEFAULT_SETTINGS={
   regulatoryRegion: 'FCC-US',         // key into REGULATORY_REGIONS
   noiseFloorDbm:    -95,              // for SNR/MCS/throughput maps
   floorSlabAttenDb: 18,               // floor-to-floor slab loss in dB
+  floorHeightM: 3,                    // slab-to-slab height, for the 3-D path between floors
   showFloorLeakage: false,            // include neighbouring floors in heatmap
   heatmapMode:      'rssi',           // 'rssi' | 'snr' | 'mcs' | 'throughput'
   heatmapBand:      'all',            // 'all' | '2.4' | '5' | '6'
@@ -36,6 +38,7 @@ export const DEFAULT_SETTINGS={
   expectedClients:  0,                // expected concurrent clients (0 = no capacity check)
   colorByVlan:      false,            // tint devices on the map by their VLAN colour
   vlans:            [],               // [{id,name,color,subnet}] VLAN registry
+  policies:         [],               // reachability intent, see src/policy.js
   customCatalog:    '',               // JSON string of merged custom vendor models
   // v9 (schema) additions — organization features
   siteCode:         '',               // short site tag for the naming convention, e.g. "HQ"
@@ -52,7 +55,8 @@ export const DEFAULT_SETTINGS={
 
 const DEFAULT_FLOOR_SCALE_M=100;
 
-// Upgrade a loaded project's data to the current schema in place.
+// Upgrade a loaded project's data to the current schema. Works on a sanitized
+// copy (see validate.js) — callers must use the returned object, not the input.
 // Returns [migratedData, warnings[]]. Throws on irrecoverable shape errors.
 //
 // Version history:
@@ -82,6 +86,12 @@ export function migrateProject(data){
   const warnings=[];
   if(!data||typeof data!=='object'){throw new Error('Not a Plexus project file');}
   if(!Array.isArray(data.floors)){throw new Error('Missing floors');}
+  // Structural repair first (untrusted input): the rest of this function, and
+  // the app, may then assume lists are lists and text fields are strings. It
+  // works on a sanitized copy, so always use the returned object.
+  const [clean,repairs]=sanitizeProject(data);
+  data=clean;
+  if(repairs.length)warnings.push(`Project file had ${repairs.length} structural problem(s) that were repaired: ${repairs.slice(0,3).join('; ')}${repairs.length>3?'…':''}`);
   const v=typeof data.version==='number'?data.version:1;
   if(v>PROJECT_VERSION){
     warnings.push(`Project was saved with a newer version (v${v}) — some fields may be ignored.`);
@@ -121,7 +131,7 @@ export function migrateProject(data){
   // Project-level scaleM is the legacy default (pre-v6). New projects use
   // per-floor scaleM; old projects propagate the project-level value down.
   const projectScaleM=typeof data.scaleM==='number'&&data.scaleM>0?data.scaleM:DEFAULT_FLOOR_SCALE_M;
-  data.floors.forEach(f=>{
+  const normFloor=f=>{
     if(!f.imgId)f.imgId='';
     if(typeof f.scaleM!=='number'||f.scaleM<=0)f.scaleM=projectScaleM;
     (f.APS||[]).forEach(ap=>{
@@ -216,7 +226,11 @@ export function migrateProject(data){
       if(typeof c.vlan!=='string')c.vlan='';
       if(typeof c.locked!=='boolean')c.locked=false;
     });
-  });
+  };
+  data.floors.forEach(normFloor);
+  // Revision snapshots are floors too and can be restored into the live plan,
+  // so they get exactly the same normalisation.
+  for(const r of data.revisions)if(Array.isArray(r.snapshot))r.snapshot.forEach(normFloor);
   delete data.scaleM;
   data.version=PROJECT_VERSION;
   return [data,warnings];

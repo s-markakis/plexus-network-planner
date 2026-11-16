@@ -48,7 +48,7 @@ export function bestMetricAt(metric, x, y, job) {
       if (dbm !== null) contribs.push({ dbm, band: ap.band, channel: ap.channel, widthMhz: ap.widthMhz });
     }
     for (const ap of job.neighbour) {
-      const dbm = dbmAtThroughSlab(ap, x, y, w, h, job.slabDb, ap.bandFactor, job.propModel, job.metersPerPx);
+      const dbm = dbmAtThroughSlab(ap, x, y, w, h, job.slabDb, ap.bandFactor, job.propModel, job.metersPerPx, ap.slabs, ap.verticalM);
       if (dbm !== null) contribs.push({ dbm, band: ap.band, channel: ap.channel, widthMhz: ap.widthMhz });
     }
     return sinrWithWidthNoise(contribs, job.noiseFloorDbm);
@@ -66,7 +66,7 @@ export function bestMetricAt(metric, x, y, job) {
     if (v !== null && Number.isFinite(v) && v > best) best = v;
   }
   for (const ap of job.neighbour) {
-    const dbm = dbmAtThroughSlab(ap, x, y, w, h, job.slabDb, ap.bandFactor, job.propModel, job.metersPerPx);
+    const dbm = dbmAtThroughSlab(ap, x, y, w, h, job.slabDb, ap.bandFactor, job.propModel, job.metersPerPx, ap.slabs, ap.verticalM);
     if (dbm === null) continue;
     const nf = noiseFloorForWidth(job.noiseFloorDbm, ap.widthMhz);
     let v = null;
