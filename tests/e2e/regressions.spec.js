@@ -215,3 +215,27 @@ test('the ruler label keeps a readable size on screen at any zoom', async ({page
   const zoomed = await onScreen();
   expect(Math.abs(zoomed - fitted)).toBeLessThan(3);
 });
+
+test('a wireless client joins a router with built-in WiFi, on the map and in the simulator', async ({page}) => {
+  const errors = trackErrors(page);
+  const p = plan();
+  p.floors[0].scaleM = 2;
+  p.floors[0].APS = [];
+  p.floors[0].SWS = [{id: 'r1', name: 'Home router', model: 'hAP ax³', fx: 0.5, fy: 0.5, locked: false}];
+  p.floors[0].CLIENTS = [
+    {id: 'c1', name: 'Laptop', fx: 0.42, fy: 0.5, ip: '192.168.88.20', locked: false},
+    {id: 'c2', name: 'Phone', fx: 0.58, fy: 0.46, ip: '192.168.88.21', locked: false},
+  ];
+  await loadPlan(page, p);
+  await page.locator('[data-uimode-btn="simulate"]').click();
+  // On the map: linked to the router, with a signal reading — not "no AP".
+  await expect(page.locator('.client-lbl').first()).toContainText('dBm');
+  await expect(page.locator('.client-link')).toHaveCount(2);
+  // In the simulator: one client reaches the other through the router.
+  const panel = page.locator('#sim-panel');
+  await panel.locator('#sim-from').selectOption('h:c1');
+  await panel.locator('#sim-to').selectOption('h:c2');
+  await panel.getByRole('button', {name: 'Ping', exact: true}).click();
+  await expect(panel.locator('.sim-verdict')).toHaveText(/Reachable/);
+  expect(errors, errors.join('\n')).toEqual([]);
+});

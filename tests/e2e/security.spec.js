@@ -41,9 +41,9 @@ test('hostile device names/MACs render as text, not markup', async ({page}) => {
   }, 'xss');
   await reload(page, file);
 
-  await page.locator('.ap-grp').first().dispatchEvent('mousedown');
-  await page.locator('.ap-grp').first().dispatchEvent('mouseup');
-  await page.locator('.ap-grp').first().click({force: true});
+  // Click the AP's marker: inside its coverage ring (click-through outside
+  // Select) a click in the default Add mode places a new AP instead.
+  await page.locator('.ap-grp').first().locator('circle.ap-dot').click({force: true});
   await expect(page.locator('#ep-name')).toHaveValue(XSS);
   await expect(page.locator('#ep-mac')).toHaveValue(XSS);
 

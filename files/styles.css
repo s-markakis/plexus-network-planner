@@ -1142,7 +1142,13 @@ body.theme-dark #heat-canvas{mix-blend-mode:screen;opacity:.55}
   gap:14px;pointer-events:none;z-index:3;
   transition:opacity .25s;
 }
-#empty-state.hidden{opacity:0;pointer-events:none}
+/* Hidden must also mean unclickable: the buttons opt back in to pointer events
+   (below), so with opacity alone they stayed live, invisible, over the middle
+   of the map — a click there to place a device opened "New from template" or
+   reloaded the sample project over the user's work. visibility:hidden takes
+   them out of hit-testing and the Tab order; the delay lets the fade finish. */
+#empty-state.hidden{opacity:0;pointer-events:none;visibility:hidden;transition:opacity .25s,visibility 0s linear .25s}
+#empty-state.hidden .es-sample{pointer-events:none}   /* at once, not after the fade */
 .es-line{
   font-size:14px;font-family:var(--font-label);
   color:var(--ink);letter-spacing:0;text-transform:none;font-weight:700;
@@ -1755,3 +1761,9 @@ input[type="file"]::file-selector-button:hover{background:var(--fill-hover)}
    sits above the legend / scale-bar row instead of across it. */
 #ap-stick-readout{top:54px;border:none;border-radius:999px;background:var(--popover);box-shadow:var(--shadow-1);font-family:var(--font-ui);font-size:12px}
 .hint-bar{bottom:58px}
+
+/* Outside Select, coverage shapes must not catch the pointer: with rings over
+   most of a plan they swallowed the clicks of the ruler, walls, annotations
+   and device placement (the click selected the AP underneath instead). The
+   device markers themselves stay clickable/draggable in every mode. */
+body:not([data-mode="sel"]) #sl :is(.ap-outer,.ap-outer-m,.ap-outer-w,.ap-sel-outer,.ap-inner,.ap-inner-m,.ap-inner-w,.ap-sel-inner,.cam-cone,.ol-zone,.roaming-fill){pointer-events:none}
