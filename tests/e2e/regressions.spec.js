@@ -84,7 +84,7 @@ test('a vault left locked survives a save; unlocking re-encrypts without plainte
   expect(saved.data.credsVault, 'locked vault must be kept').toEqual(vault);
 
   // The autosave keeps it too, and never holds the plaintext.
-  const auto = await page.evaluate(() => { window.dispatchEvent(new Event('beforeunload')); return localStorage.getItem('noctis_wifi_autosave'); });
+  const auto = await page.evaluate(() => { window.dispatchEvent(new Event('beforeunload')); return localStorage.getItem('plexus_autosave'); });
   expect(JSON.parse(auto).credsVault).toEqual(vault);
   expect(auto.includes(SECRET)).toBe(false);
 
@@ -165,4 +165,53 @@ test('wide dialogs are not clipped at their edges', async ({page}) => {
     return b.scrollWidth > b.clientWidth + 1;
   });
   expect(clipped2, 'the device-config dialog must fit its content').toBe(false);
+});
+
+test('the toolbar always says Plexus, whatever the report company is', async ({page}) => {
+  const p = plan(); p.settings = {company: 'Some Installer Ltd'};
+  await loadPlan(page, p);
+  await expect(page.locator('#brand-lbl')).toHaveText(/^Plexus/);
+  await expect(page.locator('#brand-lbl')).not.toContainText('Some Installer');
+});
+
+test('a router with built-in WiFi covers the floor; switching its radio off removes it', async ({page}) => {
+  const errors = trackErrors(page);
+  const p = plan();
+  p.floors[0].scaleM = 2;
+  p.floors[0].APS = [];
+  p.floors[0].SWS = [{id: 'sw1', name: 'Router', model: 'hAP ax³', fx: 0.5, fy: 0.5, locked: false}];
+  await loadPlan(page, p);
+  await expect(page.locator('.sw-grp path.ap-outer, .sw-grp path.ap-sel-outer')).toHaveCount(1);
+  await expect(page.locator('#cov-pct')).toHaveText(/\d+%/);
+  // Wired-only model: no ring, no coverage figure.
+  await page.locator('.list-item', {hasText: 'Router'}).click();
+  await expect(page.locator('#sw-wifi')).toBeChecked();
+  await page.locator('#sw-wifi').uncheck();
+  await expect(page.locator('.sw-grp path')).toHaveCount(0);
+  await expect(page.locator('#cov-pct')).toHaveText('—');
+  await page.locator('#sw-wifi').check();
+  await expect(page.locator('.sw-grp path')).toHaveCount(1);
+  await page.locator('#sw-model').selectOption('RB5009UG+S+IN');
+  await expect(page.locator('#sw-wifi')).toHaveCount(0);
+  await expect(page.locator('.sw-grp path')).toHaveCount(0);
+  expect(errors, errors.join('\n')).toEqual([]);
+});
+
+test('the ruler label keeps a readable size on screen at any zoom', async ({page}) => {
+  await page.setViewportSize({width: 1440, height: 900});
+  const p = plan(); p.floors[0].APS = [];           // empty floor: nothing to catch the clicks
+  await loadPlan(page, p);                          // 2000 px wide plan → zoomed out to fit
+  await page.locator('#btn-ruler').click();
+  const box = await page.locator('#vp').boundingBox();
+  await page.mouse.click(box.x + box.width * 0.35, box.y + box.height * 0.5);
+  await page.mouse.click(box.x + box.width * 0.65, box.y + box.height * 0.5);
+  await expect(page.locator('.ruler-lbl')).toHaveCount(1);
+  // Measured in the page: the label is re-created on every zoom frame.
+  const onScreen = () => page.evaluate(() => document.querySelector('.ruler-lbl').getBoundingClientRect().height);
+  const fitted = await onScreen();
+  expect(fitted).toBeGreaterThan(14);               // was ~4 px on this plan before
+  await page.locator('[data-action="zoom-in"]').click();
+  await page.waitForTimeout(600);
+  const zoomed = await onScreen();
+  expect(Math.abs(zoomed - fitted)).toBeLessThan(3);
 });

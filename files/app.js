@@ -59,6 +59,7 @@ import {collectCreds,stripCredsReplacer,attachCreds,hasPlaintextPasswords} from 
 import {createCredsSession} from './src/credsSession.js';
 import {buildClientReportModel,renderClientReport} from './src/clientReport.js';
 import {SITE_TEMPLATES,buildTemplateProject} from './src/siteTemplates.js';
+import {routerWifiSpec,routerAsAp,rfAps,rfFloor} from './src/routerWifi.js';
 import {createHistory} from './src/history.js';
 import {createImageTrash,imageIdsIn} from './src/imageTrash.js';
 // PDF floor-plan import. The worker is bundled inline (?worker&inline) so the
@@ -451,7 +452,7 @@ function loadFloorImage(){
   // render correctly during the transition.
   const applySrc=(src,name)=>{
     mapImg.src=src||'';if(mmImg)mmImg.src=src||'';
-    document.getElementById('brand-lbl').textContent=src?(SETTINGS.company||'Plexus')+' · '+(name||''):(SETTINGS.company||'Plexus')+' Planner';
+    document.getElementById('brand-lbl').textContent=src?'Plexus · '+(name||''):'Plexus';
     if(src&&mapImg.complete&&mapImg.naturalWidth>0){fitZoom();render();renderMM();updateScaleBar();calcCoverage();}
     updateEmptyState();
   };
@@ -475,7 +476,7 @@ async function _applyMapDataUrl(dataUrl,name,label){
     _imgCache.set(id,dataUrl);
     F().img='';F().imgId=id;F().imgName=name;
     mapImg.src=dataUrl;if(mmImg)mmImg.src=dataUrl;
-    document.getElementById('brand-lbl').textContent=(SETTINGS.company||'Plexus')+' · '+name;
+    document.getElementById('brand-lbl').textContent='Plexus · '+name;
     updateEmptyState();
     toast('Map loaded: '+label);
     if(oldId&&oldId!==id)_releaseImage(oldId);
@@ -483,7 +484,7 @@ async function _applyMapDataUrl(dataUrl,name,label){
     // IndexedDB unavailable or quota exceeded — fall back to inline.
     F().img=dataUrl;F().imgName=name;F().imgId='';
     mapImg.src=dataUrl;if(mmImg)mmImg.src=dataUrl;
-    document.getElementById('brand-lbl').textContent=(SETTINGS.company||'Plexus')+' · '+name;
+    document.getElementById('brand-lbl').textContent='Plexus · '+name;
     updateEmptyState();
     toast('Map loaded (inline fallback)');
   }
@@ -1935,9 +1936,9 @@ async function loadSampleProject(){
 function applySettingsToBrand(){
   const lbl=document.getElementById('brand-lbl');
   if(lbl){
-    const co=SETTINGS.company||'Plexus';
+    // The app is always "Plexus" here; the Company setting brands the reports.
     const f=F();
-    lbl.textContent=f&&f.imgName?co+' · '+f.imgName:co+' Planner';
+    lbl.textContent=f&&f.imgName?'Plexus · '+f.imgName:'Plexus';
   }
   _syncToolbarFromSettings();
 }
@@ -1995,6 +1996,7 @@ function applyT(){
     }
   }
   canvas.style.transform=`translate(${panX}px,${panY}px) scale(${scale})`;
+  if(rulerStart)renderRuler();   // its label is sized for the current zoom
   document.getElementById('zval').textContent=Math.round(scale*100)+'%';
   renderMM();updateScaleBar();
 }
@@ -2615,6 +2617,10 @@ function renderRuler(){
   const distPx=Math.hypot(b.x-a.x,b.y-a.y);
   const distM=(distPx*(scaleM/100)).toFixed(1);
   const mx=(a.x+b.x)/2,my=(a.y+b.y)/2;
+  // The ruler is drawn in plan pixels, which shrink with the zoom: on a large
+  // plan fitted to the window the label was a couple of pixels tall. Size
+  // everything by 1/zoom so it is the same on screen at any zoom level.
+  const k=1/(scale||1);
 
   const line=mk('line');
   line.setAttribute('x1',a.x);line.setAttribute('y1',a.y);
@@ -2625,13 +2631,13 @@ function renderRuler(){
   // Endpoint markers
   for(const p of [a,b]){
     const c=mk('circle');
-    c.setAttribute('cx',p.x);c.setAttribute('cy',p.y);c.setAttribute('r',4);
+    c.setAttribute('cx',p.x);c.setAttribute('cy',p.y);c.setAttribute('r',5*k);
     c.setAttribute('class','ruler-pt');
     rulerLayer.appendChild(c);
   }
   // Tick marks at each end, perpendicular to the line
   const angle=Math.atan2(b.y-a.y,b.x-a.x);
-  const tickLen=10;
+  const tickLen=11*k;
   const perp={x:-Math.sin(angle)*tickLen,y:Math.cos(angle)*tickLen};
   for(const p of [a,b]){
     const tick=mk('line');
@@ -2641,16 +2647,18 @@ function renderRuler(){
     rulerLayer.appendChild(tick);
   }
   // Distance label — background pill + text
+  const text=distM+' m';
+  const fs=17*k;                                   // 17 px on screen
+  const lblW=(text.length*0.62+1.6)*fs,lblH=fs*1.75;
   const lblBg=mk('rect');
-  const lblW=60,lblH=18;
   lblBg.setAttribute('x',mx-lblW/2);lblBg.setAttribute('y',my-lblH/2);
   lblBg.setAttribute('width',lblW);lblBg.setAttribute('height',lblH);
-  lblBg.setAttribute('rx',9);lblBg.setAttribute('class','ruler-lbl-bg');
+  lblBg.setAttribute('rx',lblH/2);lblBg.setAttribute('class','ruler-lbl-bg');
   rulerLayer.appendChild(lblBg);
   const lbl=mk('text');
   lbl.setAttribute('x',mx);lbl.setAttribute('y',my);
-  lbl.setAttribute('class','ruler-lbl');
-  lbl.textContent=distM+' m';
+  lbl.setAttribute('class','ruler-lbl');lbl.style.fontSize=fs+'px';   // inline: the class sets a size too
+  lbl.textContent=text;
   rulerLayer.appendChild(lbl);
 }
 function updateRuler(cx,cy){
@@ -3354,6 +3362,16 @@ function renderSWs(){
     box.setAttribute('stroke',tInk());box.setAttribute('stroke-width',isSel?'2':'1.2');
     const icon=mk('text');icon.setAttribute('x',cx);icon.setAttribute('y',cy);icon.setAttribute('text-anchor','middle');icon.setAttribute('dominant-baseline','central');icon.setAttribute('font-size',iconFs);icon.setAttribute('fill',tInk());icon.textContent='⊞';
     const lbl=mk('text');lbl.setAttribute('x',cx);lbl.setAttribute('y',cy+sz*.9);lbl.setAttribute('text-anchor','middle');lbl.setAttribute('font-size',lblFs);lbl.setAttribute('font-family','-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica Neue,Arial,sans-serif');lbl.setAttribute('font-weight','700');lbl.setAttribute('letter-spacing','.08em');lbl.setAttribute('fill',tInk());lbl.setAttribute('paint-order','stroke');lbl.setAttribute('stroke',tBg());lbl.setAttribute('stroke-width','2.5');lbl.textContent=(sw.name||'').toUpperCase();
+    // A router with a built-in radio covers the floor like an AP: draw its
+    // ring (clipped by walls) under the device box.
+    const wifiAp=showCoverage?routerAsAp(sw,F().scaleM):null;
+    if(wifiAp){
+      const ring=mk('path');ring.setAttribute('d',getCoveragePath(wifiAp));
+      ring.setAttribute('class',isSel?'ap-sel-outer':'ap-outer');ring.style.pointerEvents='none';
+      const covOp=Math.max(0,Math.min(1,(SETTINGS.coverageOpacity??100)/100));
+      if(covOp<1)ring.setAttribute('opacity',covOp);
+      g.appendChild(ring);
+    }
     [box,icon,lbl].forEach(el=>g.appendChild(el));
     g.addEventListener('pointerdown',e=>{
       e.stopPropagation();
@@ -3505,7 +3523,8 @@ function _heatJob(){
   const mode=SETTINGS.heatmapMode||'rssi';
   const modeDef=HEATMAP_MODES[mode]||HEATMAP_MODES.rssi;
   const bandFilter=SETTINGS.heatmapBand||'all';
-  const aps=APS().filter(ap=>_bandMatches(ap,bandFilter)).map(_heatApShape);
+  // WiFi routers radiate too (./src/routerWifi.js).
+  const aps=rfAps(F()).filter(ap=>_bandMatches(ap,bandFilter)).map(_heatApShape);
   // APs on the other floors, reaching this one through the slabs between.
   // Floors are stacked in tab order; plans are assumed to cover the same
   // footprint (positions carry over as fractions). Each AP's radius is
@@ -3519,7 +3538,7 @@ function _heatJob(){
       if(i===curFloor)return;
       const slabs=Math.abs(i-curFloor);
       const k=((f.scaleM||100)/100)/mppHere;
-      for(const ap of (f.APS||[])){
+      for(const ap of rfAps(f)){
         if(!_bandMatches(ap,bandFilter))continue;
         neighbour.push({..._heatApShape(ap),r:ap.r*k,slabs,verticalM:slabs*floorH});
       }
@@ -3783,7 +3802,7 @@ function updateApStickReadout(){
   if(!el)return;
   if(!apStickStart || !dragId || dragType!=='ap'){el.style.display='none';return;}
   const w=mapImg.naturalWidth||1,h=mapImg.naturalHeight||1;
-  const cur=_sampleFloorCoverage(F(),w,h,_COV_OPTS);
+  const cur=_sampleFloorCoverage(rfFloor(F()),w,h,_COV_OPTS);
   const curPct=cur.total?cur.covered/cur.total*100:0;
   if(apStickBest===null||curPct>apStickBest)apStickBest=curPct;
   const delta=curPct-apStickStart.covPct;
@@ -3796,7 +3815,7 @@ function updateApStickReadout(){
 function startApStick(apId){
   if(!apId)return;
   const w=mapImg.naturalWidth||1,h=mapImg.naturalHeight||1;
-  const cur=_sampleFloorCoverage(F(),w,h,_COV_OPTS);
+  const cur=_sampleFloorCoverage(rfFloor(F()),w,h,_COV_OPTS);
   const ap=APS().find(a=>a.id===apId);
   if(!ap)return;
   apStickStart={id:apId,fx:ap.fx,fy:ap.fy,covPct:cur.total?cur.covered/cur.total*100:0};
@@ -4789,7 +4808,7 @@ function doResize(cx){
 // Defers to the pure sampler in geometry.js so logic stays in one place.
 function sampleFloorCoverage(floor){
   const w=mapImg.naturalWidth||1,h=mapImg.naturalHeight||1;
-  return _sampleFloorCoverage(floor,w,h,_COV_OPTS);
+  return _sampleFloorCoverage(rfFloor(floor),w,h,_COV_OPTS);
 }
 // Wall-aware sampling is heavier than the old circle check, so coalesce calls
 // during fast operations (drag, slider scrub). `calcCoverage()` schedules the
@@ -4840,14 +4859,14 @@ function promptCalibration(){
   const px=Math.hypot(rulerEnd.x-rulerStart.x,rulerEnd.y-rulerStart.y);
   if(px<2){toast('Line too short — draw a longer one');return;}
   const wrap=document.createElement('div');
-  wrap.style.cssText='font-family:inherit;font-size:13px';
+  wrap.style.cssText='font-family:inherit;font-size:15px;line-height:1.45';
   const p=document.createElement('div');
   p.textContent=`This line is ${px.toFixed(0)} px. Enter its real-world length:`;
   p.style.marginBottom='8px';
   const row=document.createElement('div');row.style.cssText='display:flex;gap:6px;align-items:center';
   const inp=document.createElement('input');
   inp.type='number';inp.min='0.1';inp.step='0.1';inp.className='ep-in';
-  inp.value=(px*(scaleM/100)).toFixed(1);inp.style.width='130px';
+  inp.value=(px*(scaleM/100)).toFixed(1);inp.style.cssText='width:150px;font-size:18px;min-height:36px';
   const unit=document.createElement('span');unit.textContent='metres';
   row.append(inp,unit);wrap.append(p,row);
   showModalNode('Calibrate scale',wrap,()=>{
@@ -5439,6 +5458,9 @@ function renderDZPanel(){
 
 function renderSWPanel(){
   const sw=SWS().find(a=>a.id===selId);if(!sw)return;
+  // Built-in WiFi (only for models that have a radio — ./src/routerWifi.js).
+  const wifiSpec=routerWifiSpec(sw.model);
+  const wifiRow=wifiSpec?`<label class="ep-check"><input type="checkbox" id="sw-wifi" ${sw.wifi===false?'':'checked'} data-input-action="upd-sw"/><span>Built-in WiFi — ${esc(wifiSpec.std)}, ${esc(wifiSpec.freq)}, about ${esc(wifiSpec.rangeM)} m (shown as coverage)</span></label>`:'';
   document.getElementById('rp-head').textContent='Edit Switch/Router';
   const mOpts=buildGroupedOptions(SW_MODEL_GROUPS,sw.model||'USW-24-PoE');
   // If the stored model isn't in our known list, treat it as a custom override
@@ -5491,6 +5513,7 @@ function renderSWPanel(){
     </div>
     <div class="ep-row"><label class="ep-lbl">STP priority</label><input class="ep-in ep-mono" id="sw-stp" type="number" min="0" max="61440" step="4096" value="${Number.isFinite(sw.stpPriority)?sw.stpPriority:''}" data-input-action="upd-sw" placeholder="32768 (lowest becomes root)"/></div>
     <label class="ep-check"><input type="checkbox" id="sw-l3" ${sw.role==='l3'?'checked':''} data-input-action="upd-sw"/><span>Layer 3 — routes between VLANs (set a gateway IP per VLAN in Project Settings)</span></label>
+    ${wifiRow}
     <div class="ep-row"><button class="btn" data-action="open-console" style="width:100%">⌨ CLI Console (IOS / RouterOS)</button></div>
     <div class="ep-row" style="font-family:'Share Tech Mono';font-size:11px;color:${statusColor};opacity:.9">${esc(statusLine)}</div>
     <div class="ep-section">Connected Devices (${a.used})</div>
@@ -5603,6 +5626,9 @@ function updSW(){
   if(stpEl){const n=parseInt(stpEl.value,10);if(Number.isFinite(n)&&n>=0&&n<=61440)sw.stpPriority=n;else delete sw.stpPriority;}
   const l3El=document.getElementById('sw-l3');
   if(l3El)sw.role=l3El.checked?'l3':'switch';
+  // Built-in radio switch: stored only when turned OFF (on is the default).
+  const wifiEl=document.getElementById('sw-wifi');
+  if(wifiEl){if(wifiEl.checked)delete sw.wifi;else sw.wifi=false;}
   sw.notes=document.getElementById('sw-notes').value;
   // Switching to a different known model: adopt its default PoE budget unless
   // the user had set a custom one (i.e. it still matches the old model's default).
@@ -5611,7 +5637,9 @@ function updSW(){
     if(wasDefault){sw.poeBudget=SW_POE_BUDGET_W[sw.model];if(poeEl)poeEl.value=sw.poeBudget;}
   }
   _refreshDeviceImg(sw,'sw');
-  render();renderList();
+  // A different model can gain or lose a radio: redraw the panel row for it.
+  if(sw.model!==prevModel&&(!!routerWifiSpec(sw.model))!==(!!routerWifiSpec(prevModel)))renderSWPanel();
+  render();renderList();calcCoverage();
 }
 function updSWSize(v){
   const sw=SWS().find(a=>a.id===selId);if(!sw)return;
@@ -6104,7 +6132,7 @@ async function doClientReport(){
       }catch(_){}
     }
     const overlay=buildFloorOverlaySVG(f,{naturalWidth:cw,naturalHeight:ch});
-    const cov=_sampleFloorCoverage(f,cw,ch,_COV_OPTS);
+    const cov=_sampleFloorCoverage(rfFloor(f),cw,ch,_COV_OPTS);
     allC+=cov.covered;allT+=cov.total;
     floorViews.push({src,overlay,pct:cov.total?Math.round(cov.covered/cov.total*100):0});
   }
@@ -6137,14 +6165,14 @@ async function doPDF(){
       }catch(_){}
     }
     const overlay=buildFloorOverlaySVG(f,{naturalWidth:cw,naturalHeight:ch});
-    const cov=_sampleFloorCoverage(f,cw,ch,_COV_OPTS);
+    const cov=_sampleFloorCoverage(rfFloor(f),cw,ch,_COV_OPTS);
     const pct=cov.total?Math.round(cov.covered/cov.total*100):0;
     floorRecords.push({floor:f,src,overlay,pct});
   }
   // Whole-building coverage rollup (weighted by floor sample counts).
   let allC=0,allT=0;
   for(const r of floorRecords){
-    const c=_sampleFloorCoverage(r.floor,r.overlay.cw,r.overlay.ch,_COV_OPTS);
+    const c=_sampleFloorCoverage(rfFloor(r.floor),r.overlay.cw,r.overlay.ch,_COV_OPTS);
     allC+=c.covered;allT+=c.total;
   }
   const buildingPct=allT?Math.round(allC/allT*100):0;
@@ -6264,7 +6292,18 @@ window.addEventListener('resize',()=>{render();renderMM();updateScaleBar();});
 // Silent save every 10s; full state is captured so a refresh doesn't lose work.
 // Note: if the user has a very large embedded floor-plan image, the payload may
 // exceed the 5MB localStorage quota — we catch that and skip silently.
-const AUTOSAVE_KEY='noctis_wifi_autosave';
+// Keys were renamed to plexus_*; adopt a value saved under the old name once
+// so an existing session, theme and sidebar width survive the update.
+function _adoptLegacyKey(key,legacy){
+  try{
+    if(localStorage.getItem(key)===null){
+      const old=localStorage.getItem(legacy);
+      if(old!==null){localStorage.setItem(key,old);localStorage.removeItem(legacy);}
+    }
+  }catch(_){}
+  return key;
+}
+const AUTOSAVE_KEY=_adoptLegacyKey('plexus_autosave','noctis_wifi_autosave');
 const AUTOSAVE_INTERVAL_MS=10000;
 let lastAutosaveBody='';
 
@@ -6947,7 +6986,7 @@ function initImage(){
 // inverts the palette while keeping all role tokens intact. CSS handles most
 // theming via custom properties; inline SVG attribute colors (the ones that
 // can't reference CSS vars) read live values via tInk()/tBg() at render time.
-const THEME_KEY='noctis_theme';
+const THEME_KEY=_adoptLegacyKey('plexus_theme','noctis_theme');
 // Put a sprite icon (see index.html) and an optional label into a button.
 function _setIconLabel(btn,icon,label){
   const NS='http://www.w3.org/2000/svg';
@@ -6997,7 +7036,7 @@ function clearSearch(){
 // User drags the right edge of the left sidebar to resize. Width is stored as
 // a CSS custom property on :root, so existing flex layout stays correct.
 // Persisted to localStorage so the chosen width sticks across sessions.
-const SB_W_KEY='noctis_sb_w';
+const SB_W_KEY=_adoptLegacyKey('plexus_sb_w','noctis_sb_w');
 const SB_MIN=180,SB_MAX=520;
 function setSidebarWidth(px){
   const w=Math.max(SB_MIN,Math.min(SB_MAX,Math.round(px)));

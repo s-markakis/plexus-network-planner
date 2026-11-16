@@ -870,20 +870,20 @@ body.theme-dark #heat-canvas{mix-blend-mode:screen;opacity:.55}
 
 /* Ruler — measurement overlay */
 .ruler-line{
-  stroke:var(--ink);stroke-width:1.5;fill:none;
+  stroke:var(--ink);stroke-width:1.5;fill:none;vector-effect:non-scaling-stroke;
   stroke-dasharray:4 3;
   pointer-events:none;
 }
 .ruler-pt{
-  fill:var(--bg);stroke:var(--ink);stroke-width:2;
+  fill:var(--bg);stroke:var(--ink);stroke-width:2;vector-effect:non-scaling-stroke;
   pointer-events:none;
 }
 .ruler-tick{
-  stroke:var(--ink);stroke-width:1.5;
+  stroke:var(--ink);stroke-width:1.5;vector-effect:non-scaling-stroke;
   pointer-events:none;
 }
 .ruler-lbl-bg{
-  fill:var(--bg);stroke:var(--ink);stroke-width:1;
+  fill:var(--surface-2);stroke:var(--accent);stroke-width:1.5;vector-effect:non-scaling-stroke;
   pointer-events:none;
 }
 .ruler-lbl{

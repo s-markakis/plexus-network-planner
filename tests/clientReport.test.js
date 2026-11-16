@@ -14,7 +14,7 @@ const floors = () => [{
   SAMPLES: [{ fx: .1, fy: .1, rssi: -50 }, { fx: .2, fy: .2, rssi: -70 }, { fx: .3, fy: .3, rssi: -60 }, { fx: .4, fy: .4 }],
 }, { name: 'First', APS: [], CAMS: [], SWS: [] }];
 const model = (settings = {}, fl = floors()) => buildClientReportModel({
-  settings: { company: 'NOCTIS', contact: 'info@example.test', siteCode: 'Villa Test', retentionDays: 14, ...settings },
+  settings: { company: 'Acme Networks', contact: 'info@example.test', siteCode: 'Villa Test', retentionDays: 14, ...settings },
   floors: fl,
   floorViews: [{ src: 'data:image/png;base64,AAAA', overlay: { cw: 800, ch: 600, innerSVG: '<circle cx="1" cy="1" r="1"/>' }, pct: 91 }, { src: '', overlay: null, pct: 0 }],
   coveragePct: 88, clientCapacity: 75, cable: { runs: 4, totalM: 120 }, storageGb: 2500,
@@ -54,7 +54,7 @@ describe('client report', () => {
 
   it('shows the things a client needs', () => {
     const html = renderClientReport(model());
-    expect(html).toContain('NOCTIS');
+    expect(html).toContain('Acme Networks');
     expect(html).toContain('Villa Test');
     expect(html).toContain('88%');
     expect(html).toContain('91% coverage');

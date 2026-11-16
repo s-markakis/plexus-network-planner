@@ -112,6 +112,7 @@
   "sw.poeBudget||0",
   "sw.ports||''",
   "sw.role==='l3'?'checked':''",
+  "sw.wifi===false?'':'checked'",
   "sw.size||22",
   "sw.uplinkMode!=='routed'?' selected':''",
   "sw.uplinkMode==='routed'?' selected':''",

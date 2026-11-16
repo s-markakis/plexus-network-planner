@@ -7,7 +7,7 @@ import { evaluatePolicies } from '../files/src/policy.js';
 const range = (cidr) => { const [ip, bits] = cidr.split('/'); const size = 2 ** (32 - +bits); const lo = Math.floor(ipToInt(ip) / size) * size; return [lo, lo + size - 1]; };
 
 describe('site templates', () => {
-  it('has unique ids and at least the three NOCTIS site kinds', () => {
+  it('has unique ids and at least the three site kinds', () => {
     const ids = SITE_TEMPLATES.map((t) => t.id);
     expect(new Set(ids).size).toBe(ids.length);
     expect(ids).toEqual(expect.arrayContaining(['villa', 'hotel', 'restaurant']));
