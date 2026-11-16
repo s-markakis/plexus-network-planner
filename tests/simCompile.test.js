@@ -423,3 +423,46 @@ describe('router-on-a-stick inter-VLAN routing', () => {
     expect(ping(c.net, { from: 'h:a1', to: '10.0.20.5' }).ok).toBe(true);
   });
 });
+
+describe('wireless clients and routers with built-in WiFi', () => {
+  // One floor, no access points: a MikroTik hAP ax³ is the only radio.
+  const project = (sw = {}) => ({
+    settings: { vlans: [] },
+    floors: [{
+      id: 'f1', imgW: 1000, imgH: 800, scaleM: 2, APS: [], CAMS: [], WALLS: [],
+      SWS: [{ id: 'r1', name: 'Home router', model: 'hAP ax³', fx: 0.5, fy: 0.5, ...sw }],
+      CLIENTS: [
+        { id: 'c1', name: 'Laptop', fx: 0.4, fy: 0.5, ip: '192.168.88.20' },
+        { id: 'c2', name: 'Phone', fx: 0.6, fy: 0.45, ip: '192.168.88.21' },
+      ],
+    }],
+  });
+
+  it('a client next to a WiFi router associates to it and joins its network', () => {
+    const { net, meta, warnings } = compileTopology(project());
+    expect(warnings.filter((w) => /client/.test(w))).toEqual([]);
+    expect(meta.get('h:c1')).toMatchObject({ type: 'client', apName: 'Home router' });
+    expect(Number.isFinite(meta.get('h:c1').rssi)).toBe(true);
+    const r = ping(net, { from: 'h:c1', to: '192.168.88.21' });
+    expect(r.ok).toBe(true);
+  });
+
+  it('switching the router\'s radio off leaves the clients unassociated', () => {
+    const { meta, warnings } = compileTopology(project({ wifi: false }));
+    expect(meta.has('h:c1')).toBe(false);
+    expect(warnings.some((w) => /Laptop: no in-range AP on a switch, or WiFi router/.test(w))).toBe(true);
+  });
+
+  it('a wired-only router gives clients nothing to join', () => {
+    const { meta } = compileTopology(project({ model: 'RB5009UG+S+IN' }));
+    expect(meta.has('h:c1')).toBe(false);
+  });
+
+  it('with an AP and a router in range, the stronger signal wins', () => {
+    const p = project();
+    p.floors[0].SWS.push({ id: 'sw2', name: 'Switch', model: 'USW-24-PoE', fx: 0.05, fy: 0.05 });
+    p.floors[0].APS = [{ id: 'ap1', name: 'AP right here', model: 'U6 Pro', swId: 'sw2', fx: 0.4, fy: 0.5, r: 400, freq: '2.4 / 5 GHz' }];
+    const { meta } = compileTopology(p);
+    expect(meta.get('h:c1').apName).toBe('AP right here');
+  });
+});

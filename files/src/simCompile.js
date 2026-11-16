@@ -18,6 +18,7 @@ import { runRip } from './rip.js';
 import { runStp } from './stp.js';
 import { normName } from './dns.js';
 import { bestAp } from './wireless.js';
+import { rfAps } from './routerWifi.js';
 import { ipToInt, nextFreeIp, ipInCidr } from './network.js';
 
 const validIp = (s) => s != null && s !== '' && ipToInt(s) != null;
@@ -190,8 +191,11 @@ export function compileTopology(project, opts = {}) {
         endpoints.push({ ep, type, floorId: f.id });
       }
     }
-    // Wireless clients associate to their best-signal AP (wall-aware RF), then
-    // join that AP's switch + VLAN. Needs the floor's image pixel dimensions.
+    // Wireless clients associate to their best-signal radio (wall-aware RF) —
+    // an access point, or a router with built-in WiFi (./routerWifi.js) — then
+    // join the network there: an AP's uplink switch and VLAN, or the router
+    // itself (its LAN is VLAN 1 unless the client says otherwise). Needs the
+    // floor's image pixel dimensions.
     for (const cl of arr(f.CLIENTS)) {
       if (!cl || !cl.id) { warnings.push(`client ${(cl && cl.name) || '(unnamed)'}: missing id — skipped`); continue; }
       if (seenEp.has(cl.id)) { warnings.push(`client ${cl.name || cl.id}: duplicate id ${cl.id} — skipped`); continue; }
@@ -200,16 +204,18 @@ export function compileTopology(project, opts = {}) {
         warnings.push(`client ${cl.name || cl.id}: floor has no image size for RF association — skipped`);
         continue;
       }
-      const assoc = bestAp(cl, arr(f.APS), arr(f.WALLS), f.imgW, f.imgH, {
+      const assoc = bestAp(cl, rfAps({ ...f, APS: arr(f.APS), SWS: arr(f.SWS) }), arr(f.WALLS), f.imgW, f.imgH, {
         model: project?.settings?.propagationModel,
         metersPerPx: Number.isFinite(f.scaleM) ? f.scaleM / 100 : undefined,
       });
-      if (!assoc || !assoc.ap.swId) {
-        warnings.push(`client ${cl.name || cl.id}: no in-range AP on a switch — not associated`);
+      const viaRouter = !!(assoc && assoc.ap.viaRouter);
+      const homeSw = assoc ? (viaRouter ? assoc.ap.id : assoc.ap.swId) : '';
+      if (!assoc || !homeSw) {
+        warnings.push(`client ${cl.name || cl.id}: no in-range AP on a switch, or WiFi router — not associated`);
         continue;
       }
       endpoints.push({
-        ep: { ...cl, swId: assoc.ap.swId, vlan: cl.vlan || assoc.ap.vlan || '1', ip: cl.ip || 'dhcp' },
+        ep: { ...cl, swId: homeSw, vlan: cl.vlan || (viaRouter ? '' : assoc.ap.vlan) || '1', ip: cl.ip || 'dhcp' },
         type: 'client',
         floorId: f.id,
         rssi: Math.round(assoc.dbm),

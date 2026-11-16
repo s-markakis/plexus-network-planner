@@ -4693,7 +4693,7 @@ function renderClients(){
   const layer=document.getElementById('client-layer');if(!layer)return;
   layer.innerHTML='';
   const w=mapImg.naturalWidth,h=mapImg.naturalHeight;if(!w||!h)return;
-  const aps=APS(),walls=WALLS();
+  const aps=rfAps(F()),walls=WALLS();   // APs and WiFi routers
   CLIENTS().forEach(cl=>{
     if(!Number.isFinite(cl.fx)||!Number.isFinite(cl.fy))return;
     const cx=cl.fx*w,cy=cl.fy*h;
@@ -4718,7 +4718,7 @@ function renderClientPanel(){
     <div class="ep-row"><label class="ep-lbl">Name</label><input class="ep-in" id="cl-name" value="${esc(cl.name)}" data-input-action="upd-client"/></div>
     <div class="ep-row"><label class="ep-lbl">VLAN</label><input class="ep-in ep-mono" id="cl-vlan" value="${esc(cl.vlan||'')}" data-input-action="upd-client" placeholder="(inherit from AP)"/></div>
     <div class="ep-row"><label class="ep-lbl">IP</label><input class="ep-in ep-mono" id="cl-ip" value="${esc(cl.ip||'dhcp')}" data-input-action="upd-client" placeholder="dhcp or 10.0.0.x"/></div>
-    <div class="ep-row" style="font-size:11px;opacity:.7">Associates to the strongest-signal AP automatically. Press <kbd>M</kbd> to ping from it in the simulator.</div>
+    <div class="ep-row" style="font-size:11px;opacity:.7">Associates to the strongest signal automatically — an access point, or a router with built-in WiFi. Press <kbd>M</kbd> to ping from it in the simulator.</div>
     <label class="ep-check"><input type="checkbox" ${cl.locked?'checked':''} data-change-action="toggle-lock"/><span>Lock position</span></label>
     <button class="btn ep-del" data-action="ask-del">✕ Delete Client</button>`;
 }
@@ -5460,7 +5460,7 @@ function renderSWPanel(){
   const sw=SWS().find(a=>a.id===selId);if(!sw)return;
   // Built-in WiFi (only for models that have a radio — ./src/routerWifi.js).
   const wifiSpec=routerWifiSpec(sw.model);
-  const wifiRow=wifiSpec?`<label class="ep-check"><input type="checkbox" id="sw-wifi" ${sw.wifi===false?'':'checked'} data-input-action="upd-sw"/><span>Built-in WiFi — ${esc(wifiSpec.std)}, ${esc(wifiSpec.freq)}, about ${esc(wifiSpec.rangeM)} m (shown as coverage)</span></label>`:'';
+  const wifiRow=wifiSpec?`<label class="ep-check"><input type="checkbox" id="sw-wifi" ${sw.wifi===false?'':'checked'} data-input-action="upd-sw"/><span>Built-in WiFi — ${esc(wifiSpec.std)}, ${esc(wifiSpec.freq)}, about ${esc(wifiSpec.rangeM)} m (coverage, and wireless clients can join it)</span></label>`:'';
   document.getElementById('rp-head').textContent='Edit Switch/Router';
   const mOpts=buildGroupedOptions(SW_MODEL_GROUPS,sw.model||'USW-24-PoE');
   // If the stored model isn't in our known list, treat it as a custom override
