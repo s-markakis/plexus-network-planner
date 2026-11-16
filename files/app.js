@@ -1518,7 +1518,14 @@ function importEsxFile(input){
     .then(async ({floors,warnings})=>{
       if(!floors.length){toast('No floors found in that .esx');return;}
       snapshot();
-      const firstNew=FLOORS.length;
+      // Into an untouched project (one empty floor, no plan): replace it rather
+      // than leave a blank "Floor 1" in front of the imported floors.
+      const f0=FLOORS[0];
+      const blank=FLOORS.length===1&&f0&&!f0.img&&!f0.imgId&&!['APS','SWS','CAMS','WALLS','DZS','ANNOS','SAMPLES','CLIENTS'].some(k=>(f0[k]||[]).length);
+      // Build the new floors aside and swap them in at the end, in one step:
+      // the image reads below are async, and renders / autosaves that run in
+      // between must never see an empty (or half-built) floor list.
+      const imported=[];
       for(const ef of floors){
         const floor={id:'f'+(++nid),name:ef.name,img:'',imgId:'',imgName:'',APS:[],DZS:[],SWS:[],WALLS:[],CAMS:[],ANNOS:[],SAMPLES:[],scaleM:ef.scaleM||100};
         for(const wl of ef.walls)floor.WALLS.push({id:'w'+(++nid),...wl});
@@ -1545,8 +1552,11 @@ function importEsxFile(input){
             floor.imgId=id;floor.imgName=ef.name;
           }catch(_){floor.img=dataUrl;floor.imgName=ef.name;}
         }
-        FLOORS.push(floor);
+        imported.push(floor);
       }
+      if(blank)FLOORS.length=0;
+      const firstNew=FLOORS.length;
+      FLOORS.push(...imported);
       // Migration pass fills schema defaults on everything just imported.
       // migrateProject returns a sanitized copy (it no longer edits in place).
       FLOORS=migrateProject({version:PROJECT_VERSION,floors:FLOORS})[0].floors;
@@ -1563,17 +1573,25 @@ async function doExportEsx(){
   const floors=[];
   for(const f of FLOORS){
     let imageBytes=null,imgW=1000,imgH=800;
-    const src=await resolveFloorImage(f).catch(()=>f.img||'');
+    const src=await resolveFloorImage(f).catch(()=>f.img||'')||f.img||'';
     if(src){
-      const m=/^data:[^;]+;base64,(.*)$/s.exec(src);
-      if(m)imageBytes=Uint8Array.from(atob(m[1]),c=>c.charCodeAt(0));
-      const dim=await new Promise(res=>{
-        const im=new Image();
-        im.onload=()=>res({w:im.naturalWidth,h:im.naturalHeight});
-        im.onerror=()=>res(null);
-        im.src=src;
+      // Ekahau takes PNG/JPEG. Plans can be SVG (incl. non-base64 data URLs),
+      // WebP or anything else the browser draws, so re-encode through a canvas;
+      // reading the bytes of base64 URLs only used to drop SVG plans, and the
+      // re-imported floor then had no image and showed no devices.
+      const im=await new Promise(res=>{
+        const x=new Image();
+        x.onload=()=>res(x);x.onerror=()=>res(null);x.src=src;
       });
-      if(dim&&dim.w){imgW=dim.w;imgH=dim.h;}
+      if(im&&im.naturalWidth){
+        imgW=im.naturalWidth;imgH=im.naturalHeight;
+        try{
+          const cv=document.createElement('canvas');cv.width=imgW;cv.height=imgH;
+          const ctx=cv.getContext('2d');ctx.fillStyle='#fff';ctx.fillRect(0,0,imgW,imgH);ctx.drawImage(im,0,0);
+          const m=/^data:image\/png;base64,(.*)$/s.exec(cv.toDataURL('image/png'));
+          if(m)imageBytes=Uint8Array.from(atob(m[1]),c=>c.charCodeAt(0));
+        }catch(_){/* tainted or too large: export without the image */}
+      }
     }
     floors.push({
       name:f.name,imgW,imgH,scaleM:f.scaleM||100,imageBytes,
@@ -2191,6 +2209,7 @@ function redo(){
 // ═══ MODE ═════════════════════════════════════════
 function setMode(m){
   mode=m;
+  if(typeof document!=='undefined')document.body.dataset.mode=m;   // styles.css: coverage is click-through outside Select
   // Clear any in-progress ruler measurement when leaving ruler mode
   if(m!=='ruler'){rulerStart=null;renderRuler();}
   // Clear any in-progress wall when leaving wall mode
@@ -6480,6 +6499,10 @@ document.addEventListener('click',e=>{
   const t=e.target.closest('[data-action]');
   if(!t)return;
   const fn=CLICK_ACTIONS[t.dataset.action];
+  // A command chosen from a menu closes it, as menus do. Switches and pills
+  // in the Layers menu keep it open so several layers can be set at once.
+  if(t.closest('.dropdown-menu')&&!t.closest('.toggle,.heat-pill'))
+    document.querySelectorAll('.dropdown-menu.open').forEach(x=>x.classList.remove('open'));
   if(fn)fn(t.dataset.arg,e,t);
 });
 document.addEventListener('change',e=>{
@@ -6976,6 +6999,15 @@ function showHelp(){
   if(mdl)mdl.classList.add('help-modal');
 }
 
+// Whenever a plan image finishes decoding, lay the floor out on it. Without
+// this, a plan that arrived asynchronously (Ekahau import, a project opened
+// after another, a floor image restored from storage) left its devices
+// undrawn: they were rendered once while the image had no size yet, and only
+// initImage()'s start-up poll ever re-rendered.
+if(typeof mapImg!=='undefined'&&mapImg)mapImg.addEventListener('load',()=>{
+  if(!mapImg.naturalWidth)return;
+  fitZoom();render();renderMM();updateScaleBar();calcCoverage();updateEmptyState();
+});
 function initImage(){
   if(mapImg.naturalWidth>0){fitZoom();render();renderMM();updateScaleBar();calcCoverage();updateEmptyState();}
   else{updateEmptyState();setTimeout(initImage,50);}
@@ -7112,6 +7144,7 @@ if(typeof window!=='undefined'&&window.plexusNative){
 }
 // Apply the initial workspace mode (hides Simulate/Operate-only controls in Design).
 if(typeof document!=='undefined')setUiMode('design');
+if(typeof document!=='undefined')document.body.dataset.mode=mode;   // the starting tool, before any setMode()
 
 // Small delay to let browser lay out the image, then offer to restore.
 // If the URL has a #p=... payload, that takes priority — autosave restore
