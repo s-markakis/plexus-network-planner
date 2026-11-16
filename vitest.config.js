@@ -4,6 +4,8 @@ import {defineConfig, configDefaults} from 'vitest/config';
 export default defineConfig({
   test: {
     include: ['tests/**/*.test.js'],
+    setupFiles: ['tests/setup.js'],
+    setupFiles: ['tests/setup.js'],
     // The project lives on an exFAT volume, where macOS scatters `._*` AppleDouble
     // sidecar files next to every file. They match the include glob but aren't
     // valid JS, so rollup fails to parse them and vitest reports phantom failures.
