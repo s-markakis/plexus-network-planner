@@ -5769,6 +5769,11 @@ function _showModalEl(title,bodyEl,okCB,cancelCB){
   const cancel=document.querySelector('#mdl .mdl-actions .btn:not(#mdl-ok)');
   if(cancel)cancel.textContent=okCB?'Cancel':'Close';
   document.getElementById('mbg').classList.add('vis');
+  // Dialogs with wide content (device config, policies, matrices) used to be
+  // clipped at the edges of the 420 px default. Measured once visible: if the
+  // body overflows sideways, give the dialog the wide layout.
+  const _mb=document.getElementById('mdl-body');
+  if(_mb.scrollWidth>_mb.clientWidth+1)document.getElementById('mdl').classList.add('wide-modal');
   // Move focus into the dialog so screen readers announce it and Tab is trapped.
   const mdl=document.getElementById('mdl');
   const first=mdl.querySelector('input,select,textarea,button');

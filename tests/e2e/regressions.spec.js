@@ -143,3 +143,26 @@ test('new revision uses an in-app dialog and no window.prompt()', async ({page})
   expect(data.revisions.map(r => r.name)).toEqual(['walk-through']);
   expect(nativeDialog).toBe(false);
 });
+
+test('wide dialogs are not clipped at their edges', async ({page}) => {
+  await page.setViewportSize({width: 1440, height: 900});
+  await loadPlan(page, plan());
+  await page.locator('[data-uimode-btn="simulate"]').click();
+  await page.locator('[data-action="show-policies"]').click();
+  await page.waitForTimeout(500);
+  const clipped = await page.evaluate(() => {
+    const b = document.getElementById('mdl-body');
+    return b.scrollWidth > b.clientWidth + 1;
+  });
+  expect(clipped, 'the policies dialog must fit its content').toBe(false);
+  await page.keyboard.press('Escape');
+  await page.locator('[data-uimode-btn="design"]').click();
+  await page.locator('[data-arg="export-menu"]').click();
+  await page.locator('[data-action="device-config"]').click();
+  await page.waitForTimeout(500);
+  const clipped2 = await page.evaluate(() => {
+    const b = document.getElementById('mdl-body');
+    return b.scrollWidth > b.clientWidth + 1;
+  });
+  expect(clipped2, 'the device-config dialog must fit its content').toBe(false);
+});
