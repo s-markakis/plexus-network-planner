@@ -56,7 +56,10 @@ jobs:
 
   e2e:
     name: End-to-end (Playwright)
-    runs-on: ubuntu-latest
+    # Pinned: Playwright 1.60 cannot install its browser on the image that
+    # ubuntu-latest now points to (26.04). Move back to ubuntu-latest once the
+    # Playwright version in package.json supports it.
+    runs-on: ubuntu-24.04
     needs: test
     steps:
       - uses: actions/checkout@v4
