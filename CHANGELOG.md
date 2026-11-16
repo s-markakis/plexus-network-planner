@@ -6,6 +6,38 @@ versioning follows [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- **Desktop project files**: File menu with New / New from Template / Open /
+  Open Recent / Save / Save As; the title shows the file and unsaved state.
+- **Plan → device dry run**: "Dry-run with rosconf" hands the generated RouterOS
+  script to `rosconf` without `--apply`. The last drift-check outcome is kept
+  per device.
+- **Client report** (English / Greek): coverage, equipment, cabling, storage
+  and sign-off — no addresses, VLANs, notes or credentials.
+- **Site templates**: villa, hotel, restaurant — VLAN plan, policies, naming.
+- **Routers with built-in WiFi** get coverage, heatmap and a share of the
+  coverage percentage (UniFi UDM / Dream Router / Dream Router 7, MikroTik hAP
+  family, RB4011 WiFi, L009 2HaxD), with a per-device radio switch.
+- **Multi-floor heatmap**: every other floor reaches through the slabs between,
+  with one slab loss per level and the 3-D path length.
+
+### Changed
+- **New look**: system font, neutral greys with a green accent, a two-row
+  translucent toolbar, floating drawing tools and floor tabs over the map, one
+  line-icon set, and a sectioned settings dialog. Dark theme reworked.
+- The toolbar always says Plexus; the Company setting brands reports only.
+
+### Fixed
+- Scale could not go below 1 m / 100 px, so calibrating a high-resolution plan
+  read back wrong; device ranges now keep their metres when the scale changes.
+- The ruler label is a constant, readable size on screen at any zoom.
+- Encrypted credentials were lost when a vault was left locked and the project
+  saved; the autosave dropped credentials whenever a passphrase was set.
+- Undo history and the credentials passphrase leaked into the next project;
+  images were deleted while undo entries or revisions still referenced them.
+- Text labels and new revisions could not be created in the desktop app.
+- Wide dialogs (device config, policies) were clipped at their edges.
+
 ## [3.6.0] — 2026-07-05
 
 The "pro RF" release: interference-aware modelling, a worker-driven heatmap,

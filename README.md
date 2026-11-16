@@ -6,14 +6,35 @@ Predictive WiFi &amp; camera design · a Packet-Tracer-class network simulator �
 <a href="https://github.com/s-markakis/plexus-network-planner/releases/latest"><img src="https://img.shields.io/github/v/release/s-markakis/plexus-network-planner?color=black&label=release" alt="Release"></a>
 <a href="https://github.com/s-markakis/plexus-network-planner/actions/workflows/ci.yml"><img src="https://github.com/s-markakis/plexus-network-planner/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
 <img src="https://img.shields.io/badge/desktop-mac%20%7C%20win%20%7C%20linux-black" alt="Desktop">
-<img src="https://img.shields.io/badge/tests-467%20unit%20%2B%209%20e2e-brightgreen" alt="Tests">
+<img src="https://img.shields.io/badge/tests-691%20unit%20%2B%2034%20e2e-brightgreen" alt="Tests">
 <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-black.svg" alt="License: MIT"></a>
 <img src="https://img.shields.io/badge/no%20framework-vanilla%20JS-f7df1e.svg" alt="Vanilla JS">
 </p>
 
 <p align="center"><strong><a href="https://s-markakis.github.io/plexus-network-planner/">▶ Try it in your browser</a></strong> — nothing to install; click <em>Load sample project</em>.</p>
 
-<p align="center"><img src="docs/media/demo.gif" alt="Dragging an AP — wall-aware coverage re-clips in real time" width="860"></p>
+<p align="center"><img src="docs/media/hero.png" alt="Plexus — signal heatmap through walls, with an access point selected" width="920"></p>
+
+<p align="center"><img src="docs/media/demo.gif" alt="Dragging an AP — wall-aware coverage re-clips in real time" width="860"><br/>
+<sub>Drag an access point: its coverage re-clips against the walls as it moves.</sub></p>
+
+## At a glance
+
+| | |
+|---|---|
+| ![Signal heatmap](docs/media/heatmap-rssi.png) | ![Packet simulation](docs/media/simulate.png) |
+| **Design** — place APs, cameras and switches on a floor plan; coverage and heatmaps follow the walls and the floors above and below. | **Simulate** — the same plan forwards packets: VLANs, routing, ACLs, NAT, OSPF/RIP, with a step-by-step trace on the map. |
+| ![Policies](docs/media/policies.png) | ![Device config and drift](docs/media/drift.png) |
+| **Prove intent** — write what must and must never be reachable; the simulator names every pair that breaks it. | **Plan → device** — generate the RouterOS config per switch, then check the real device against the plan. |
+| ![Client report](docs/media/client-report.png) | ![A router with built-in WiFi](docs/media/wifi-router.png) |
+| **Hand over** — a client report with coverage, equipment and sign-off, and no addresses or credentials in it. | **Real hardware** — 600+ models; routers with a built-in radio cover the floor like an AP. |
+
+**What makes it different**
+
+- **One model, three uses.** The drawing is the simulation is the device config. Nothing is re-entered.
+- **It never touches a device on its own.** Reading a config is one fixed read-only command; pushing one is a `rosconf` dry run that *you* turn into an apply.
+- **No backend, no account.** A project is a single JSON file. Credentials can be encrypted in it with a passphrase.
+- **Untrusted by default.** A project file from someone else is treated as hostile input everywhere — in the page, in the SSH launcher, in the file dialogs.
 
 ---
 
@@ -60,9 +81,9 @@ which tools are available, so each mode stays focused.
 
 ```mermaid
 flowchart LR
-    A["🎨 Design<br/>place devices · draw walls<br/>RF coverage &amp; heatmaps"]
-    B["🧪 Simulate<br/>ping / traceroute · VLANs<br/>OSPF/RIP · IOS/RouterOS CLI"]
-    C["🔌 Operate<br/>connect to real devices<br/>over SSH (desktop only)"]
+    A["Design<br/>place devices · draw walls<br/>RF coverage &amp; heatmaps"]
+    B["Simulate<br/>ping / traceroute · VLANs<br/>OSPF/RIP · IOS/RouterOS CLI"]
+    C["Operate<br/>connect to real devices<br/>over SSH (desktop only)"]
     A --> B --> C
     C -. "same project" .-> A
 ```
@@ -115,20 +136,30 @@ Requires **Node 18+** (LTS recommended).
 
 > Goal: a floor plan with wall-aware coverage and a signal heatmap.
 
-1. **Load a plan.** Click **▶ Load sample project** to start populated, or
-   **↑ Upload Map** and drop a floor plan (PNG / JPG / SVG / PDF).
-2. **Set the scale.** In the toolbar, set **SCALE** = metres per 100 px of the
-   image. This switches the heatmap to physical, FSPL-based path loss.
+1. **Start a project.** Click **Load sample project** to start populated,
+   **New from template…** for a villa / hotel / restaurant with its VLAN plan and
+   policies already written, or **Upload Map** and pick a floor plan
+   (PNG / JPG / SVG / PDF).
+2. **Set the scale.** Click **Calibrate**, draw a line over a dimension you know
+   (a doorway, a wall), and type its real length — or type **Scale** directly as
+   metres per 100 px. High-resolution plans are fine: the scale can be well below
+   1 m / 100 px, and every device keeps its range in metres when the scale
+   changes. With a scale set, the heatmap uses physical, FSPL-based path loss.
 3. **Draw walls.** Press <kbd>L</kbd> and drag (hold <kbd>Shift</kbd> to snap to
    45°). Pick a material — drywall, glass, brick, concrete — each attenuates
    differently. Or **import** walls from an SVG/DXF, or auto-detect them from the
    bitmap.
-4. **Place access points.** Press <kbd>A</kbd> and click. Each AP renders its
-   **actual wall-clipped coverage polygon**, not a circle.
-5. **Turn on the heatmap.** Open **▤ Layers ▾ → Heatmap**, then cycle the metric
-   pill through **RSSI → SNR → SINR → MCS → Throughput**.
-6. **Optimize.** Use **✦ Auto-place** (drop APs to hit 92% coverage), **⌁ Auto-channel**
-   (graph-colouring), and **⌁ Auto-power**.
+4. **Place access points.** Press <kbd>A</kbd> and click (the drawing tools are
+   the palette on the left edge of the map). Each AP renders its **actual
+   wall-clipped coverage polygon**, not a circle. A **router with a built-in
+   radio** (UniFi Dream Router, MikroTik hAP, …) placed with the switch tool gets
+   coverage too — see [Routers with WiFi](#routers-with-wifi).
+5. **Turn on the heatmap.** Open **Layers → Heatmap**, then cycle the metric
+   pill through **RSSI → SNR → SINR → MCS → Throughput**. With several floors,
+   **Settings → Include other floors in heatmap** adds the APs above and below,
+   through the slabs.
+6. **Optimize.** Use **Auto-place** (drop APs to hit 92% coverage), **Auto-channel**
+   (graph-colouring), and **Auto-power**.
 7. **Deliver.** Export a branded **PDF**, **BoM/cable-schedule CSV**, or a
    one-zip **Handover pack**.
 
@@ -138,16 +169,20 @@ Requires **Node 18+** (LTS recommended).
 | **Coverage polygons** — wall-clipped, with camera FoV cones | **Heatmap** — RSSI (ITU-R P.1238 indoor model) |
 
 <details>
-<summary>📸 More screenshots — throughput heatmap, dark mode, cable runs</summary>
+<summary>More screenshots — throughput heatmap, cable runs, templates, settings, light theme</summary>
 
 | | |
 |---|---|
-| ![Throughput heatmap](docs/media/heatmap-throughput.png) | ![Dark mode](docs/media/dark-heatmap.png) |
-| Estimated-throughput heatmap | Dark mode |
+| ![Throughput heatmap](docs/media/heatmap-throughput.png) | ![Cable runs to switches](docs/media/cables.png) |
+| Estimated-throughput heatmap | Cable runs to switches, with lengths |
+| ![Site templates](docs/media/templates.png) | ![Settings](docs/media/settings.png) |
+| Site templates: VLAN plan, policies and naming per kind of site | Project settings |
 
-![Cable runs to switches](docs/media/cables.png)
+![Light theme](docs/media/light.png)
 
-*All shots come from the bundled sample (`files/src/sampleProject.js`), regenerated with `node scripts/capture-media.mjs`.*
+*Light theme. Every image here comes from the bundled sample
+(`files/src/sampleProject.js`) and is regenerated with `npm run docs:media`
+(`scripts/media/readme-media.spec.js`; the GIF needs `ffmpeg`).*
 
 </details>
 
@@ -157,7 +192,9 @@ Requires **Node 18+** (LTS recommended).
 
 > Goal: make the design forward real packets, route between VLANs, and take CLI config.
 
-Switch to **🧪 Simulate** (press <kbd>M</kbd>). The packet-sim panel opens.
+Switch to **Simulate** (press <kbd>M</kbd>). The packet-sim panel opens.
+
+![Packet simulation: a guest AP pings a camera across the L3 core](docs/media/simulate.png)
 
 **Ping across the topology**
 
@@ -316,7 +353,40 @@ only, never prompts, and refuses a host key it has not seen (connect once with
    app's own settings — a project file cannot name a program to run. Intended
    for devices you own or are authorised to configure.
 
+### Routers with WiFi
+
+A router or gateway that has its own radio is placed with the **switch/router**
+tool, and Plexus gives it coverage like an access point: a wall-clipped ring, a
+share of the coverage percentage, and a place in the heatmap. The device panel
+shows **Built-in WiFi** with the standard, bands and planning range; untick it
+if the radio is switched off on site.
+
+![A MikroTik hAP ax³ placed as a router, with its coverage ring](docs/media/wifi-router.png)
+
+| Vendor | Models with a radio | Bands |
+|---|---|---|
+| Ubiquiti UniFi | UDM / Dream Machine, Dream Router | 2.4 + 5 GHz |
+| | Dream Router 7 | 2.4 + 5 + 6 GHz |
+| MikroTik | hAP mini, hAP lite, hAP, hAP ax lite, L009UiGS-2HaxD-IN | 2.4 GHz |
+| | hAP ac lite, hAP ac², hAP ac³, hAP ax², hAP ax³, RB4011iGS+5HacQ2HnD-IN | 2.4 + 5 GHz |
+
+Everything else in the router and switch catalogue (UDM-Pro/SE, Cloud Gateways,
+UXG, hEX, RB5009, CCR, every switch) is wired-only and gets no coverage. The
+table lives in `files/src/routerWifi.js`, checked against the vendors' spec
+pages; the range is a planning default (a desk-height router reaches a little
+less than a ceiling AP of the same class), not a measurement.
+
+### Desktop: project files
+
+The desktop app has a **File** menu — New, New from Template, Open, Open Recent,
+Save, Save As — and the window title shows the file name, with a dot while there
+are unsaved changes. Save writes back to the file you opened. The page can only
+read or write files you picked in a system dialog (or that are in the recent
+list); nothing in a project file can name a path.
+
 ### Client report, site templates, multi-floor coverage
+
+![Client report](docs/media/client-report.png)
 
 - **Export ▾ → Client report** — a document for the person paying for the
   network: predicted coverage per floor on the plan, on-site measurements where
@@ -349,7 +419,7 @@ The dialog also remembers the outcome of the last drift check per device
 2. **Protect the file.** In **Settings → Credentials passphrase**, set a passphrase
    so credentials are encrypted at rest — a shared `.plexus` never leaks a password.
    (Entering Operate reminds you if plaintext passwords are present.)
-3. **Connect.** Switch to **🔌 Operate** (confirm the prompt), then **right-click the
+3. **Connect.** Switch to **Operate** (confirm the prompt), then **right-click the
    device → Connect via SSH**. Your OS terminal opens a live session.
 
 ```mermaid
@@ -374,6 +444,19 @@ ssh -i ~/.ssh/your_key -p 22 admin@192.0.2.10
 
 > If a device connects as your local username instead of the one you expect, its
 > **Username** field is empty — `ssh` falls back to your OS login. Set it.
+
+### Reaching devices over a VPN (WireGuard, OpenVPN)
+
+Plexus does not create tunnels; it runs your system's `ssh`. So **any VPN that is
+up on your computer works as it is**: bring up the WireGuard or OpenVPN tunnel
+with its own client, set the device's **Host** to the address that is reachable
+*through the tunnel* (the device's LAN IP if the tunnel routes that subnet, or
+its tunnel address), and *Connect via SSH*, *Pull from device* and *Dry-run with
+rosconf* all go through it.
+
+For a device behind a jump host instead of a VPN, add a `Host` block with
+`ProxyJump` to your SSH client config and use that alias as the device's
+**Host** — `ssh` resolves it; Plexus passes the name through unchanged.
 
 ---
 
@@ -485,7 +568,7 @@ per-material dB loss × the AP's **band factor** (0.6 / 1.0 / 1.3 for 2.4 / 5 / 
 and shrinks its reach by `0.5^(loss/3)` — every 3 dB of attenuation roughly halves
 range. The 72 endpoints form the cached coverage polygon.
 
-**Heatmap dBm** — with a real-world **SCALE** set, signal uses physical path loss:
+**Heatmap dBm** — with a real-world **Scale** set, signal uses physical path loss:
 
 ```
 RSSI(d) = EIRP − FSPL(1m) − 10·n·log₁₀(d) − Σ wall_dB
@@ -523,7 +606,7 @@ npm run e2e          # Playwright end-to-end suite (web build, dev server)
 npm run e2e:desktop  # builds, then drives the real Electron app (native bridge)
 ```
 
-**681 unit tests across 49 files** — RF geometry (incl. the physical FSPL model),
+**691 unit tests across 50 files** — RF geometry (incl. the physical FSPL model),
 the forwarding engine (L2/L3, VLANs, ARP, routing, ACL, NAT, DHCP, DNS), **OSPF**
 and **RIP** convergence, the IOS/RouterOS CLI engine, the project→sim adapter
 (hardened against malformed/hostile project data), schema migration, crypto, the
@@ -538,7 +621,7 @@ session (locked vaults survive a save), the project-file path gate and the
 rosconf dry-run argv (no `--apply`, hostile targets rejected).
 Plus a **5-test desktop E2E** suite against the real Electron app — native
 Open / Save / Save As / Open Recent, the path gate from the renderer's side, and
-the rosconf hand-off — and a **25-test Playwright E2E** suite (boot smoke + full scenario: load → place →
+the rosconf hand-off — and a **29-test Playwright E2E** suite (boot smoke + full scenario: load → place →
 wall → coverage re-clips → export → re-import, the inventory/rollout/handover flow,
 the simulation and device-config tooling, and security cases — hostile project
 fields stay inert, encrypted saves leak no credentials, share links ask first).
