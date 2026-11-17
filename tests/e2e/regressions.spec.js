@@ -239,3 +239,14 @@ test('a wireless client joins a router with built-in WiFi, on the map and in the
   await expect(panel.locator('.sim-verdict')).toHaveText(/Reachable/);
   expect(errors, errors.join('\n')).toEqual([]);
 });
+
+test('wall lengths in the list are measured once the plan has loaded', async ({page}) => {
+  const errors = trackErrors(page);
+  const p = plan();
+  p.floors[0].scaleM = 1;                                      // 1 m per 100 px
+  p.floors[0].WALLS = [{id: 'w1', fx1: 0.1, fy1: 0.5, fx2: 0.6, fy2: 0.5, material: 'concrete'}];
+  await loadPlan(page, p);
+  // 0.5 of a 2000 px plan = 1000 px = 10 m.
+  await expect(page.locator('.list-item', {hasText: 'Wall 1'}).locator('.li-sub')).toContainText('10.0 m');
+  expect(errors, errors.join('\n')).toEqual([]);
+});
