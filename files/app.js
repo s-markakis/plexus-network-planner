@@ -7007,6 +7007,9 @@ function showHelp(){
 if(typeof mapImg!=='undefined'&&mapImg)mapImg.addEventListener('load',()=>{
   if(!mapImg.naturalWidth)return;
   fitZoom();render();renderMM();updateScaleBar();calcCoverage();updateEmptyState();
+  // Lengths and ranges in the list and the inspector are measured on the plan
+  // image too: refresh them, or walls read "0.0 m" until the next edit.
+  renderList();renderRP();
 });
 function initImage(){
   if(mapImg.naturalWidth>0){fitZoom();render();renderMM();updateScaleBar();calcCoverage();updateEmptyState();}
