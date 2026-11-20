@@ -2224,7 +2224,7 @@ function closeCliConsole(){const p=document.getElementById('cli-panel');if(p)p.s
 // ═══ MAP CLICK ════════════════════════════════════
 viewport.addEventListener('click',e=>{
   if(panning||spaceDown||e.button!==0)return;
-  if(e.target.closest('.ap-grp,.dz-grp,.sw-grp,.client-grp'))return;
+  if(e.target.closest('.ap-grp,.dz-grp,.sw-grp,.client-grp,.cam-grp'))return;   // .cam-grp: a camera's hit area
   if(!mapImg.naturalWidth){toast('Upload a map image first');return;}
   const raw=vpToImg(e.clientX,e.clientY);
   const {x,y}=snapPt(raw.x,raw.y);
