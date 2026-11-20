@@ -8,6 +8,7 @@
 // Returns [{ patterns:[...], hostName, user, port, identityFile }].
 export function parseSshConfig(text) {
   const hosts = [];
+  /** @type {{patterns:string[], hostName:string|null, user:string|null, port:number, identityFile:string|null}|null} */
   let cur = null;
   for (const raw of String(text == null ? '' : text).split(/\r?\n/)) {
     const line = raw.replace(/#.*$/, '').trim();

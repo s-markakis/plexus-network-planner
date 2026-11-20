@@ -185,7 +185,7 @@ export function buildEsx(floors, opts = {}) {
       wallSegDocs.push({
         id: uid('wallsegment'),
         wallPoints: [p1.id, p2.id],
-        wallTypeId: typeIdByKey.get(wl.material) || typeIdByKey.get('drywall'),
+        wallTypeId: typeIdByKey.get(wl.material || 'drywall') || /** @type {string} */ (typeIdByKey.get('drywall')),
         originType: 'WALL_TOOL',
       });
     }

@@ -27,7 +27,8 @@ const ENDPOINT = new Set(['ap', 'camera', 'client', 'ghost']);
 
 const parse = (cidr) => {
   const m = /^(\d+\.\d+\.\d+\.\d+)\/(\d+)$/.exec(String(cidr || '').trim());
-  const n = m ? ipToInt(m[1]) : null;
+  if (!m) return null;
+  const n = ipToInt(m[1]);
   if (n == null || +m[2] > 32) return null;
   const size = 2 ** (32 - +m[2]);
   const lo = Math.floor(n / size) * size;

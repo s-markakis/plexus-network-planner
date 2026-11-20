@@ -56,6 +56,7 @@ export function mountDeviceConfig(opts) {
   async function deploy(sw, filename, text, out) {
     out.textContent = 'Preparing…';
     let res;
+    if (!onDeploy) return;
     try { res = await onDeploy(sw, filename, text); } catch (e) { res = { ok: false, error: String((e && e.message) || e) }; }
     if (!res) { out.textContent = ''; return; }
     if (!res.ok) { out.textContent = `✕ ${res.error || 'Could not start rosconf'}`; return; }
@@ -117,6 +118,8 @@ export function mountDeviceConfig(opts) {
     showLastCheck(sw);
     prefixInp.value = sw.portPrefix || '';
     const model = planDeviceModel(getProject(), sw.id, modelOpts(sw));
+    // The switch can be deleted from the plan while this dialog is open.
+    if (!model) { script.value = ''; warnBox.appendChild(el('li', { text: 'This switch is no longer in the plan.' })); return; }
     // One input per trunk: the physical interface is a site fact the plan
     // doesn't hold, so it is asked for rather than guessed.
     for (const t of model.trunks) {
@@ -186,6 +189,7 @@ export function mountDeviceConfig(opts) {
     if (!sw) return [];
     if (!actual.value.trim()) { driftOut.textContent = 'Paste or upload the device export first.'; return []; }
     const model = planDeviceModel(getProject(), sw.id, modelOpts(sw));
+    if (!model) { driftOut.textContent = 'This switch is no longer in the plan.'; return []; }
     const parsed = parseRouterOsExport(actual.value);
     if (!parsed.ports.length && !parsed.addresses.length && !parsed.bridges.length && !parsed.identity) {
       driftOut.textContent = 'That does not look like a RouterOS /export (no bridge, ports, addresses or identity found).';

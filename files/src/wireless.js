@@ -30,7 +30,7 @@ export function bestAp(client, aps, walls, imgW, imgH, opts = {}) {
     const pat = AP_PATTERNS[ap.pattern] || AP_PATTERNS.omni;
     const o = { bandFactor: bandLossMultiplier(ap.freq), arcDeg: pat.arc, headingDeg: ap.heading || 0 };
     if (opts.model) o.model = opts.model;
-    if (Number.isFinite(opts.metersPerPx) && opts.metersPerPx > 0) o.metersPerPx = opts.metersPerPx;
+    if (typeof opts.metersPerPx === 'number' && Number.isFinite(opts.metersPerPx) && opts.metersPerPx > 0) o.metersPerPx = opts.metersPerPx;
     const dbm = dbmAt(ap, sx, sy, imgW, imgH, walls || [], o);
     if (dbm == null) continue;
     if (!best || dbm > best.dbm) best = { ap, dbm };

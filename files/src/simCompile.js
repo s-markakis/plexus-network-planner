@@ -126,7 +126,8 @@ function mgmtServices(sw) {
 }
 const cidrNorm = (cidr) => {
   const m = /^(\d+\.\d+\.\d+\.\d+)\/(\d+)$/.exec(String(cidr || '').trim());
-  const n = m ? ipToInt(m[1]) : null;
+  if (!m) return null;
+  const n = ipToInt(m[1]);
   if (n == null || +m[2] > 32) return null;
   const mask = +m[2] <= 0 ? 0 : (0xffffffff << (32 - +m[2])) >>> 0;
   return `${(n & mask) >>> 0}/${+m[2]}`;
@@ -282,7 +283,7 @@ export function compileTopology(project, opts = {}) {
     if (serving.some((p) => p.swId === gwSw)) return { ok: true };
     const relay = helpers.filter((h) => h.vlan === String(vid));
     if (!relay.length) return { ok: false, why: 'the pool is on another device and this VLAN has no relay (ip helper-address / dhcp-relay)' };
-    const hit = relay.some((h) => serving.some((p) => swOwnsIp(swById.get(p.swId).sw, h.server)));
+    const hit = relay.some((h) => serving.some((p) => swOwnsIp(/** @type {any} */ (swById.get(p.swId)).sw, h.server)));
     return hit ? { ok: true, relayed: true } : { ok: false, why: `the relay points to ${relay[0].server}, which is not a DHCP server in the plan` };
   };
 
@@ -364,7 +365,7 @@ export function compileTopology(project, opts = {}) {
     ifacesOf(sw.id).push({ name: near, mode: 'trunk', allowed: allVlans });
     ifacesOf(sw.uplinkId).push({ name: far, mode: 'trunk', allowed: allVlans });
     links.push([`sw:${sw.id}/${near}`, `sw:${sw.uplinkId}/${far}`]);
-    uplinks.push({ id: sw.id, mode: 'trunk', from: sw.name || sw.id, to: swById.get(sw.uplinkId).sw.name || sw.uplinkId, ends: [[`sw:${sw.id}`, near], [`sw:${sw.uplinkId}`, far]] });
+    uplinks.push({ id: sw.id, mode: 'trunk', from: sw.name || sw.id, to: /** @type {any} */ (swById.get(sw.uplinkId)).sw.name || sw.uplinkId, ends: [[`sw:${sw.id}`, near], [`sw:${sw.uplinkId}`, far]] });
   }
 
   // Redundant uplink (sw.uplink2Id): a second trunk to another switch. It closes
@@ -378,7 +379,7 @@ export function compileTopology(project, opts = {}) {
     ifacesOf(sw.id).push({ name: near, mode: 'trunk', allowed: allVlans });
     ifacesOf(sw.uplink2Id).push({ name: far, mode: 'trunk', allowed: allVlans });
     links.push([`sw:${sw.id}/${near}`, `sw:${sw.uplink2Id}/${far}`]);
-    uplinks.push({ id: `${sw.id}#2`, mode: 'trunk', from: sw.name || sw.id, to: swById.get(sw.uplink2Id).sw.name || sw.uplink2Id, ends: [[`sw:${sw.id}`, near], [`sw:${sw.uplink2Id}`, far]] });
+    uplinks.push({ id: `${sw.id}#2`, mode: 'trunk', from: sw.name || sw.id, to: /** @type {any} */ (swById.get(sw.uplink2Id)).sw.name || sw.uplink2Id, ends: [[`sw:${sw.id}`, near], [`sw:${sw.uplink2Id}`, far]] });
   }
 
   // L3 devices. A switch routes between VLANs — becoming a sim router with one
@@ -445,14 +446,14 @@ export function compileTopology(project, opts = {}) {
       continue;
     }
     const mine = cliRoutedIfaces(sw);
-    const peer = cliRoutedIfaces(swById.get(sw.uplinkId).sw);
+    const peer = cliRoutedIfaces(/** @type {any} */ (swById.get(sw.uplinkId)).sw);
     const pair = mine.flatMap((a) => peer.map((b) => [a, b])).find(([a, b]) => sameSubnet(a.ip, a.prefix, b.ip, b.prefix));
     if (!pair) {
       warnings.push(`routed uplink ${sw.name || sw.id} → ${sw.uplinkId}: no shared transit subnet between their routed interfaces`);
       continue;
     }
     links.push([`r:${sw.id}/${pair[0].name}`, `r:${sw.uplinkId}/${pair[1].name}`]);
-    uplinks.push({ id: sw.id, mode: 'routed', from: sw.name || sw.id, to: swById.get(sw.uplinkId).sw.name || sw.uplinkId, ends: [[`r:${sw.id}`, pair[0].name], [`r:${sw.uplinkId}`, pair[1].name]] });
+    uplinks.push({ id: sw.id, mode: 'routed', from: sw.name || sw.id, to: /** @type {any} */ (swById.get(sw.uplinkId)).sw.name || sw.uplinkId, ends: [[`r:${sw.id}`, pair[0].name], [`r:${sw.uplinkId}`, pair[1].name]] });
   }
 
   // Switch management addresses. A switch's own IP (sw.ip) is a real, pingable
@@ -531,9 +532,10 @@ export function compileTopology(project, opts = {}) {
   // Re-runnable: fault injection calls this again after taking links down so the
   // IGPs converge on what is left.
   const stpPrio = new Map(switches.map(({ sw }) => [`sw:${sw.id}`, Number(sw.stpPriority)]));
+  /** @type {any} */
   let stp = { roots: [], blocked: [], ports: [] };
   const reconverge = () => {
-    stp = runStp(net, { priority: (dev) => stpPrio.get(dev.id) });
+    stp = runStp(net, { priority: (dev) => /** @type {number} */ (stpPrio.get(dev.id)) });
     out.stp = stp;
     if (ospfRouterSimIds.size) runOspf(net, { enabled: igpEnabled(ospfRouterSimIds, igpNets.ospf) });
     if (ripRouterSimIds.size) runRip(net, { enabled: igpEnabled(ripRouterSimIds, igpNets.rip) });

@@ -65,7 +65,7 @@ export function buildNet(spec = {}) {
       kind: d.kind || 'host',
       vendor: d.vendor || 'generic',
       ifaces: new Map(),
-      routes: [], // {net, prefix, via:int|null, iface, kind:'connected'|'static'}
+      routes: /** @type {any[]} */ ([]), // {net, prefix, via:int|null, iface, kind:'connected'|'static'}
       arp: new Map(), // ipInt -> mac
       macTable: new Map(), // `${vlan}|${mac}` -> ifaceName  (switches only)
       acls: Array.isArray(d.acls) ? d.acls : [], // packet-filter rules (see aclEval)
@@ -189,7 +189,7 @@ function deliverFrame(net, srcDevId, egressIfaceName, frame, events) {
   const queue = [{ dev: egress.peer.dev, iface: egress.peer.iface, vlan: frame.vlan }];
 
   while (queue.length) {
-    const hop = queue.shift();
+    const hop = /** @type {{dev:string, iface:string, vlan:any}} */ (queue.shift());
     const key = `${hop.dev}/${hop.iface}`;
     if (visited.has(key)) continue;
     visited.add(key);
@@ -381,6 +381,7 @@ function aclEval(rules, pkt, state) {
 // Forward `pkt` one device at a time. `pkt` = {srcIp, dstIp, ttl, type, protocol,
 // dport?}. Returns {status, hopIp?} — status 'delivered' | 'unreachable' |
 // 'ttl-exceeded' | 'filtered' | 'closed'. `hops` guards routing loops.
+/** @param {string|null} [ingress] */
 function forward(net, dev, pkt, events, hops = 0, ingress = null) {
   if (hops > MAX_HOPS) return { status: 'unreachable' };
 
@@ -494,7 +495,7 @@ function forward(net, dev, pkt, events, hops = 0, ingress = null) {
   const nextEp = reached.find((ep) => net.devices.get(ep.dev)?.ifaces.get(ep.iface)?.mac === mac)
     || reached.find((ep) => { const d = net.devices.get(ep.dev); return d && [...d.ifaces.values()].some((i) => i.mac === mac); });
   const nextDev = nextEp ? net.devices.get(nextEp.dev) : null;
-  if (!nextDev) return { status: 'unreachable' };
+  if (!nextDev || !nextEp) return { status: 'unreachable' };
 
   pkt._forwarded = true;
   return forward(net, nextDev, pkt, events, hops + 1, nextEp.iface);

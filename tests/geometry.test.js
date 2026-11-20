@@ -396,3 +396,15 @@ describe('dbmAt physical model (metersPerPx)',()=>{
     expect(res.covered).toBeLessThanOrEqual(res.total);
   });
 });
+
+describe('unplaced APs', () => {
+  test('cover nothing instead of producing NaN', async () => {
+    const { dbmAt, coveredThroughWalls, dbmAtThroughSlab } = await import('../files/src/geometry.js');
+    for (const ap of [{ fx: 0.5, fy: 0.5 }, { fy: 0.5, r: 100 }, { fx: NaN, fy: 0.5, r: 100 }]) {
+      expect(dbmAt(ap, 10, 10, 1000, 1000, [], {})).toBeNull();
+      expect(coveredThroughWalls(ap, 10, 10, 1000, 1000, [])).toBe(false);
+      expect(dbmAtThroughSlab(ap, 10, 10, 1000, 1000, 10)).toBeNull();
+    }
+    expect(dbmAt({ fx: 0.5, fy: 0.5, r: 300 }, 500, 520, 1000, 1000, [], {})).toBeGreaterThan(-100);
+  });
+});

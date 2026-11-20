@@ -71,7 +71,7 @@ const H264_MBPS = {
  * @returns {number}
  */
 export function cameraBitrateMbps(resKey, codec, overrideMbps) {
-  if (overrideMbps > 0) return overrideMbps;
+  if (overrideMbps != null && overrideMbps > 0) return overrideMbps;
   const base = H264_MBPS[resKey] ?? 4;
   return codec === 'h265' ? +(base * 0.6).toFixed(2) : base;
 }

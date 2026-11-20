@@ -1,4 +1,7 @@
 // Pure geometry + RF helpers used by the renderer, the coverage sampler,
+
+// Number.isFinite typed as a guard, so a checked field narrows to number.
+const fin = /** @type {(v:unknown)=>v is number} */ (Number.isFinite);
 // and the heatmap/SNR/throughput layers. Kept in their own ES module so they
 // can be unit-tested in isolation (no DOM, no globals). app.js imports them
 // as the single source of truth.
@@ -136,7 +139,7 @@ export const CHANNEL_WIDTHS=[20,40,80,160,320];
  * @returns {number}
  */
 export function noiseFloorForWidth(baseNf20,widthMhz){
-  const w=CHANNEL_WIDTHS.includes(widthMhz)?widthMhz:20;
+  const w=fin(widthMhz)&&CHANNEL_WIDTHS.includes(widthMhz)?widthMhz:20;
   return baseNf20+10*Math.log10(w/20);
 }
 
@@ -149,7 +152,7 @@ const WIDTH_TONES={20:242,40:484,80:980,160:1960,320:3920};
  * @returns {number}
  */
 export function widthThroughputMult(widthMhz){
-  const w=CHANNEL_WIDTHS.includes(widthMhz)?widthMhz:20;
+  const w=fin(widthMhz)&&CHANNEL_WIDTHS.includes(widthMhz)?widthMhz:20;
   return WIDTH_TONES[w]/WIDTH_TONES[20];
 }
 
@@ -172,7 +175,7 @@ export function bandKey(freq){
  * @returns {number|null}
  */
 export function channelCenterMhz(band,ch){
-  if(!Number.isFinite(ch))return null;
+  if(!fin(ch))return null;
   if(band==='2.4')return ch===14?2484:2407+5*ch;
   if(band==='5')return 5000+5*ch;
   if(band==='6')return 5950+5*ch;
@@ -302,7 +305,7 @@ export function rayWallIntersect(ax,ay, bx,by, wx1,wy1, wx2,wy2){
  * @returns {{x1:number,y1:number,x2:number,y2:number}}
  */
 export function wallToPx(w,imgW,imgH){
-  if(Number.isFinite(w.fx1)&&Number.isFinite(w.fy1)&&Number.isFinite(w.fx2)&&Number.isFinite(w.fy2)){
+  if(fin(w.fx1)&&fin(w.fy1)&&fin(w.fx2)&&fin(w.fy2)){
     return {x1:w.fx1*imgW,y1:w.fy1*imgH,x2:w.fx2*imgW,y2:w.fy2*imgH};
   }
   return {x1:w.x1||0,y1:w.y1||0,x2:w.x2||0,y2:w.y2||0};
@@ -323,9 +326,9 @@ function _angleDelta(a,b){
  * @returns {number}
  */
 export function effectiveEirp(ap){
-  const tx=Number.isFinite(ap.txPowerDbm)?ap.txPowerDbm:20;
-  const gain=Number.isFinite(ap.antennaGainDbi)?ap.antennaGainDbi:0;
-  const cable=Number.isFinite(ap.cableLossDb)?ap.cableLossDb:0;
+  const tx=fin(ap.txPowerDbm)?ap.txPowerDbm:20;
+  const gain=fin(ap.antennaGainDbi)?ap.antennaGainDbi:0;
+  const cable=fin(ap.cableLossDb)?ap.cableLossDb:0;
   return tx+gain-cable;
 }
 
@@ -342,12 +345,12 @@ export function effectiveEirp(ap){
 export function computeCoveragePath(ap,imgW,imgH,walls,opts){
   // Back-compat: callers used to pass `rays` as a number for the 5th arg.
   const rays=typeof opts==='number'?opts:(opts&&opts.rays)||72;
-  const bandFactor=(opts&&typeof opts==='object'&&opts.bandFactor)??1;
+  const bandFactor=(opts&&typeof opts==='object'&&fin(opts.bandFactor))?opts.bandFactor:1;
   const arcDeg=(opts&&typeof opts==='object'&&typeof opts.arcDeg==='number')?opts.arcDeg:180;
   const headingDeg=(opts&&typeof opts==='object'&&typeof opts.headingDeg==='number')?opts.headingDeg:0;
   const directional=arcDeg<180;
   if(!imgW||!imgH)return 'M0,0Z';
-  if(!Number.isFinite(ap.fx)||!Number.isFinite(ap.fy)||!Number.isFinite(ap.r)||ap.r<=0)return 'M0,0Z';
+  if(!fin(ap.fx)||!fin(ap.fy)||!fin(ap.r)||ap.r<=0)return 'M0,0Z';
   const cx=ap.fx*imgW, cy=ap.fy*imgH;
   const r=ap.r;
   const pxWalls=walls.map(w=>({...wallToPx(w,imgW,imgH),material:w.material}));
@@ -408,12 +411,14 @@ export function dbmAt(ap,sx,sy,imgW,imgH,walls,opts){
   const headingDeg=(opts&&typeof opts==='object'&&typeof opts.headingDeg==='number')?opts.headingDeg:0;
   const modelKey=(opts&&typeof opts==='object'&&typeof opts.model==='string')?opts.model:'logd';
   const pe=PROP_EXPONENT[modelKey]??PROP_EXPONENT.logd;
-  const eirp=(opts&&typeof opts==='object'&&Number.isFinite(opts.eirpDbm))?opts.eirpDbm:effectiveEirp(ap);
+  const eirp=(opts&&typeof opts==='object'&&fin(opts.eirpDbm))?opts.eirpDbm:effectiveEirp(ap);
   // EIRP delta vs. the model baseline (logd assumes 20 dBm EIRP → -55 dBm at the
   // edge). Higher-PE models drop the edge value so larger PE = faster real-world
   // decay across the radius, not just a steeper near-field gradient.
   const eirpBoost=eirp-20;
   const edgeDbm=-55-(pe-25);
+  // An AP without a position or radius covers nothing (instead of NaN dBm).
+  if(!fin(ap.fx)||!fin(ap.fy)||!fin(ap.r))return null;
   const ax=ap.fx*imgW, ay=ap.fy*imgH;
   const dist=Math.hypot(sx-ax,sy-ay);
   if(dist>ap.r)return null;
@@ -434,9 +439,9 @@ export function dbmAt(ap,sx,sy,imgW,imgH,walls,opts){
   // Physical model: real FSPL at the band's carrier + model exponent + wall dB.
   // Activated by a metersPerPx scale; the per-radius heuristic remains the
   // fallback so unscaled projects keep their previous behaviour.
-  const mpp=(opts&&typeof opts==='object'&&Number.isFinite(opts.metersPerPx)&&opts.metersPerPx>0)?opts.metersPerPx:null;
+  const mpp=(opts&&typeof opts==='object'&&fin(opts.metersPerPx)&&opts.metersPerPx>0)?opts.metersPerPx:null;
   if(mpp){
-    const fMhz=(opts&&typeof opts==='object'&&Number.isFinite(opts.freqMhz))?opts.freqMhz:bandFreqMhz(ap.freq);
+    const fMhz=(opts&&typeof opts==='object'&&fin(opts.freqMhz))?opts.freqMhz:bandFreqMhz(ap.freq);
     return eirp - pathLossDb(dist*mpp,fMhz,modelKey) - lossDb;
   }
   const dRatio=Math.max(0.05,dist/ap.r);
@@ -456,10 +461,10 @@ export function dbmAt(ap,sx,sy,imgW,imgH,walls,opts){
 export function snrAt(ap,sx,sy,imgW,imgH,walls,opts){
   const dbm=dbmAt(ap,sx,sy,imgW,imgH,walls,opts);
   if(dbm===null)return null;
-  let nf=(opts&&Number.isFinite(opts.noiseFloorDbm))?opts.noiseFloorDbm:DEFAULT_NOISE_FLOOR_DBM;
+  let nf=(opts&&fin(opts.noiseFloorDbm))?opts.noiseFloorDbm:DEFAULT_NOISE_FLOOR_DBM;
   // Wider channels admit more thermal noise (+3 dB per doubling vs 20 MHz).
   const cw=(opts&&typeof opts==='object')?opts.chanWidthMhz:undefined;
-  if(Number.isFinite(cw))nf=noiseFloorForWidth(nf,cw);
+  if(fin(cw))nf=noiseFloorForWidth(nf,cw);
   return dbm-nf;
 }
 
@@ -469,7 +474,7 @@ export function snrAt(ap,sx,sy,imgW,imgH,walls,opts){
  * @returns {number}
  */
 export function mcsFromSnr(snrDb){
-  if(!Number.isFinite(snrDb))return -1;
+  if(!fin(snrDb))return -1;
   let best=-1;
   for(const e of MCS_SNR_TABLE){
     if(snrDb>=e.snr)best=e.mcs;
@@ -497,7 +502,7 @@ export function mbpsAt(ap,sx,sy,imgW,imgH,walls,opts){
   const mult=BAND_STREAM_MULT[ap.freq]??2.0;
   // MCS table is the 20 MHz baseline; scale by the channel-width tone ratio.
   const cw=(opts&&typeof opts==='object')?opts.chanWidthMhz:undefined;
-  const wMult=Number.isFinite(cw)?widthThroughputMult(cw):1;
+  const wMult=fin(cw)?widthThroughputMult(cw):1;
   return row.mbps*mult*wMult;
 }
 
@@ -515,11 +520,12 @@ export function mbpsAt(ap,sx,sy,imgW,imgH,walls,opts){
  */
 export function coveredThroughWalls(ap,sx,sy,imgW,imgH,walls,bandFactor,arcDeg,headingDeg){
   const bf=bandFactor??1;
+  if(!fin(ap.fx)||!fin(ap.fy)||!fin(ap.r))return false;
   const ax=ap.fx*imgW, ay=ap.fy*imgH;
   const dist=Math.hypot(sx-ax,sy-ay);
   if(dist>ap.r)return false;
   // Directional antennas only radiate inside their arc (same rule as dbmAt).
-  if(Number.isFinite(arcDeg)&&arcDeg<180){
+  if(fin(arcDeg)&&arcDeg<180){
     const angle=Math.atan2(sy-ay,sx-ax)*180/Math.PI;
     if(Math.abs(_angleDelta(angle,headingDeg||0))>arcDeg)return false;
   }
@@ -576,7 +582,7 @@ export function sampleRoamingOverlap(floor,imgW,imgH,thresholdDbm=-67,opts){
   const w=imgW||1,h=imgH||1;
   // Use the floor's real-world scale (m per 100 px) when present so the
   // overlap stats agree with the physical heatmap.
-  const mpp=(Number.isFinite(floor.scaleM)&&floor.scaleM>0)?floor.scaleM/100:undefined;
+  const mpp=(fin(floor.scaleM)&&floor.scaleM>0)?floor.scaleM/100:undefined;
   const step=Math.max(4,Math.round(Math.min(w,h)/60));
   let total=0,covered=0;
   for(let x=0;x<w;x+=step)for(let y=0;y<h;y+=step){
@@ -616,17 +622,18 @@ export function dbmAtThroughSlab(ap,sx,sy,imgW,imgH,slabDb,bandFactor,modelKey,m
   const eirp=effectiveEirp(ap);
   const eirpBoost=eirp-20;
   const edgeDbm=-55-(pe-25);
+  if(!fin(ap.fx)||!fin(ap.fy)||!fin(ap.r))return null;
   const ax=ap.fx*imgW, ay=ap.fy*imgH;
   const dist=Math.hypot(sx-ax,sy-ay);
   if(dist>ap.r)return null;
   const dRatio=Math.max(0.05,dist/ap.r);
   // Apply the slab loss as an extra attenuator multiplied by the band factor —
   // 2.4 GHz penetrates slabs better than 5 GHz, just like walls.
-  const nSlabs=Number.isFinite(slabs)&&slabs>=1?slabs:1;
+  const nSlabs=fin(slabs)&&slabs>=1?slabs:1;
   const effSlab=slabDb*bf*nSlabs;
   if(dist > ap.r*attenuationFactor(effSlab))return null;
-  if(Number.isFinite(metersPerPx)&&metersPerPx>0){
-    const dz=Number.isFinite(verticalM)&&verticalM>0?verticalM:0;
+  if(fin(metersPerPx)&&metersPerPx>0){
+    const dz=fin(verticalM)&&verticalM>0?verticalM:0;
     return eirp - pathLossDb(Math.hypot(dist*metersPerPx,dz),bandFreqMhz(ap.freq),modelKey) - effSlab;
   }
   const fsLoss=pe*Math.log10(1/dRatio);
