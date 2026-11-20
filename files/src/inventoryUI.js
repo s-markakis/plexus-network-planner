@@ -7,35 +7,41 @@ import { DEVICE_STATUSES, DEVICE_STATUS_META } from './constants.js';
 
 /**
  * @param {Document} doc
- * @param {{devices:Array<{dev:any,type:string,floor:any,floorIdx:number}>, counts:Record<string,number>,
+ * @param {{devices:Array<{dev:any,type:string,floor:any,floorIdx:number}>,
  *   statusMeta:(dev:any)=>{label:string,color:string},
  *   onStatus:(dev:any, status:string)=>void, onOpen:(entry:any)=>void,
  *   actions:{ipAll:()=>void, rename:()=>void, inventoryCsv:()=>void, ipPlanCsv:()=>void, portMapCsv:()=>void, handover:()=>void}}} p
  * @returns {HTMLElement}
  */
-export function inventoryEl(doc, { devices: devs, counts, statusMeta, onStatus, onOpen, actions }) {
+export function inventoryEl(doc, { devices: devs, statusMeta, onStatus, onOpen, actions }) {
   const wrap = doc.createElement('div');
   wrap.style.cssText = 'font-family:inherit;font-size:13px';
   if (!devs.length) {
     wrap.textContent = 'Nothing placed yet. Add APs, cameras or switches first.';
     return wrap;
   }
-  // Rollout progress pills.
+  // Rollout progress pills — redrawn after an inline status change (they
+  // used to keep the counts from when the dialog opened).
   const prog = doc.createElement('div');
   prog.style.cssText = 'display:flex;gap:10px;flex-wrap:wrap;margin-bottom:10px;font-size:11px';
-  for (const s of DEVICE_STATUSES) {
-    const m = DEVICE_STATUS_META[s];
-    const pill = doc.createElement('span');
-    pill.style.cssText = 'display:flex;align-items:center;gap:5px';
-    pill.innerHTML = `<span style="width:9px;height:9px;border-radius:50%;background:${m.color}"></span>${m.label} <strong>${counts[s]}</strong>`;
-    prog.appendChild(pill);
-  }
-  const done = counts.live + counts.tested;
-  const pct = Math.round((done / devs.length) * 100);
-  const pctEl = doc.createElement('span');
-  pctEl.style.cssText = 'margin-left:auto;font-family:var(--font-mono);font-size:11px;opacity:.7';
-  pctEl.textContent = `${pct}% tested/live`;
-  prog.appendChild(pctEl);
+  const renderProgress = () => {
+    prog.innerHTML = '';
+    const counts = Object.fromEntries(DEVICE_STATUSES.map((s) => [s, 0]));
+    for (const { dev } of devs) counts[dev.status || 'planned']++;
+    for (const s of DEVICE_STATUSES) {
+      const m = DEVICE_STATUS_META[s];
+      const pill = doc.createElement('span');
+      pill.style.cssText = 'display:flex;align-items:center;gap:5px';
+      pill.innerHTML = `<span style="width:9px;height:9px;border-radius:50%;background:${m.color}"></span>${m.label} <strong>${counts[s]}</strong>`;
+      prog.appendChild(pill);
+    }
+    const pct = Math.round(((counts.live + counts.tested) / devs.length) * 100);
+    const pctEl = doc.createElement('span');
+    pctEl.style.cssText = 'margin-left:auto;font-family:var(--font-mono);font-size:11px;opacity:.7';
+    pctEl.textContent = `${pct}% tested/live`;
+    prog.appendChild(pctEl);
+  };
+  renderProgress();
   wrap.appendChild(prog);
   // Search box.
   const search = doc.createElement('input');
@@ -81,7 +87,7 @@ export function inventoryEl(doc, { devices: devs, counts, statusMeta, onStatus, 
       }
       stSel.style.color = statusMeta(dev).color;
       stSel.addEventListener('click', (e) => e.stopPropagation());
-      stSel.addEventListener('change', () => { onStatus(dev, stSel.value); stSel.style.color = statusMeta(dev).color; });
+      stSel.addEventListener('change', () => { onStatus(dev, stSel.value); stSel.style.color = statusMeta(dev).color; renderProgress(); });
       stTd.appendChild(stSel); tr.appendChild(stTd);
       tr.appendChild(td(esc(dev.serial || '—'), true));
       tr.appendChild(td(esc(dev.assetTag || '—'), true));

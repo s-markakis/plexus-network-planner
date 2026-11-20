@@ -3939,7 +3939,7 @@ function showRevisions(){
 // organization actions (bulk IPs, renaming, CSV/handover exports).
 function showInventory(){
   const devs=allDevices();
-  const wrap=inventoryEl(document,{devices:devs,counts:deviceStatusCounts(),statusMeta,
+  const wrap=inventoryEl(document,{devices:devs,statusMeta,
     onStatus:(dev,st)=>{snapshot();dev.status=st;render();renderList();autosave();},
     onOpen:({dev,type,floorIdx})=>{
       closeModal();
