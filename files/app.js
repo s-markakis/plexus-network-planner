@@ -92,6 +92,7 @@ import {diffRevisions as _diffRevisions} from './src/revisionDiff.js';
 import {planChannels,planTxPower} from './src/rfPlanning.js';
 import {validatePlan} from './src/validation.js';
 import {parseChannel,apChansOverlap,bandMatches,heatApShape} from './src/channels.js';
+import {planApPlacement} from './src/apPlacement.js';
 import {remoteImageHosts,stripRemoteImages} from './src/remoteImages.js';
 import {evaluatePolicies} from './src/policy.js';
 import {compileTopology} from './src/simCompile.js';
@@ -536,11 +537,7 @@ function uploadMap(input){
 // onload handled in loadFloorImage()
 
 // ═══ AUTO-AP PLACEMENT ════════════════════════════
-// Greedy coverage maximization: pick a sparse grid of candidate positions,
-// then iteratively place an AP at whichever candidate covers the most
-// currently-uncovered points. Stop when target % is reached or max APs hit.
-// Not optimal in the strict NP-hard sense; good enough in practice and
-// finishes in well under a second for realistic floor sizes.
+// The greedy planner lives in ./src/apPlacement.js.
 // Every new AP — clicked or auto-placed — starts from the same record. Auto-
 // placed APs used to lack the RF fields (antenna gain, Tx power, width…), so
 // their heatmap changed after a save + reload filled them in.
@@ -560,71 +557,20 @@ function autoPlaceAPs(){
   const w=mapImg.naturalWidth,h=mapImg.naturalHeight;
   if(!w||!h){toast('Upload a map first');return;}
   const model=AP_RANGE_M[SETTINGS.lastModel]?SETTINGS.lastModel:'U6 Pro';
-  const r=rangeMToPx(AP_RANGE_M[model]);
-  // Build a sample grid (the same one sampleFloorCoverage uses, conceptually).
-  const step=Math.max(6,Math.round(Math.min(w,h)/80));
-  const samples=[];
-  for(let y=0;y<h;y+=step)for(let x=0;x<w;x+=step)samples.push({x,y,covered:false});
-  // Mark already-covered points by existing APs so we don't double-count.
-  const walls=WALLS();
-  const existing=APS();
-  for(const ap of existing){
-    const pat=AP_PATTERNS[ap.pattern]||AP_PATTERNS.omni;
-    const bf=bandLossMultiplier(ap.freq);
-    for(const s of samples){
-      if(s.covered)continue;
-      const d=dbmAt(ap,s.x,s.y,w,h,walls,{bandFactor:bf,arcDeg:pat.arc,headingDeg:ap.heading||0});
-      if(d!==null)s.covered=true;
-    }
-  }
-  // Candidate positions: a sparser grid than the sample grid.
-  const candStep=Math.max(step*2,Math.round(Math.min(w,h)/30));
-  const candidates=[];
-  for(let y=candStep/2;y<h;y+=candStep)for(let x=candStep/2;x<w;x+=candStep){
-    candidates.push({x,y});
-  }
-  // We treat a candidate AP as an "omni AP at default range" for placement
-  // scoring. Once placed, the user can fine-tune.
-  const placedNow=[];
-  const TARGET=0.92, MAX_APS=12;
-  // Helper: which samples a candidate would cover.
-  const candidateCovers=(cx,cy)=>{
-    const fakeAp={fx:cx/w,fy:cy/h,r,freq:'2.4 / 5 GHz',pattern:'omni',heading:0};
-    const out=[];
-    for(let i=0;i<samples.length;i++){
-      const s=samples[i];
-      if(s.covered)continue;
-      // Cheap distance check first; only do dbmAt if within radius.
-      if(Math.hypot(s.x-cx,s.y-cy)>r)continue;
-      const d=dbmAt(fakeAp,s.x,s.y,w,h,walls,{bandFactor:0.6});
-      if(d!==null)out.push(i);
-    }
-    return out;
-  };
-  const coveredCount=()=>{let n=0;for(const s of samples)if(s.covered)n++;return n;};
+  // Planner in ./src/apPlacement.js; this adds the APs it chose.
+  const {placed,coveredFrac}=planApPlacement({w,h,walls:WALLS(),existing:APS(),r:rangeMToPx(AP_RANGE_M[model])});
   snapshot();
-  while(placedNow.length<MAX_APS && coveredCount()/samples.length<TARGET){
-    let bestIdx=-1,bestGain=-1,bestCovers=null;
-    for(let i=0;i<candidates.length;i++){
-      const c=candidates[i];
-      if(c.used)continue;
-      const covers=candidateCovers(c.x,c.y);
-      if(covers.length>bestGain){bestGain=covers.length;bestIdx=i;bestCovers=covers;}
-    }
-    if(bestIdx<0||bestGain<=0)break;
-    candidates[bestIdx].used=true;
-    for(const i of bestCovers)samples[i].covered=true;
-    // Place the AP for real.
-    const c=candidates[bestIdx];
+  const placedNow=[];
+  for(const c of placed){
     const id='ap'+nid++;
     const num=nextNameSuffix(APS(),/^AP-(\d+)/);
-    APS().push(_newAp(id,'AP-'+String(num).padStart(2,'0'),model,c.x/w,c.y/h));
+    APS().push(_newAp(id,'AP-'+String(num).padStart(2,'0'),model,c.fx,c.fy));
     placedNow.push(id);
   }
   invalidateCoverageCache();
   render();renderList();renderRP();calcCoverage();
   if(placedNow.length){
-    const pct=Math.round(coveredCount()/samples.length*100);
+    const pct=Math.round(coveredFrac*100);
     toast(`Placed ${placedNow.length} ${model} AP${placedNow.length===1?'':'s'} — ${pct}% coverage`);
     // Capacity sanity check vs this floor's switches (ports + PoE budget).
     if(SWS().length){
