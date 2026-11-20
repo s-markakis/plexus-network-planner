@@ -7,6 +7,12 @@ versioning follows [SemVer](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- **Circuits**: record the path each connection takes — end device, switch
+  port, uplinks, plus patch panels, wall outlets, converters and cable labels
+  the plan doesn't draw — with technician and date. The path auto-fills from
+  the plan; search finds a circuit by anything on it (accent-insensitive), a
+  device hop jumps to it on the map, and a circuit that no longer matches the
+  plan is flagged.
 - **Desktop project files**: File menu with New / New from Template / Open /
   Open Recent / Save / Save As; the title shows the file and unsaved state.
 - **Plan → device dry run**: "Dry-run with rosconf" hands the generated RouterOS
