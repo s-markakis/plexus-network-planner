@@ -104,10 +104,15 @@ export function ipInCidr(ip, cidr) {
 export function subnetUsage(cidr, ips = []) {
   const c = parseCidr(cidr);
   if (!c || !c.capacity) return null;
+  // Count only addresses in the host pool that `capacity` describes (index
+  // 2..size-2, as nextFreeIp hands out). The gateway at .1 sits outside the
+  // capacity, so counting it made a pool with one free address read "full".
   const inside = new Set();
   for (const ip of ips) {
     const s = String(ip || '').trim();
-    if (s && ipInCidr(s, cidr)) inside.add(s);
+    if (!s || !ipInCidr(s, cidr)) continue;
+    const i = /** @type {number} */ (ipToInt(s)) - c.net;
+    if (i >= 2 && i <= c.size - 2) inside.add(s);
   }
   const used = inside.size;
   return { used, capacity: c.capacity, pct: Math.round((used / c.capacity) * 100) };

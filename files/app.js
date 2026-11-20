@@ -87,6 +87,23 @@ import {mountLabs} from './src/labsUI.js';
 import {mountCircuits} from './src/circuitsUI.js';
 import {deviceIndex} from './src/circuits.js';
 import {projectForShare} from './src/shareLink.js';
+import {bomCsv,cableScheduleCsv,ipPlanCsv,portMapCsv,inventoryCsv} from './src/csvExports.js';
+import {diffRevisions as _diffRevisions} from './src/revisionDiff.js';
+import {planChannels,planTxPower} from './src/rfPlanning.js';
+import {validatePlan} from './src/validation.js';
+import {parseChannel,apChansOverlap,bandMatches,heatApShape} from './src/channels.js';
+import {planApPlacement} from './src/apPlacement.js';
+import * as _pm from './src/planModel.js';
+import {esc,safeColor} from './src/html.js';
+import {portGridHtml,poeSummaryEl,topologyEl} from './src/networkDialogs.js';
+import {inventoryEl} from './src/inventoryUI.js';
+import {applyUnifiDevices,unifiChannelPlan} from './src/unifiSync.js';
+import {settingsForm,SETTINGS_STRING_KEYS,SETTINGS_NUMBER_KEYS,SETTINGS_BOOL_KEYS} from './src/settingsUI.js';
+import {revisionsEl} from './src/revisionsUI.js';
+import * as _pb from './src/panelBlocks.js';
+import {apPanelHtml,swPanelHtml,camPanelHtml,wallPanelHtml,dzPanelHtml} from './src/panels.js';
+import {renderAPLayer,renderDZLayer,renderCableLayer,renderCAMLayer,renderSWLayer,renderAnnoLayer,renderSampleLayer,renderWallLayer,renderClientLayer,renderRoamingLayer,renderChannelOverlapLayer,renderOverlapZoneLayer,renderGridLayer} from './src/mapLayers.js';
+const {credsBlock,inventoryBlock,portOptions,portControl,statusOptions,buildGroupedOptions,CRED_PROTOS}=_pb;
 import {remoteImageHosts,stripRemoteImages} from './src/remoteImages.js';
 import {evaluatePolicies} from './src/policy.js';
 import {compileTopology} from './src/simCompile.js';
@@ -148,9 +165,6 @@ function invalidateCoverageCache(){_wallsCacheKey++;}
 function rangeMToPx(m){return Math.round(m*100/(scaleM||100));}
 
 // HTML-escape for safely interpolating user-controlled strings into templates.
-function esc(s){return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
-// A colour from a project file, for use inside markup: hex only, else ''.
-function safeColor(c){return typeof c==='string'&&/^#[0-9a-fA-F]{3,8}$/.test(c)?c:'';}
 
 // Convert "#rrggbb" to "rgba(r,g,b,a)" — used for AP color fills where we want
 // the stroke at full opacity but the fill semi-transparent so overlaps blend.
@@ -194,17 +208,6 @@ function tBg(){
 // Build an <optgroup>-structured <option> list for a grouped dropdown.
 // If `selected` isn't in any group's list, the "Custom/Other" option (if present) gets selected
 // and the panel will show a free-text override input.
-function buildGroupedOptions(groups,selected){
-  const flat=groups.flatMap(g=>g.models);
-  const known=flat.includes(selected);
-  return groups.map(g=>{
-    const opts=g.models.map(m=>{
-      const isSel=(m===selected)||(!known&&m==='Custom/Other');
-      return `<option${isSel?' selected':''}>${esc(m)}</option>`;
-    }).join('');
-    return `<optgroup label="${esc(g.label)}">${opts}</optgroup>`;
-  }).join('');
-}
 const HINTS={
   add: 'Click map to place an AP',
   sel: 'Click an item to select · Shift+click to add to selection · drag to move',
@@ -307,7 +310,6 @@ const CAMS=()=>F().CAMS||(F().CAMS=[]);
 const CLIENTS=()=>F().CLIENTS||(F().CLIENTS=[]);
 const ANNOS=()=>F().ANNOS||(F().ANNOS=[]);
 const SAMPLES=()=>F().SAMPLES||(F().SAMPLES=[]);
-const REVS=()=>(typeof window!=='undefined'&&Array.isArray(PROJECT_REVISIONS)?PROJECT_REVISIONS:[]);
 
 // v3 state
 let annoStart=null;        // {x,y} while drawing an arrow/dim annotation
@@ -330,6 +332,47 @@ const rulerLayer=document.getElementById('ruler-layer');
 const wallLayer=document.getElementById('wall-layer');
 const cableLayer=document.getElementById('cable-layer');
 const chOverlapLayer=document.getElementById('ch-overlap-layer');
+// Live values and input hooks for the map layers in ./src/mapLayers.js. The
+// layers draw; selection and dragging stay here.
+const _layerCtx={
+  doc:document,
+  get w(){return mapImg.naturalWidth;},get h(){return mapImg.naturalHeight;},
+  get aps(){return APS();},get rfAps(){return rfAps(F());},get sws(){return SWS();},get cams(){return CAMS();},get dzs(){return DZS();},get walls(){return WALLS();},
+  get settings(){return SETTINGS;},
+  get scaleM(){return scaleM;},get mPerPx(){return scaleM/100;},get floorScaleM(){return F().scaleM;},
+  get zoom(){return scale;},get routingFactor(){return routingFactor();},
+  get showCables(){return showCables;},get showCoverage(){return showCoverage;},
+  get annos(){return ANNOS();},get samples(){return SAMPLES();},
+  get showOL(){return showOL;},get showGrid(){return showGrid;},gridSize:GRID_SZ,
+  get clients(){return CLIENTS();},get selType(){return selType;},get selId(){return selId;},
+  get detectedWallPreview(){return _detectedWallPreview;},wallPx:w=>_wallPx(w),
+  // A wall line takes a press only in select mode.
+  onWallPointerDown(w,e){if(mode==='sel'){e.stopPropagation();sel(w.id,'wall');}},
+  // An end handle of the selected wall: reshape by dragging (undoable).
+  onWallVertexDown(w,endpoint,e){e.stopPropagation();wallVertDrag={wallId:w.id,endpoint};snapshot();},
+  isSelected:(id,type)=>isSelected(id,type),statusDimmed:d=>statusDimmed(d),vlanColor:v=>vlanColor(v),
+  hexToRgba:(c,a)=>hexToRgba(c,a),tInk:a=>tInk(a),tBg:a=>tBg(a),
+  getCoveragePath:ap=>getCoveragePath(ap),getInnerCoveragePath:ap=>getInnerCoveragePath(ap),
+  findSwitchAnywhere:id=>findSwitchAnywhere(id),
+  // Press on a placed item: select it (shift: toggle in select mode) and,
+  // unless locked, start dragging it.
+  onItemPointerDown(kind,item,e){
+    if(kind==='ap'&&e.target.dataset.resize)return;
+    e.stopPropagation();
+    if(e.shiftKey&&mode==='sel'){toggleSelection(item.id,kind);return;}
+    sel(item.id,kind);
+    if(!item.locked){
+      const w=mapImg.naturalWidth,h=mapImg.naturalHeight;
+      const img=vpToImg(e.clientX,e.clientY);
+      dragOffX=item.fx*w-img.x;dragOffY=item.fy*h-img.y;
+      dragId=item.id;dragType=kind;
+      _dragInitialFx=item.fx;_dragInitialFy=item.fy;
+      if(kind==='ap')startApStick(item.id);
+    }
+  },
+  // The selected dead zone's radius handle.
+  onDzResizeDown(dz,e){e.stopPropagation();resId=dz.id;resizeStartX=e.clientX;resizeStartR=dz.r;},
+};
 const marqueeLayer=document.getElementById('marquee-layer');
 // Minimap was removed. These references are kept as nulls so the rest of the
 // codebase doesn't need changes; renderMM is a no-op below, and mmImg.src
@@ -532,11 +575,7 @@ function uploadMap(input){
 // onload handled in loadFloorImage()
 
 // ═══ AUTO-AP PLACEMENT ════════════════════════════
-// Greedy coverage maximization: pick a sparse grid of candidate positions,
-// then iteratively place an AP at whichever candidate covers the most
-// currently-uncovered points. Stop when target % is reached or max APs hit.
-// Not optimal in the strict NP-hard sense; good enough in practice and
-// finishes in well under a second for realistic floor sizes.
+// The greedy planner lives in ./src/apPlacement.js.
 // Every new AP — clicked or auto-placed — starts from the same record. Auto-
 // placed APs used to lack the RF fields (antenna gain, Tx power, width…), so
 // their heatmap changed after a save + reload filled them in.
@@ -556,83 +595,37 @@ function autoPlaceAPs(){
   const w=mapImg.naturalWidth,h=mapImg.naturalHeight;
   if(!w||!h){toast('Upload a map first');return;}
   const model=AP_RANGE_M[SETTINGS.lastModel]?SETTINGS.lastModel:'U6 Pro';
-  const r=rangeMToPx(AP_RANGE_M[model]);
-  // Build a sample grid (the same one sampleFloorCoverage uses, conceptually).
-  const step=Math.max(6,Math.round(Math.min(w,h)/80));
-  const samples=[];
-  for(let y=0;y<h;y+=step)for(let x=0;x<w;x+=step)samples.push({x,y,covered:false});
-  // Mark already-covered points by existing APs so we don't double-count.
-  const walls=WALLS();
-  const existing=APS();
-  for(const ap of existing){
-    const pat=AP_PATTERNS[ap.pattern]||AP_PATTERNS.omni;
-    const bf=bandLossMultiplier(ap.freq);
-    for(const s of samples){
-      if(s.covered)continue;
-      const d=dbmAt(ap,s.x,s.y,w,h,walls,{bandFactor:bf,arcDeg:pat.arc,headingDeg:ap.heading||0});
-      if(d!==null)s.covered=true;
-    }
-  }
-  // Candidate positions: a sparser grid than the sample grid.
-  const candStep=Math.max(step*2,Math.round(Math.min(w,h)/30));
-  const candidates=[];
-  for(let y=candStep/2;y<h;y+=candStep)for(let x=candStep/2;x<w;x+=candStep){
-    candidates.push({x,y});
-  }
-  // We treat a candidate AP as an "omni AP at default range" for placement
-  // scoring. Once placed, the user can fine-tune.
-  const placedNow=[];
-  const TARGET=0.92, MAX_APS=12;
-  // Helper: which samples a candidate would cover.
-  const candidateCovers=(cx,cy)=>{
-    const fakeAp={fx:cx/w,fy:cy/h,r,freq:'2.4 / 5 GHz',pattern:'omni',heading:0};
-    const out=[];
-    for(let i=0;i<samples.length;i++){
-      const s=samples[i];
-      if(s.covered)continue;
-      // Cheap distance check first; only do dbmAt if within radius.
-      if(Math.hypot(s.x-cx,s.y-cy)>r)continue;
-      const d=dbmAt(fakeAp,s.x,s.y,w,h,walls,{bandFactor:0.6});
-      if(d!==null)out.push(i);
-    }
-    return out;
-  };
-  const coveredCount=()=>{let n=0;for(const s of samples)if(s.covered)n++;return n;};
+  // Planner in ./src/apPlacement.js; this adds the APs it chose.
+  const {placed,coveredFrac}=planApPlacement({w,h,walls:WALLS(),existing:APS(),r:rangeMToPx(AP_RANGE_M[model])});
   snapshot();
-  while(placedNow.length<MAX_APS && coveredCount()/samples.length<TARGET){
-    let bestIdx=-1,bestGain=-1,bestCovers=null;
-    for(let i=0;i<candidates.length;i++){
-      const c=candidates[i];
-      if(c.used)continue;
-      const covers=candidateCovers(c.x,c.y);
-      if(covers.length>bestGain){bestGain=covers.length;bestIdx=i;bestCovers=covers;}
-    }
-    if(bestIdx<0||bestGain<=0)break;
-    candidates[bestIdx].used=true;
-    for(const i of bestCovers)samples[i].covered=true;
-    // Place the AP for real.
-    const c=candidates[bestIdx];
+  const placedNow=[];
+  for(const c of placed){
     const id='ap'+nid++;
     const num=nextNameSuffix(APS(),/^AP-(\d+)/);
-    APS().push(_newAp(id,'AP-'+String(num).padStart(2,'0'),model,c.x/w,c.y/h));
+    APS().push(_newAp(id,'AP-'+String(num).padStart(2,'0'),model,c.fx,c.fy));
     placedNow.push(id);
   }
   invalidateCoverageCache();
   render();renderList();renderRP();calcCoverage();
   if(placedNow.length){
-    const pct=Math.round(coveredCount()/samples.length*100);
-    toast(`Placed ${placedNow.length} ${model} AP${placedNow.length===1?'':'s'} — ${pct}% coverage`);
+    // Report the same figure as the coverage readout (the planner's own
+    // estimate uses a simplified model), and in one toast: a second toast
+    // replaced the first, so a capacity warning hid the placement result.
+    const cov=sampleFloorCoverage(F());
+    const pct=cov.total?Math.round(cov.covered/cov.total*100):Math.round(coveredFrac*100);
+    let msg=`Placed ${placedNow.length} ${model} AP${placedNow.length===1?'':'s'} — ${pct}% coverage`;
     // Capacity sanity check vs this floor's switches (ports + PoE budget).
     if(SWS().length){
       let ports=0,portsKnown=true,budget=0;
       for(const sw of SWS()){const p=sw.ports||swPortCount(sw.model);if(p==null)portsKnown=false;else ports+=p;budget+=sw.poeBudget||0;}
       const devCount=APS().length+CAMS().length;
-      const draw=APS().reduce((n,a)=>n+(AP_POE_W[a.model]||10),0)+CAMS().reduce((n,c)=>n+((CAM_SPECS[c.model]||{}).poeW||0),0);
+      const draw=APS().reduce((n,a)=>n+_pm.apPoeW(a.model),0)+CAMS().reduce((n,c)=>n+_pm.camPoeW(c.model),0);
       const issues=[];
       if(portsKnown && devCount>ports)issues.push(`${devCount} devices vs ${ports} ports`);
       if(budget>0 && draw>budget)issues.push(`${draw.toFixed(0)} W vs ${budget} W PoE`);
-      if(issues.length)toast('⚠ Switch capacity: '+issues.join(' · ')+' — add/upgrade switches');
+      if(issues.length)msg+=` · ⚠ switch capacity: ${issues.join(', ')} — add/upgrade switches`;
     }
+    toast(msg);
   }else{
     toast('Already at target coverage — nothing to place');
   }
@@ -650,74 +643,55 @@ function routingFactor(){const f=parseFloat(SETTINGS.cableRoutingFactor);return 
 // Real-world cable-run length (m) between a device and its switch on a floor,
 // including the routing factor.
 function cableRunM(dev,sw,floor){
-  const w=mapImg.naturalWidth||1,h=mapImg.naturalHeight||1;
-  return runLengthM(dev.fx,dev.fy,sw.fx,sw.fy,w,h,((floor||F()).scaleM)||100,routingFactor());
+  const f=floor||F();
+  const {w,h}=floorDims(f);
+  return runLengthM(dev.fx,dev.fy,sw.fx,sw.fy,w,h,(f.scaleM)||100,routingFactor());
 }
+// Natural pixel size of each floor's plan image, keyed by image. Positions are
+// fractions and scaleM is metres per 100 px *of that floor's own image*, so a
+// length or coverage figure for another floor must use that floor's size, not
+// the one on screen (plans of different resolution gave wrong metres).
+const _floorDims=new Map();
+const _floorDimKey=f=>(f&&(f.imgId||f.img))||'';
+function floorDims(f){
+  if(f===F()&&mapImg.naturalWidth>0)return {w:mapImg.naturalWidth,h:mapImg.naturalHeight};
+  return _floorDims.get(_floorDimKey(f))||{w:mapImg.naturalWidth||1,h:mapImg.naturalHeight||1};
+}
+// Measure every floor's image once (after a project load); the floor on
+// screen is recorded by the map image's load handler.
+async function _measureFloorImages(){
+  await Promise.all(FLOORS.map(async f=>{
+    const key=_floorDimKey(f);
+    if(!key||_floorDims.has(key))return;
+    try{
+      const src=f.imgId?await resolveFloorImage(f):f.img;
+      if(!src)return;
+      const d=await new Promise((res,rej)=>{const im=new Image();im.onload=()=>res({w:im.naturalWidth,h:im.naturalHeight});im.onerror=rej;im.src=src;});
+      if(d.w>0)_floorDims.set(key,d);
+    }catch(_){/* unreadable image: floorDims falls back to the plan on screen */}
+  }));
+}
+const vlanDatalist=()=>_pb.vlanDatalist(vlanList());
+// Plan views live in ./src/planModel.js; these bind them to the open plan.
+const findSwitchAnywhere=id=>_pm.findSwitchAnywhere(FLOORS,id);
+const cableTotals=()=>_pm.cableTotals(FLOORS,cableRunM);
+const topologyModel=()=>_pm.topologyModel(FLOORS);
+const analyzeSwitch=(sw,floor)=>_pm.analyzeSwitch(sw,floor||F());
+const allDevices=()=>_pm.allDevices(FLOORS);
+const deviceStatusCounts=()=>_pm.deviceStatusCounts(FLOORS);
+const totalClientCapacity=()=>_pm.totalClientCapacity(FLOORS);
+const totalStorageGb=()=>_pm.totalStorageGb(FLOORS,SETTINGS);
 // VLAN registry helpers.
 function vlanList(){return Array.isArray(SETTINGS.vlans)?SETTINGS.vlans:[];}
 function vlanById(id){id=(id==null?'':String(id)).trim();if(!id)return null;return vlanList().find(v=>String(v.id)===id)||null;}
 function vlanColor(id){const v=vlanById(id);return v&&v.color?v.color:'';}
 // <datalist> of registered VLAN ids for the device VLAN inputs.
-function vlanDatalist(){
-  if(!vlanList().length)return '';
-  return `<datalist id="vlan-list">${vlanList().map(v=>`<option value="${esc(v.id)}">${esc(v.name||'')}</option>`).join('')}</datalist>`;
-}
 // Find a switch by id across ALL floors (for inter-floor uplinks).
-function findSwitchAnywhere(id){
-  if(!id)return null;
-  for(let i=0;i<FLOORS.length;i++){
-    const sw=(FLOORS[i].SWS||[]).find(s=>s.id===id);
-    if(sw)return {sw,floor:FLOORS[i],floorIdx:i};
-  }
-  return null;
-}
 // Sum every device→switch run across all floors. totalM includes 10% slack per
 // run. Pixel→metre conversion uses the current map resolution (as the cable
 // schedule export does).
-function cableTotals(){
-  let runs=0,totalM=0;
-  for(const f of FLOORS){
-    const sws=f.SWS||[];
-    const add=(dev)=>{
-      if(!dev.swId)return;
-      const sw=sws.find(s=>s.id===dev.swId);if(!sw)return;
-      const m=cableRunM(dev,sw,f);
-      runs++;totalM+=m+Math.max(1,m*0.1);
-    };
-    (f.APS||[]).forEach(add);(f.CAMS||[]).forEach(add);
-  }
-  return {runs,totalM:Math.round(totalM)};
-}
 // Building-wide switch uplink graph (roots + children), spanning floors.
-function topologyModel(){
-  const all=[];
-  FLOORS.forEach((f,i)=>(f.SWS||[]).forEach(sw=>all.push({sw,floor:f,floorIdx:i})));
-  const byId=new Map(all.map(e=>[e.sw.id,e]));
-  const children=new Map(all.map(e=>[e.sw.id,[]]));
-  const roots=[];
-  for(const e of all){
-    const up=e.sw.uplinkId;
-    if(up && byId.has(up) && up!==e.sw.id)children.get(up).push(e);
-    else roots.push(e);
-  }
-  return {all,byId,children,roots};
-}
 // A switch's port grid as HTML (filled cells = device on that port number).
-function portGridHtml(a,border){
-  border=border||'var(--ink-04)';
-  if(a.ports==null)return `<div style="font-size:11px;opacity:.7">${a.used} device(s) · port count unknown</div>`;
-  const byPort=new Map();
-  for(const c of a.clients){const p=parseInt(c.port,10);if(p>=1&&p<=a.ports)byPort.set(p,c);}
-  let cells='';
-  for(let i=1;i<=a.ports;i++){
-    const c=byPort.get(i);
-    const bg=c?(c.type==='AP'?'#1565c0':'#6a1b9a'):'transparent';
-    cells+=`<div title="${esc(c?`Port ${i}: ${c.name} (${c.model})`:`Port ${i}: free`)}" style="width:17px;height:14px;border:1px solid ${border};border-radius:2px;display:flex;align-items:center;justify-content:center;font-size:8px;font-family:'Share Tech Mono',monospace;background:${bg};color:${c?'#fff':'inherit'}">${i}</div>`;
-  }
-  const noPort=a.clients.filter(c=>{const p=parseInt(c.port,10);return !(p>=1&&p<=a.ports);});
-  const extra=noPort.length?`<div style="font-size:10px;opacity:.6;margin-top:3px">${noPort.length} device(s) without a port #</div>`:'';
-  return `<div style="display:flex;flex-wrap:wrap;gap:3px">${cells}</div>${extra}`;
-}
 // Suggest the next free IP within a device's VLAN subnet (CIDR like
 // 192.168.10.0/24). Returns '' if no subnet is known or the range is full.
 function nextFreeIp(dev){
@@ -738,7 +712,7 @@ function nextFreeIp(dev){
 // drags everyone down — a peak-rate figure would hide that.
 function apAvgCellMbps(ap,floor){
   const f=floor||F();
-  const w=mapImg.naturalWidth||1,h=mapImg.naturalHeight||1;
+  const {w,h}=floorDims(f);
   const walls=f.WALLS||[];
   const pat=AP_PATTERNS[ap.pattern]||AP_PATTERNS.omni;
   const opts={
@@ -773,11 +747,6 @@ function _airtimeLabel(ap){
   return pct+'%'+flag+` @ ${parseFloat(SETTINGS.perClientMbps)||5} Mbps/client`;
 }
 
-function totalClientCapacity(){
-  let n=0;
-  for(const f of FLOORS)for(const ap of (f.APS||[]))n+=(ap.capacityClients||25);
-  return n;
-}
 // Building-wide network section for the HTML/PDF report: uplink tree, per-switch
 // port grids, cabling totals and the VLAN plan. '' when there's nothing to show.
 function reportNetworkHtml(){
@@ -813,56 +782,14 @@ function reportNetworkHtml(){
     ${vlanHtml}</section>`;
 }
 // APs + cameras assigned to a switch, each with PoE draw and required class.
-function switchClients(sw,floor){
-  const f=floor||F();
-  const out=[];
-  (f.APS||[]).forEach(ap=>{if(ap.swId===sw.id){const w=AP_POE_W[ap.model]||10;out.push({dev:ap,type:'AP',name:ap.name,model:ap.model,w,cls:poeClassForWatts(w),port:ap.port,ip:ap.ip});}});
-  (f.CAMS||[]).forEach(c=>{if(c.swId===sw.id){const w=(CAM_SPECS[c.model]||{}).poeW||0;out.push({dev:c,type:'CAM',name:c.name,model:c.model,w,cls:poeClassForWatts(w),port:c.port,ip:c.ip});}});
-  return out;
-}
 // Full PoE / port / class picture for one switch.
-function analyzeSwitch(sw,floor){
-  const clients=switchClients(sw,floor||F());
-  const budget=sw.poeBudget||0;
-  const ports=sw.ports||swPortCount(sw.model);   // null = unknown → skip check
-  const swCls=swPoeClass(sw.model,budget);
-  // Pure PoE/port/class verdict lives in ./src/network.js (analyzeLoad).
-  return {sw,clients,budget,ports,swCls,...analyzeLoad(clients,{budget,ports,swCls})};
-}
 // <option>s for a numbered port picker. Preserves a legacy/custom value (e.g.
 // "SW1 Port 4") that isn't a plain 1..N so old projects don't lose data.
-function portOptions(ports,cur){
-  cur=(cur==null?'':String(cur)).trim();
-  const curNum=/^\d+$/.test(cur)?parseInt(cur,10):null;
-  let html=`<option value=""${cur===''?' selected':''}>— unassigned —</option>`;
-  if(cur!=='' && (curNum===null || (ports!=null && (curNum<1||curNum>ports))))
-    html+=`<option value="${esc(cur)}" selected>${esc(cur)} (custom)</option>`;
-  if(ports!=null)for(let i=1;i<=ports;i++)
-    html+=`<option value="${i}"${curNum===i?' selected':''}>Port ${i}</option>`;
-  return html;
-}
 // A port picker: numbered <select> when the switch's port count is known, else
 // a free number input. `attrs` are extra attributes (id / data-* the caller needs).
-function portControl(ports,cur,attrs){
-  cur=cur==null?'':String(cur);
-  return ports!=null
-    ? `<select class="ep-sel" ${attrs}>${portOptions(ports,cur)}</select>`
-    : `<input class="ep-in" type="number" min="1" value="${esc(cur)}" placeholder="Port #" ${attrs}/>`;
-}
 // <option>s for the install-status picker.
-function statusOptions(cur){
-  cur=DEVICE_STATUSES.includes(cur)?cur:'planned';
-  return DEVICE_STATUSES.map(s=>`<option value="${s}"${s===cur?' selected':''}>${DEVICE_STATUS_META[s].label}</option>`).join('');
-}
 // Shared "Status & Inventory" panel section. `p` is the element-id prefix
 // (ep / cam / sw) and `act` the panel's data-input-action.
-function inventoryBlock(dev,p,act){
-  return `<div class="ep-section">Status &amp; Inventory</div>
-    <div class="ep-row"><label class="ep-lbl">Status</label><select class="ep-sel" id="${p}-status" data-input-action="${act}">${statusOptions(dev.status)}</select></div>
-    <div class="ep-row"><label class="ep-lbl">Serial #</label><input class="ep-in ep-mono" id="${p}-serial" value="${esc(dev.serial||'')}" data-input-action="${act}" placeholder="from the unit label"/></div>
-    <div class="ep-row"><label class="ep-lbl">Asset Tag</label><input class="ep-in ep-mono" id="${p}-asset" value="${esc(dev.assetTag||'')}" data-input-action="${act}" placeholder="ASSET-0001"/></div>
-    <div class="ep-row"><label class="ep-lbl">Firmware</label><input class="ep-in ep-mono" id="${p}-firmware" value="${esc(dev.firmware||'')}" data-input-action="${act}" placeholder="e.g. 6.5.28"/></div>`;
-}
 // Read the shared section back into the device. Safe when the section isn't
 // in the current panel (elements missing → no-op).
 function readInventoryBlock(dev,p){
@@ -901,22 +828,8 @@ function updSwPort(el){
 // ── Organization helpers ──────────────────────────────────────────────────
 // Every networked device in the building, flattened with its floor context.
 // Type tags match the naming convention's {type} token.
-function allDevices(){
-  const out=[];
-  FLOORS.forEach((f,floorIdx)=>{
-    (f.APS||[]).forEach(dev=>out.push({dev,type:'AP',floor:f,floorIdx}));
-    (f.CAMS||[]).forEach(dev=>out.push({dev,type:'CAM',floor:f,floorIdx}));
-    (f.SWS||[]).forEach(dev=>out.push({dev,type:'SW',floor:f,floorIdx}));
-  });
-  return out;
-}
 function statusMeta(dev){return DEVICE_STATUS_META[dev.status]||DEVICE_STATUS_META.planned;}
 function statusDimmed(dev){return !!statusFilter&&(dev.status||'planned')!==statusFilter;}
-function deviceStatusCounts(){
-  const counts=Object.fromEntries(DEVICE_STATUSES.map(s=>[s,0]));
-  for(const {dev} of allDevices())counts[dev.status||'planned']++;
-  return counts;
-}
 function namingCtx(type,floorIdx){
   return {site:(SETTINGS.siteCode||'').trim(),floor:floorIdx+1,type};
 }
@@ -963,52 +876,8 @@ function autoRenameDevices(){
 // Walk every switch on the current floor, summarise PoE draw vs budget, port
 // usage and PoE-class fit. Footer offers auto-assign and full validation.
 function showPoESummary(){
-  const wrap=document.createElement('div');
-  wrap.style.cssText='font-family:inherit;font-size:13px';
-  const sws=SWS();
-  if(!sws.length){
-    wrap.textContent='No switches placed yet. Drop a switch on the map (W) then assign APs/cameras to it.';
-    showModalNode('PoE Budget',wrap,null);
-    return;
-  }
-  let totalDraw=0,totalBudget=0;
-  for(const sw of sws){
-    const a=analyzeSwitch(sw);
-    totalDraw+=a.draw;totalBudget+=a.budget;
-    const sec=document.createElement('div');sec.style.cssText='margin-bottom:14px;padding-bottom:10px;border-bottom:1px solid rgba(0,0,0,.08)';
-    const head=document.createElement('div');head.style.cssText='display:flex;justify-content:space-between;font-weight:600;margin-bottom:4px';
-    const portStr=a.ports!=null?` · ${a.used}/${a.ports} ports`:` · ${a.used} ports`;
-    head.innerHTML=`<span>${esc(sw.name)} <span style="font-family:var(--font-mono);font-size:10px;opacity:.6">${esc(sw.model||'')}${esc(portStr)}</span></span>
-      <span style="font-family:var(--font-mono);color:${a.overBudget?'#c0382b':'#1e7d3c'}">${a.draw.toFixed(1)} W${a.budget>0?` / ${a.budget} W${a.headroom!=null?` · ${a.headroom}%`:''}`:''}</span>`;
-    sec.appendChild(head);
-    if(!a.clients.length){
-      const empty=document.createElement('div');empty.style.cssText='font-size:11px;opacity:.6;font-style:italic';empty.textContent='No devices assigned.';
-      sec.appendChild(empty);
-    }else{
-      for(const c of a.clients){
-        const bad=a.classFails.includes(c);
-        const li=document.createElement('div');li.style.cssText='display:flex;justify-content:space-between;font-size:11px;padding:2px 8px;opacity:.85';
-        li.innerHTML=`<span>${c.type==='AP'?'●':'◉'} ${esc(c.name)} <span style="opacity:.5">${esc(c.model)}</span></span><span style="font-family:var(--font-mono)${bad?';color:#c0382b;font-weight:700':''}">${c.w} W${c.cls?` ${c.cls}`:''}</span>`;
-        sec.appendChild(li);
-      }
-    }
-    const warn=(txt)=>{const d=document.createElement('div');d.style.cssText='font-size:11px;color:#c0382b;margin-top:4px;font-weight:600';d.textContent=txt;sec.appendChild(d);};
-    if(a.overBudget)warn('⚠ Draw exceeds budget — switch may shut down PoE on lower-priority ports.');
-    if(a.overPorts)warn(`⚠ ${a.used} devices on a ${a.ports}-port switch — over capacity.`);
-    if(a.classFails.length)warn(`⚠ ${a.classFails.length} device(s) need ${a.classFails.map(c=>c.cls).sort().pop()} PoE; switch delivers ${a.swCls||'none'}.`);
-    wrap.appendChild(sec);
-  }
-  const total=document.createElement('div');total.style.cssText='margin-top:8px;padding-top:8px;border-top:1px solid #000;font-weight:600;display:flex;justify-content:space-between';
-  total.innerHTML=`<span>Total</span><span style="font-family:var(--font-mono)">${totalDraw.toFixed(1)} W${totalBudget>0?` / ${totalBudget} W`:''}</span>`;
-  wrap.appendChild(total);
-  const foot=document.createElement('div');foot.style.cssText='margin-top:12px;display:flex;gap:8px;flex-wrap:wrap';
-  const mkBtn=(label,fn)=>{const b=document.createElement('button');b.className='btn';b.textContent=label;b.addEventListener('click',fn);foot.appendChild(b);};
-  mkBtn('⚯ Auto-assign to nearest switch',()=>{closeModal();autoAssignSwitches();});
-  mkBtn('✓ Validate network',()=>{closeModal();showValidation();});
-  wrap.appendChild(foot);
-  const hint=document.createElement('div');hint.style.cssText='margin-top:10px;font-size:10px;opacity:.55';
-  hint.textContent='PoE budgets / port counts are set per switch in the switch properties panel.';
-  wrap.appendChild(hint);
+  const wrap=poeSummaryEl(document,{analyses:SWS().map(sw=>analyzeSwitch(sw)),
+    onAutoAssign:()=>{closeModal();autoAssignSwitches();},onValidate:()=>{closeModal();showValidation();}});
   showModalNode('PoE Budget',wrap,null);
 }
 
@@ -1026,8 +895,8 @@ function autoAssignSwitches(){
     const a=analyzeSwitch(sw);
     return [sw.id,{sw,draw:0,used:0,budget:a.budget,ports:a.ports,swCls:a.swCls}];
   }));
-  const devices=[...APS().map(d=>({d,type:'AP',w:AP_POE_W[d.model]||10})),
-                 ...CAMS().map(d=>({d,type:'CAM',w:(CAM_SPECS[d.model]||{}).poeW||0}))];
+  const devices=[...APS().map(d=>({d,type:'AP',w:_pm.apPoeW(d.model)})),
+                 ...CAMS().map(d=>({d,type:'CAM',w:_pm.camPoeW(d.model)}))];
   snapshot();   // capture pre-assignment state so Undo reverts the whole pass
   let assigned=0;
   for(const {d,w:watt} of devices){
@@ -1062,120 +931,19 @@ function autoAssignSwitches(){
 // One pass over the current floor surfacing wiring/PoE problems before
 // handoff, grouped by severity. Cable-length checks need a placed map (scale).
 function showValidation(){
+  // The checks live in ./src/validation.js; this supplies the live plan.
   const f=F();
-  const errors=[],warns=[],infos=[];
-  const sws=SWS();
-  for(const sw of sws){
-    const a=analyzeSwitch(sw,f);
-    if(a.overBudget)errors.push(`${sw.name}: PoE draw ${a.draw.toFixed(0)} W exceeds ${a.budget} W budget.`);
-    else if(a.budget>0 && a.headroom!=null && a.headroom<10 && a.draw>0)warns.push(`${sw.name}: only ${a.headroom}% PoE headroom left.`);
-    if(a.overPorts)errors.push(`${sw.name}: ${a.used} devices on ${a.ports} ports — over capacity.`);
-    for(const c of a.classFails)errors.push(`${c.name} needs ${c.cls} PoE but ${sw.name} delivers ${a.swCls||'none'}.`);
-    if(!a.swCls && a.clients.some(c=>c.w>0))warns.push(`${sw.name} has PoE devices but no PoE budget set.`);
-    // Duplicate port labels on the same switch.
-    const seen=new Map();
-    for(const c of a.clients){
-      const p=(c.port||'').trim().toLowerCase();
-      if(!p)continue;
-      if(seen.has(p))warns.push(`${sw.name}: port "${c.port}" used by both ${seen.get(p)} and ${c.name}.`);
-      else seen.set(p,c.name);
-    }
-  }
-  // Cable-run length (real scale → needs a map).
   const hasMap=!!(mapImg.naturalWidth&&mapImg.naturalHeight);
-  const checkRun=(dev,label)=>{
-    if(!dev.swId)return;
-    const sw=sws.find(s=>s.id===dev.swId);if(!sw)return;
-    const m=cableRunM(dev,sw,f);
-    if(m>100)errors.push(`${label}: cable run to ${sw.name} is ${m.toFixed(0)} m (>100 m Ethernet limit).`);
-    else if(m>90)warns.push(`${label}: cable run to ${sw.name} is ${m.toFixed(0)} m (near 100 m limit).`);
-  };
-  if(hasMap){APS().forEach(ap=>checkRun(ap,ap.name));CAMS().forEach(c=>checkRun(c,c.name));}
-  // Unassigned devices (informational).
-  APS().forEach(ap=>{if(!ap.swId)infos.push(`${esc(ap.name)} is not assigned to a switch.`);});
-  CAMS().forEach(c=>{if(!c.swId)infos.push(`${c.name} is not assigned to a switch.`);});
-  // Duplicate IPs across all floor devices + switches.
-  const ipMap=new Map();
-  const noteIp=(ip,name)=>{const k=(ip||'').trim();if(!k)return;if(ipMap.has(k))warns.push(`Duplicate IP ${k}: ${ipMap.get(k)} and ${name}.`);else ipMap.set(k,name);};
-  APS().forEach(ap=>noteIp(ap.ip,ap.name));
-  CAMS().forEach(c=>noteIp(c.ip,c.name));
-  sws.forEach(sw=>noteIp(sw.ip,sw.name));
-  // VLANs referenced but not in the registry (only when a registry exists).
-  if(vlanList().length){
-    const checkVlan=(dev,label)=>{const v=(dev.vlan||'').trim();if(v&&!vlanById(v))warns.push(`${label}: VLAN "${v}" is not in the VLAN registry.`);};
-    APS().forEach(ap=>checkVlan(ap,ap.name));
-    CAMS().forEach(c=>checkVlan(c,c.name));
-  }
-  // IPs that sit outside their VLAN's declared subnet (floor devices).
-  const checkIpSubnet=(dev,label)=>{
-    const v=vlanById(dev.vlan);
-    const ip=(dev.ip||'').trim();
-    if(!ip||!v||!v.subnet)return;
-    if(!ipInCidr(ip,v.subnet))warns.push(`${label}: IP ${ip} is outside VLAN ${v.id} subnet ${v.subnet}.`);
-  };
-  APS().forEach(ap=>checkIpSubnet(ap,ap.name));
-  CAMS().forEach(c=>checkIpSubnet(c,c.name));
-  // Subnet pool exhaustion (building-wide — IPs are global).
-  if(vlanList().length){
-    const allIps=[];
-    for(const fl of FLOORS)for(const list of [fl.APS,fl.CAMS,fl.SWS])for(const d of (list||[]))if(d.ip)allIps.push(d.ip);
-    for(const v of vlanList()){
-      if(!v.subnet)continue;
-      const u=subnetUsage(v.subnet,allIps);
-      if(!u)continue;
-      if(u.pct>=100)errors.push(`VLAN ${v.id} subnet ${v.subnet} is full (${u.used}/${u.capacity} hosts).`);
-      else if(u.pct>=90)warns.push(`VLAN ${v.id} subnet ${v.subnet} is ${u.pct}% full (${u.used}/${u.capacity} hosts).`);
-    }
-  }
-  // Naming convention (when one is configured in Settings → Organization).
-  if(patternHasNumber(SETTINGS.namePattern)){
-    const offenders=[];
-    for(const [list,type] of [[APS(),'AP'],[CAMS(),'CAM'],[SWS(),'SW']]){
-      for(const dev of list)
-        if(!nameMatches(dev.name,SETTINGS.namePattern,namingCtx(type,curFloor)))offenders.push(dev.name||dev.id);
-    }
-    if(offenders.length){
-      const shown=offenders.slice(0,3).join(', ');
-      warns.push(`${offenders.length} device name${offenders.length===1?'':'s'} break the "${SETTINGS.namePattern}" convention (${shown}${offenders.length>3?', …':''}) — Inventory → Auto-rename fixes them.`);
-    }
-  }
-  // Per-AP airtime utilization (this floor). Demand = clients × per-client
-  // Mbps vs what the cell actually delivers on average.
-  if(hasMap){
-    for(const ap of APS()){
-      if(!(ap.capacityClients>0))continue;
-      const pct=apAirtimePct(ap,f);
-      if(pct===Infinity)errors.push(`${esc(ap.name)}: expected ${ap.capacityClients} clients but the cell delivers no usable throughput.`);
-      else if(pct>100)errors.push(`${esc(ap.name)}: airtime ~${pct}% — ${ap.capacityClients} clients × ${parseFloat(SETTINGS.perClientMbps)||5} Mbps exceeds what this cell can carry.`);
-      else if(pct>80)warns.push(`${esc(ap.name)}: airtime ~${pct}% — near saturation; consider a wider channel or another AP.`);
-    }
-  }
-  // Policies (reachability intent): a violated policy is a design error.
-  if(Array.isArray(SETTINGS.policies)&&SETTINGS.policies.length){
-    try{
-      const pr=evaluatePolicies(simProject(),SETTINGS.policies).results;
-      for(const r of pr){
-        if(r.status==='fail'){const v=r.violations[0];errors.push(`Policy violated — ${r.label}: ${v.from} (${v.fromIp}) → ${v.to} (${v.toIp})${r.violations.length>1?` (+${r.violations.length-1} more)`:''}.`);}
-        else if(r.status==='skipped')warns.push(`Policy not testable — ${r.label}: ${r.reason}.`);
-      }
-      const okN=pr.filter(r=>r.status==='pass').length;
-      if(okN)infos.push(`${okN} reachability polic${okN===1?'y holds':'ies hold'}.`);
-    }catch(_){warns.push('Policies could not be evaluated (the plan does not simulate).');}
-  }
-  // Client-capacity rollup (building-wide; only when an expectation is set).
-  const expected=parseInt(SETTINGS.expectedClients,10)||0;
-  if(expected>0){
-    const cap=totalClientCapacity();
-    if(cap<expected)warns.push(`Client capacity ${cap} < expected ${expected} — consider more/denser APs.`);
-    else infos.push(`Client capacity ${cap} ≥ expected ${expected}.`);
-  }
-  // Camera storage rollup (building-wide).
-  const storGb=totalStorageGb();
-  if(storGb>0){
-    const days=parseInt(SETTINGS.retentionDays,10)||30;
-    infos.push(`Camera recording needs ~${storGb>=1000?(storGb/1000).toFixed(2)+' TB':Math.round(storGb)+' GB'} of NVR storage for ${days}-day retention (${SETTINGS.storageCodec==='h264'?'H.264':'H.265'}).`);
-  }
-
+  const {errors,warns,infos}=validatePlan({
+    floor:f,floors:FLOORS,vlans:vlanList(),settings:SETTINGS,hasMap,
+    analyze:sw=>analyzeSwitch(sw,f),
+    runM:(dev,sw)=>cableRunM(dev,sw,f),
+    airtimePct:ap=>apAirtimePct(ap,f),
+    nameOk:patternHasNumber(SETTINGS.namePattern)?(dev,type)=>nameMatches(dev.name,SETTINGS.namePattern,namingCtx(type,curFloor)):null,
+    evalPolicies:()=>evaluatePolicies(simProject(),SETTINGS.policies).results,
+    clientCapacity:totalClientCapacity,
+    storageGb:totalStorageGb(),
+  });
   const wrap=document.createElement('div');
   wrap.style.cssText='font-family:inherit;font-size:13px';
   // The ✓ banner keys off problems only — informational lines (e.g. the NVR
@@ -1203,45 +971,8 @@ function showValidation(){
 // The switch uplink tree (roots/gateways on top) plus a compact rack list
 // showing each switch's port usage. Read-only documentation aid.
 function showTopology(){
-  const wrap=document.createElement('div');
-  wrap.style.cssText='font-family:inherit;font-size:13px';
-  const {all,children,roots}=topologyModel();
-  if(!all.length){wrap.textContent='No switches placed yet.';showModalNode('Network topology',wrap,null);return;}
-  const multiFloor=FLOORS.length>1;
-  const th=document.createElement('div');th.style.cssText='font-weight:700;margin-bottom:4px';th.textContent='Uplink tree';wrap.appendChild(th);
-  const tree=document.createElement('div');wrap.appendChild(tree);
-  const seen=new Set();
-  const renderNode=(e,depth)=>{
-    if(seen.has(e.sw.id))return;            // guard against accidental cycles
-    seen.add(e.sw.id);
-    const a=analyzeSwitch(e.sw,e.floor);
-    const row=document.createElement('div');
-    row.style.cssText=`padding:3px 0 3px ${depth*18}px;display:flex;justify-content:space-between;gap:10px`;
-    const portStr=a.ports!=null?`${a.used}/${a.ports}`:`${a.used}`;
-    const floorTag=multiFloor?` <span style="opacity:.45;font-size:9px">[${esc(e.floor.name||('Floor '+(e.floorIdx+1)))}]</span>`:'';
-    row.innerHTML=`<span>${depth?'└ ':''}⊞ <strong>${esc(e.sw.name)}</strong> <span style="opacity:.55;font-family:var(--font-mono);font-size:10px">${esc(e.sw.model||'')}</span>${floorTag}</span>
-      <span style="font-family:var(--font-mono);font-size:10px;opacity:.7">${portStr} ports · ${a.draw.toFixed(0)} W</span>`;
-    tree.appendChild(row);
-    children.get(e.sw.id).forEach(c=>renderNode(c,depth+1));
-  };
-  roots.forEach(e=>renderNode(e,0));
-  all.forEach(e=>{if(!seen.has(e.sw.id))renderNode(e,0);});  // safety net
-  // Rack / port grid per switch.
-  const rh=document.createElement('div');rh.style.cssText='font-weight:700;margin:14px 0 6px';rh.textContent='Rack — port usage';wrap.appendChild(rh);
-  for(const e of all){
-    const a=analyzeSwitch(e.sw,e.floor);
-    const unit=document.createElement('div');unit.style.cssText='margin-bottom:8px;padding:6px 8px;border:1px solid var(--ink-04);border-radius:3px';
-    unit.innerHTML=`<div style="display:flex;justify-content:space-between;font-size:11px;margin-bottom:4px"><span><strong>${esc(e.sw.name)}</strong> <span style="opacity:.55;font-size:10px">${esc(e.sw.model||'')}</span></span><span style="font-family:var(--font-mono);opacity:.7">${a.ports!=null?`${a.used}/${a.ports}`:`${a.used}/?`}${a.overPorts?' ⚠':''}</span></div>${portGridHtml(a)}`;
-    wrap.appendChild(unit);
-  }
-  // Cabling rollup.
-  const cable=cableTotals();
-  if(cable.runs>0){
-    const boxM=parseFloat(SETTINGS.cableBoxM)||305;
-    const cl=document.createElement('div');cl.style.cssText='margin-top:12px;padding-top:8px;border-top:1px solid var(--ink-04);font-size:11px;opacity:.8';
-    cl.textContent=`Cabling: ${cable.runs} runs · ~${cable.totalM} m incl. slack (×${routingFactor()} routing) · ~${Math.ceil(cable.totalM/boxM)} box(es)`;
-    wrap.appendChild(cl);
-  }
+  const wrap=topologyEl(document,{model:topologyModel(),analyze:analyzeSwitch,multiFloor:FLOORS.length>1,
+    cable:cableTotals(),cableBoxM:SETTINGS.cableBoxM,routing:routingFactor()});
   showModalNode('Network topology',wrap,null);
 }
 
@@ -1600,39 +1331,12 @@ async function doExportEsx(){
 // runs in the Electron main process (self-signed controller certs).
 let _unifiPass='';   // session-only, never saved to SETTINGS or project files
 function _applyUnifiDevices(devices){
-  const norm=m=>String(m||'').toLowerCase().replace(/[^0-9a-f]/g,'');
-  const all=[];
-  for(const f of FLOORS)for(const list of [f.APS,f.SWS,f.CAMS])for(const d of (list||[]))all.push(d);
-  let matched=0;
   snapshot();
-  for(const dev of devices){
-    const dm=norm(dev.mac);
-    let target=(dm&&all.find(x=>norm(x.mac)===dm))||null;
-    if(!target&&dev.name)target=all.find(x=>(x.name||'').toLowerCase()===dev.name.toLowerCase())||null;
-    if(!target)continue;
-    matched++;
-    if(dev.ip)target.ip=dev.ip;
-    if(dev.mac&&!target.mac)target.mac=dev.mac;
-    if(dev.version)target.firmware=dev.version;
-    if(dev.serial&&!target.serial)target.serial=dev.serial;
-    if(dev.state===1)target.status='live';
-  }
+  const matched=applyUnifiDevices(FLOORS,devices);
   render();renderList();renderRP();autosave();
   return matched;
 }
-function _unifiChannelPlan(){
-  const changes=[];
-  for(const f of FLOORS)for(const ap of (f.APS||[])){
-    const ch=_parseChannel(ap.channel);
-    if(ch==null)continue;
-    changes.push({
-      mac:ap.mac||'',name:ap.name||'',
-      band:bandKey(ap.freq),channel:ch,width:ap.chanWidth||20,
-      txPowerDbm:Number.isFinite(ap.txPowerDbm)?ap.txPowerDbm:undefined,
-    });
-  }
-  return changes;
-}
+const _unifiChannelPlan=()=>unifiChannelPlan(FLOORS);
 function showUnifiDialog(){
   if(!(window.plexusNative&&window.plexusNative.unifiPull)){
     toast('UniFi sync needs the desktop app');return;
@@ -1959,7 +1663,7 @@ function _syncToolbarFromSettings(){
   if(vlanBtn)vlanBtn.classList.toggle('active',!!SETTINGS.colorByVlan);
 }
 
-// ═══ ID SYNC ══════════════════════════════════════
+// ═══ ID SYNC + VIEWPORT (pan, zoom, pointer input) ═
 // After loading a project (from file or autosave), the global `nid` counter
 // might be lower than the highest ID already in use. If we let `nid` reset
 // to 1, the next placed AP gets an ID like "ap1" — which collides with an
@@ -2112,7 +1816,6 @@ viewport.addEventListener('touchmove',e=>{
 function vpToImg(cx,cy){const va=viewport.getBoundingClientRect();return{x:(cx-va.left-panX)/scale,y:(cy-va.top-panY)/scale};}
 function snapPt(x,y){if(!showGrid)return{x,y};return{x:Math.round(x/GRID_SZ)*GRID_SZ,y:Math.round(y/GRID_SZ)*GRID_SZ};}
 function imgToFrac(x,y){const w=mapImg.naturalWidth||1,h=mapImg.naturalHeight||1;return{fx:x/w,fy:y/h};}
-function fracToImg(fx,fy){return{x:fx*(mapImg.naturalWidth||1),y:fy*(mapImg.naturalHeight||1)};}
 
 // ═══ UNDO / REDO ══════════════════════════════════
 // Snapshot the entire FLOORS array + curFloor + scaleM, not just the current
@@ -2200,6 +1903,7 @@ async function _applyProject(data,{file=null}={}){
   // Import inline floor/device images into IDB (and warm the cache) so the
   // project is portable across laptops; keeps autosaves tiny afterward.
   await _rehydrateImages();
+  await _measureFloorImages();
   applySettingsToBrand();
   loadFloorImage();renderFloorTabs();render();renderList();renderRP();calcCoverage();
   if(_simPanel)_simPanel.refresh();
@@ -2528,7 +2232,7 @@ function closeCliConsole(){const p=document.getElementById('cli-panel');if(p)p.s
 // ═══ MAP CLICK ════════════════════════════════════
 viewport.addEventListener('click',e=>{
   if(panning||spaceDown||e.button!==0)return;
-  if(e.target.closest('.ap-grp,.dz-grp,.sw-grp,.client-grp'))return;
+  if(e.target.closest('.ap-grp,.dz-grp,.sw-grp,.client-grp,.cam-grp'))return;   // .cam-grp: a camera's hit area
   if(!mapImg.naturalWidth){toast('Upload a map image first');return;}
   const raw=vpToImg(e.clientX,e.clientY);
   const {x,y}=snapPt(raw.x,raw.y);
@@ -2632,16 +2336,6 @@ viewport.addEventListener('click',e=>{
 });
 
 // ═══ ITEM GEOMETRY HELPERS ════════════════════════
-function getItemCenter(type,id){
-  const w=mapImg.naturalWidth||1,h=mapImg.naturalHeight||1;
-  if(type==='ap'){const ap=APS().find(a=>a.id===id);return ap?{x:ap.fx*w,y:ap.fy*h}:null;}
-  if(type==='sw'){const sw=SWS().find(a=>a.id===id);return sw?{x:sw.fx*w,y:sw.fy*h}:null;}
-  if(type==='cam'){const c=CAMS().find(a=>a.id===id);return c?{x:c.fx*w,y:c.fy*h}:null;}
-  if(type==='client'){const c=CLIENTS().find(a=>a.id===id);return c?{x:c.fx*w,y:c.fy*h}:null;}
-  if(type==='dz'){const dz=DZS().find(a=>a.id===id);return dz?{x:dz.fx*w,y:dz.fy*h}:null;}
-  if(type==='wall'){const wl=WALLS().find(a=>a.id===id);if(!wl)return null;const p=_wallPx(wl);return {x:(p.x1+p.x2)/2,y:(p.y1+p.y2)/2};}
-  return null;
-}
 // Returns {x,y,w,h} in image coords describing the item's bounding box —
 // used by zoomToSelected to pick an appropriate target scale.
 function getItemBounds(type,id){
@@ -2726,83 +2420,7 @@ function clearRuler(){
 // map image swaps. We resolve to absolute pixels at render time. Drawn as
 // straight line segments between two points, with per-material stroke width.
 function _wallPx(w){return wallToPx(w,mapImg.naturalWidth||1,mapImg.naturalHeight||1);}
-function renderWalls(){
-  wallLayer.innerHTML='';
-  WALLS().forEach(w=>{
-    const mat=WALL_MATERIALS[w.material]||WALL_MATERIALS.drywall;
-    const isSel=(selType==='wall'&&selId===w.id);
-    const px=_wallPx(w);
-    // Thin highlight underlay when selected
-    if(isSel){
-      const hl=mk('line');
-      hl.setAttribute('x1',px.x1);hl.setAttribute('y1',px.y1);
-      hl.setAttribute('x2',px.x2);hl.setAttribute('y2',px.y2);
-      hl.setAttribute('class','wall-sel-hl');
-      wallLayer.appendChild(hl);
-    }
-    const ln=mk('line');
-    ln.setAttribute('x1',px.x1);ln.setAttribute('y1',px.y1);
-    ln.setAttribute('x2',px.x2);ln.setAttribute('y2',px.y2);
-    ln.setAttribute('class','wall-line');
-    ln.setAttribute('stroke-width',mat.strokeWidth);
-    if(mat.dash)ln.setAttribute('stroke-dasharray',mat.dash);
-    ln.dataset.id=w.id;
-    ln.style.pointerEvents='stroke';
-    ln.style.cursor='pointer';
-    ln.addEventListener('pointerdown',e=>{
-      if(mode==='sel'){e.stopPropagation();sel(w.id,'wall');}
-    });
-    wallLayer.appendChild(ln);
-    // Draw a small material pill near the midpoint when selected
-    if(isSel){
-      const mx=(px.x1+px.x2)/2,my=(px.y1+px.y2)/2;
-      const bg=mk('rect');
-      bg.setAttribute('x',mx-22);bg.setAttribute('y',my-9);
-      bg.setAttribute('width',44);bg.setAttribute('height',18);
-      bg.setAttribute('rx',9);bg.setAttribute('class','wall-lbl-bg');
-      wallLayer.appendChild(bg);
-      const lbl=mk('text');
-      lbl.setAttribute('x',mx);lbl.setAttribute('y',my);
-      lbl.setAttribute('class','wall-lbl');
-      lbl.textContent=mat.label;
-      wallLayer.appendChild(lbl);
-
-      // Vertex handles — drag to reshape the wall endpoints in place.
-      // Stored fractional coords mean we can update fx1/fy1 directly.
-      const mkVert=(ex,ey,endpoint)=>{
-        const v=mk('circle');
-        v.setAttribute('cx',ex);v.setAttribute('cy',ey);v.setAttribute('r',6);
-        v.setAttribute('class','wall-vert');
-        v.dataset.wallId=w.id;v.dataset.endpoint=endpoint;
-        v.style.pointerEvents='all';
-        v.addEventListener('pointerdown',e=>{
-          e.stopPropagation();
-          wallVertDrag={wallId:w.id,endpoint};
-          snapshot();
-        });
-        wallLayer.appendChild(v);
-      };
-      mkVert(px.x1,px.y1,'a');
-      mkVert(px.x2,px.y2,'b');
-    }
-  });
-  // Auto-detected wall candidates awaiting the user's accept/discard choice.
-  if(_detectedWallPreview){
-    const w=mapImg.naturalWidth||1,h=mapImg.naturalHeight||1;
-    for(const s of _detectedWallPreview){
-      const ln=mk('line');
-      ln.setAttribute('x1',s.fx1*w);ln.setAttribute('y1',s.fy1*h);
-      ln.setAttribute('x2',s.fx2*w);ln.setAttribute('y2',s.fy2*h);
-      ln.setAttribute('class','wall-line');
-      ln.setAttribute('stroke','#1565c0');
-      ln.setAttribute('stroke-width','2.5');
-      ln.setAttribute('stroke-dasharray','6 4');
-      ln.setAttribute('opacity','.85');
-      wallLayer.appendChild(ln);
-    }
-  }
-  renderWallPreview();
-}
+function renderWalls(){renderWallLayer(wallLayer,_layerCtx);renderWallPreview();}
 
 // ── Automatic wall detection ──────────────────────────────────────────────
 // Rasterize the floor plan (downscaled), run the Hough-based detector, and
@@ -3066,464 +2684,36 @@ function toggleLock(){
 // ═══ RENDER ═══════════════════════════════════════
 function mk(tag){return document.createElementNS('http://www.w3.org/2000/svg',tag);}
 
-function renderAPs(){
-  apLayer.innerHTML='';
-  const w=mapImg.naturalWidth,h=mapImg.naturalHeight;
-  // If no image loaded yet, don't render APs at all — they'd land at (0,0)
-  // as a phantom cluster.
-  if(!w||!h)return;
-  APS().forEach(ap=>{
-    // Skip APs with invalid data rather than render a bogus circle at origin.
-    if(!Number.isFinite(ap.fx)||!Number.isFinite(ap.fy)||!Number.isFinite(ap.r)||ap.r<=0){
-      console.warn('Skipping AP with invalid coords:',ap);
-      return;
-    }
-    const cx=ap.fx*w,cy=ap.fy*h,r=ap.r,isSel=isSelected(ap.id,'ap');
-    const ls=Math.max(8,Math.min(14,r*.17));
-    const g=mk('g');g.setAttribute('class','ap-grp');g.dataset.id=ap.id;g.style.pointerEvents='all';
-    if(ap.locked)g.style.opacity='.7';
-    if(statusDimmed(ap))g.style.opacity='.15';
+function renderAPs(){renderAPLayer(apLayer,_layerCtx);}
 
-    const hasWalls=WALLS().length>0;
-    // Per-AP color (empty string = use default ink — no override). When "colour
-    // by VLAN" is on, an unstyled AP inherits its VLAN's colour.
-    const apColor=ap.color||(SETTINGS.colorByVlan?vlanColor(ap.vlan):'')||'';
-    // User-controlled coverage opacity (Settings → Coverage opacity).
-    // 100 = full strength; values below 100 fade the ring fill+stroke.
-    const covOp=Math.max(0,Math.min(1,(SETTINGS.coverageOpacity??100)/100));
-    // Outer coverage: wall-clipped path if walls exist, else simple circle
-    let ro;
-    if(hasWalls){
-      ro=mk('path');
-      ro.setAttribute('d',getCoveragePath(ap));
-    }else{
-      ro=mk('circle');ro.setAttribute('cx',cx);ro.setAttribute('cy',cy);ro.setAttribute('r',r);
-    }
-    ro.setAttribute('class',isSel?'ap-sel-outer':ap.sig==='medium'?'ap-outer-m':ap.sig==='weak'?'ap-outer-w':'ap-outer');
-    if(apColor){
-      // Override the ink-black defaults with the AP's color. We keep the fill
-      // transparent-ish (8% alpha) so overlapping coverage areas still mix visually.
-      ro.style.stroke=apColor;
-      ro.style.fill=hexToRgba(apColor,.08);
-    }
-    if(covOp<1)ro.setAttribute('opacity',covOp);
-    // Only animate the spin when we're showing a plain circle — spinning a
-    // polygon looks wrong because its shape is directional.
-    if(!hasWalls){ro.style.transformOrigin=`${cx}px ${cy}px`;ro.style.animation='spin 20s linear infinite';}
-
-    // Inner ring: same trick but at 54% radius. Compute a second path with
-    // a temporarily smaller r so we reuse computeCoveragePath.
-    let ri;
-    if(hasWalls){
-      ri=mk('path');
-      ri.setAttribute('d',getInnerCoveragePath(ap));
-    }else{
-      ri=mk('circle');ri.setAttribute('cx',cx);ri.setAttribute('cy',cy);ri.setAttribute('r',r*.54);
-    }
-    ri.setAttribute('class',isSel?'ap-sel-inner':ap.sig==='medium'?'ap-inner-m':ap.sig==='weak'?'ap-inner-w':'ap-inner');
-    if(apColor){
-      ri.style.stroke=apColor;
-      ri.style.fill=hexToRgba(apColor,.12);
-    }
-    if(covOp<1)ri.setAttribute('opacity',covOp);
-
-    const dot=mk('circle');dot.setAttribute('cx',cx);dot.setAttribute('cy',cy);dot.setAttribute('r',7);
-    dot.setAttribute('class',isSel?'ap-sel-dot':'ap-dot');dot.setAttribute('filter','url(#gf)');
-    dot.style.animation='pulse 2.2s ease-in-out infinite';
-    if(apColor)dot.style.fill=apColor;
-
-    // On-map label: just the AP name. Model + all other technical details are
-    // visible in the right-side properties panel when an AP is selected.
-    // Below the dot (7 px radius), so the name never sits on top of the marker.
-    const lbl=mk('text');lbl.setAttribute('x',cx);lbl.setAttribute('y',cy+9+ls*.75);
-    lbl.setAttribute('class',isSel?'ap-lbl-sel':'ap-lbl');lbl.setAttribute('font-size',ls);lbl.textContent=ap.name;
-    if(apColor)lbl.style.fill=apColor;
-
-    // Notes dot
-    if(ap.notes&&ap.notes.trim()){
-      const nd=mk('circle');nd.setAttribute('cx',cx+r*.22);nd.setAttribute('cy',cy-r*.22);
-      nd.setAttribute('r',Math.max(3,ls*.38));nd.setAttribute('fill',isSel?tInk():tInk(.55));nd.setAttribute('opacity','.85');
-      g.appendChild(nd);
-    }
-    // Locked APs are indicated in the left sidebar list (🔒 next to name) and
-    // in the properties panel — no on-map icon, since it clutters the map.
-
-    // Range is edited via the properties panel slider only — no on-map handle.
-
-    // The coverage rings (outer + inner, including the selection-highlighted
-    // versions) are part of the coverage visualization — they hide when the
-    // user toggles coverage off. The center dot stays because it's the AP
-    // marker itself, not a coverage indicator.
-    const parts=[dot,lbl];
-    if(showCoverage){parts.unshift(ro,ri);}
-    parts.forEach(el=>g.appendChild(el));
-    g.addEventListener('pointerdown',e=>{
-      if(e.target.dataset.resize)return;
-      e.stopPropagation();
-      if(e.shiftKey&&mode==='sel'){toggleSelection(ap.id,'ap');return;}
-      sel(ap.id,'ap');
-      if(!ap.locked){const img=vpToImg(e.clientX,e.clientY);dragOffX=ap.fx*w-img.x;dragOffY=ap.fy*h-img.y;dragId=ap.id;dragType='ap';_dragInitialFx=ap.fx;_dragInitialFy=ap.fy;startApStick(ap.id);}
-    });
-    apLayer.appendChild(g);
-  });
-}
-
-function renderDZs(){
-  dzLayer.innerHTML='';
-  const w=mapImg.naturalWidth,h=mapImg.naturalHeight;
-  if(!w||!h)return;
-  DZS().forEach(dz=>{
-    if(!Number.isFinite(dz.fx)||!Number.isFinite(dz.fy)||!Number.isFinite(dz.r)||dz.r<=0)return;
-    const cx=dz.fx*w,cy=dz.fy*h,isSel=isSelected(dz.id,'dz');
-    const g=mk('g');g.setAttribute('class','dz-grp');g.dataset.id=dz.id;g.style.pointerEvents='all';
-    const pulse=mk('circle');pulse.setAttribute('cx',cx);pulse.setAttribute('cy',cy);pulse.setAttribute('r',dz.r);
-    pulse.setAttribute('class','dz-pulse');pulse.style.transformOrigin=`${cx}px ${cy}px`;pulse.style.animation='dzs 8s linear infinite';
-    if(isSel){pulse.style.stroke=tInk();pulse.style.strokeWidth='2.5';pulse.style.fill=tInk(.1);}
-    const icon=mk('text');icon.setAttribute('x',cx);icon.setAttribute('y',cy);icon.setAttribute('text-anchor','middle');icon.setAttribute('dominant-baseline','central');icon.setAttribute('font-size','18');icon.setAttribute('fill',tInk());icon.textContent='⚠';
-    const lbl=mk('text');lbl.setAttribute('x',cx);lbl.setAttribute('y',cy+dz.r+11);lbl.setAttribute('text-anchor','middle');lbl.setAttribute('font-size','10');lbl.setAttribute('font-family','-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica Neue,Arial,sans-serif');lbl.setAttribute('font-weight','700');lbl.setAttribute('letter-spacing','.1em');lbl.setAttribute('fill',tInk());lbl.setAttribute('paint-order','stroke');lbl.setAttribute('stroke',tBg());lbl.setAttribute('stroke-width','3');lbl.textContent=(dz.label||'').toUpperCase();
-    if(isSel&&!dz.locked){const rh=mk('circle');rh.setAttribute('cx',cx+dz.r);rh.setAttribute('cy',cy);rh.setAttribute('r',8);rh.setAttribute('class','rh-sel');rh.dataset.resizeDz=dz.id;rh.style.pointerEvents='all';rh.addEventListener('pointerdown',e=>{e.stopPropagation();resId=dz.id;resizeStartX=e.clientX;resizeStartR=dz.r;});g.appendChild(rh);}
-    [pulse,icon,lbl].forEach(el=>g.appendChild(el));
-    g.addEventListener('pointerdown',e=>{e.stopPropagation();if(e.shiftKey&&mode==='sel'){toggleSelection(dz.id,'dz');return;}sel(dz.id,'dz');if(!dz.locked){const img=vpToImg(e.clientX,e.clientY);dragOffX=dz.fx*w-img.x;dragOffY=dz.fy*h-img.y;dragId=dz.id;dragType='dz';_dragInitialFx=dz.fx;_dragInitialFy=dz.fy;}});
-    dzLayer.appendChild(g);
-  });
-}
+function renderDZs(){renderDZLayer(dzLayer,_layerCtx);}
 
 // Cable runs: a thin line from each AP/camera to its assigned switch.
 // Visualizes PoE wiring and helps spot long runs at a glance. See the PoE
 // panel (Show PoE button) for budget summaries per switch.
 let showCables=false;
-function renderCables(){
-  cableLayer.innerHTML='';
-  if(!showCables)return;
-  const w=mapImg.naturalWidth,h=mapImg.naturalHeight;
-  if(!w||!h)return;
-  const drawCable=(dev,sw)=>{
-    const dx=dev.fx*w,dy=dev.fy*h,sx=sw.fx*w,sy=sw.fy*h;
-    const ln=mk('line');
-    ln.setAttribute('x1',dx);ln.setAttribute('y1',dy);
-    ln.setAttribute('x2',sx);ln.setAttribute('y2',sy);
-    ln.setAttribute('class','cable-line');
-    cableLayer.appendChild(ln);
-    // Length label at midpoint (includes the routing factor for a realistic run)
-    const lenPx=Math.hypot(sx-dx,sy-dy);
-    const lenM=(lenPx*(scaleM/100)*routingFactor()).toFixed(1);
-    if(lenPx*scale>40){
-      const mx=(dx+sx)/2,my=(dy+sy)/2;
-      const txt=mk('text');
-      txt.setAttribute('x',mx);txt.setAttribute('y',my-3);
-      txt.setAttribute('class','cable-lbl');
-      txt.textContent=lenM+' m';
-      const lm=parseFloat(lenM);
-      if(lm>100)txt.classList.add('cable-lbl-warn');        // over Ethernet limit
-      else if(lm>90)txt.classList.add('cable-lbl-near');    // approaching limit
-      cableLayer.appendChild(txt);
-    }
-  };
-  APS().forEach(ap=>{
-    if(!ap.swId)return;
-    const sw=SWS().find(s=>s.id===ap.swId);
-    if(sw)drawCable(ap,sw);
-  });
-  CAMS().forEach(c=>{
-    if(!c.swId)return;
-    const sw=SWS().find(s=>s.id===c.swId);
-    if(sw)drawCable(c,sw);
-  });
-  // Switch → uplink backbone links — thicker/solid so they read as trunks
-  // distinct from the dashed device runs.
-  SWS().forEach(sw=>{
-    if(!sw.uplinkId||sw.uplinkId===sw.id)return;
-    const up=SWS().find(s=>s.id===sw.uplinkId);
-    const x=sw.fx*w,y=sw.fy*h;
-    if(up){
-      const ln=mk('line');
-      ln.setAttribute('x1',x);ln.setAttribute('y1',y);
-      ln.setAttribute('x2',up.fx*w);ln.setAttribute('y2',up.fy*h);
-      ln.setAttribute('class','uplink-line');
-      cableLayer.appendChild(ln);
-    }else{
-      // Uplink is on another floor — draw a short riser stub + label.
-      const tgt=findSwitchAnywhere(sw.uplinkId);
-      if(!tgt)return;
-      const ln=mk('line');
-      ln.setAttribute('x1',x);ln.setAttribute('y1',y);
-      ln.setAttribute('x2',x);ln.setAttribute('y2',y-26);
-      ln.setAttribute('class','uplink-line');ln.setAttribute('stroke-dasharray','3 3');
-      cableLayer.appendChild(ln);
-      const txt=mk('text');
-      txt.setAttribute('x',x);txt.setAttribute('y',y-30);
-      txt.setAttribute('class','cable-lbl');txt.style.fill='#6a1b9a';
-      txt.textContent='↑ '+(tgt.sw.name||'')+' · '+(tgt.floor.name||('Floor '+(tgt.floorIdx+1)));
-      cableLayer.appendChild(txt);
-    }
-  });
-}
+function renderCables(){renderCableLayer(cableLayer,_layerCtx);}
 
 // Cameras render as a triangular "field-of-view" cone (the visible area the
 // camera can see) plus a small lens marker at the position. Heading rotates
 // the cone around the position. 360° fisheye cameras get a ring instead.
 // Wedge (or full-circle) path for a camera's view area.
-function _camWedgePath(cx,cy,r,heading,fov){
-  if(fov>=350)return null;   // caller draws a <circle> instead
-  const half=fov/2;
-  const a1=(heading-half)*Math.PI/180;
-  const a2=(heading+half)*Math.PI/180;
-  const x1=cx+Math.cos(a1)*r, y1=cy+Math.sin(a1)*r;
-  const x2=cx+Math.cos(a2)*r, y2=cy+Math.sin(a2)*r;
-  const largeArc=fov>180?1:0;
-  return `M${cx},${cy} L${x1.toFixed(1)},${y1.toFixed(1)} A${r},${r} 0 ${largeArc} 1 ${x2.toFixed(1)},${y2.toFixed(1)} Z`;
-}
-function renderCAMs(){
-  camLayer.innerHTML='';
-  const w=mapImg.naturalWidth,h=mapImg.naturalHeight;
-  if(!w||!h)return;
-  CAMS().forEach(c=>{
-    if(!Number.isFinite(c.fx)||!Number.isFinite(c.fy))return;
-    const cx=c.fx*w,cy=c.fy*h;
-    const isSel=isSelected(c.id,'cam');
-    const range=c.range||80;
-    const fov=Math.max(10,Math.min(360,c.fov||80));
-    const heading=c.heading||0;
-    const color=c.color||(SETTINGS.colorByVlan&&vlanColor(c.vlan))||tInk();
-    const fillRgba=c.color?hexToRgba(c.color,.08):tInk(.08);
-    const g=mk('g');g.setAttribute('class','cam-grp');g.dataset.id=c.id;g.style.pointerEvents='all';
-    if(c.locked)g.style.opacity='.7';
-    if(statusDimmed(c))g.style.opacity='.15';
+function renderCAMs(){renderCAMLayer(camLayer,_layerCtx);}
 
-    // Cone path (or full circle for fisheye / 360°).
-    let cone;
-    if(fov>=350){
-      cone=mk('circle');
-      cone.setAttribute('cx',cx);cone.setAttribute('cy',cy);cone.setAttribute('r',range);
-    }else{
-      const half=fov/2;
-      const a1=(heading-half)*Math.PI/180;
-      const a2=(heading+half)*Math.PI/180;
-      const x1=cx+Math.cos(a1)*range, y1=cy+Math.sin(a1)*range;
-      const x2=cx+Math.cos(a2)*range, y2=cy+Math.sin(a2)*range;
-      const largeArc=fov>180?1:0;
-      cone=mk('path');
-      cone.setAttribute('d',`M${cx},${cy} L${x1.toFixed(1)},${y1.toFixed(1)} A${range},${range} 0 ${largeArc} 1 ${x2.toFixed(1)},${y2.toFixed(1)} Z`);
-    }
-    cone.setAttribute('class','cam-cone'+(isSel?' cam-cone-sel':''));
-    cone.style.fill=fillRgba;
-    cone.style.stroke=color;
-    if(statusDimmed(c))cone.setAttribute('opacity','.15');
-    camLayer.appendChild(cone);
-
-    // DORI pixel-density bands (IEC 62676-4). Stacked translucent wedges,
-    // strongest tier innermost — the compounded tint reads as a gradient of
-    // "how much detail you actually get" inside the raw view cone.
-    if(SETTINGS.showDori!==false && Number.isFinite(scaleM) && scaleM>0 && !statusDimmed(c)){
-      const mpp=scaleM/100;
-      const bands=doriDistancesM(c.resolution||'4K',fov);
-      for(const b of bands){
-        const rPx=b.m/mpp;
-        if(!(rPx>0)||rPx>=range)continue;   // tier reaches past the cone — no ring to draw
-        let el;
-        if(fov>=350){
-          el=mk('circle');
-          el.setAttribute('cx',cx);el.setAttribute('cy',cy);el.setAttribute('r',rPx);
-        }else{
-          el=mk('path');
-          el.setAttribute('d',_camWedgePath(cx,cy,rPx,heading,fov));
-        }
-        el.setAttribute('fill',b.color);
-        el.setAttribute('fill-opacity','.10');
-        el.setAttribute('stroke',b.color);
-        el.setAttribute('stroke-opacity','.55');
-        el.setAttribute('stroke-width','1');
-        el.style.pointerEvents='none';
-        camLayer.appendChild(el);
-      }
-    }
-
-    // Lens marker at position.
-    const lens=mk('circle');
-    lens.setAttribute('cx',cx);lens.setAttribute('cy',cy);lens.setAttribute('r',5);
-    lens.setAttribute('class','cam-lens'+(isSel?' cam-lens-sel':''));
-    lens.style.fill='#000';
-    camLayer.appendChild(lens);
-    const inner=mk('circle');
-    inner.setAttribute('cx',cx);inner.setAttribute('cy',cy);inner.setAttribute('r',2);
-    inner.style.fill=tBg();
-    inner.style.pointerEvents='none';
-    camLayer.appendChild(inner);
-
-    // Heading nub — small marker on the cone's centre line so the camera's
-    // forward direction is unambiguous even when the FoV is wide.
-    if(fov<350){
-      const a=heading*Math.PI/180;
-      const tipX=cx+Math.cos(a)*Math.min(range,18);
-      const tipY=cy+Math.sin(a)*Math.min(range,18);
-      const tip=mk('line');
-      tip.setAttribute('x1',cx);tip.setAttribute('y1',cy);
-      tip.setAttribute('x2',tipX);tip.setAttribute('y2',tipY);
-      tip.setAttribute('class','cam-heading');
-      tip.style.stroke=color;
-      camLayer.appendChild(tip);
-    }
-
-    // Label below the lens.
-    const lbl=mk('text');
-    lbl.setAttribute('x',cx);lbl.setAttribute('y',cy+14);
-    lbl.setAttribute('class','cam-lbl');
-    lbl.style.fill=color;
-    lbl.textContent=(c.name||'').toUpperCase();
-    camLayer.appendChild(lbl);
-
-
-    // Invisible hit area reuses the existing selection and drag handler.
-    const hit=mk('circle');
-    hit.setAttribute('cx',cx);hit.setAttribute('cy',cy);hit.setAttribute('r',14);
-    hit.setAttribute('class','cam-grp');hit.dataset.id=c.id;
-    hit.style.fill='transparent';hit.style.pointerEvents='all';
-    camLayer.appendChild(hit);
-    hit.style.cursor='pointer';
-    hit.addEventListener('pointerdown',e=>{
-      e.stopPropagation();
-      if(e.shiftKey&&mode==='sel'){toggleSelection(c.id,'cam');return;}
-      sel(c.id,'cam');
-      if(!c.locked){
-        const img=vpToImg(e.clientX,e.clientY);
-        dragOffX=c.fx*w-img.x;dragOffY=c.fy*h-img.y;
-        dragId=c.id;dragType='cam';
-        _dragInitialFx=c.fx;_dragInitialFy=c.fy;
-      }
-    });
-  });
-}
-
-function renderSWs(){
-  swLayer.innerHTML='';
-  const w=mapImg.naturalWidth,h=mapImg.naturalHeight;
-  if(!w||!h)return;
-  SWS().forEach(sw=>{
-    if(!Number.isFinite(sw.fx)||!Number.isFinite(sw.fy))return;
-    const cx=sw.fx*w,cy=sw.fy*h,isSel=isSelected(sw.id,'sw');
-    const g=mk('g');g.setAttribute('class','sw-grp');g.dataset.id=sw.id;g.style.pointerEvents='all';
-    if(statusDimmed(sw))g.style.opacity='.15';
-    const sz=sw.size||22;
-    // Box and icon sizes scale with sz so a bigger switch reads as a bigger icon, not just a bigger empty box.
-    const iconFs=Math.max(8,sz*.65);
-    const lblFs=Math.max(7,sz*.42);
-    const box=mk('rect');box.setAttribute('x',cx-sz);box.setAttribute('y',cy-sz*.6);
-    box.setAttribute('width',sz*2);box.setAttribute('height',sz*1.2);box.setAttribute('rx',2);
-    box.setAttribute('fill',isSel?tInk(.1):tInk(.04));
-    box.setAttribute('stroke',tInk());box.setAttribute('stroke-width',isSel?'2':'1.2');
-    const icon=mk('text');icon.setAttribute('x',cx);icon.setAttribute('y',cy);icon.setAttribute('text-anchor','middle');icon.setAttribute('dominant-baseline','central');icon.setAttribute('font-size',iconFs);icon.setAttribute('fill',tInk());icon.textContent='⊞';
-    const lbl=mk('text');lbl.setAttribute('x',cx);lbl.setAttribute('y',cy+sz*.9);lbl.setAttribute('text-anchor','middle');lbl.setAttribute('font-size',lblFs);lbl.setAttribute('font-family','-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica Neue,Arial,sans-serif');lbl.setAttribute('font-weight','700');lbl.setAttribute('letter-spacing','.08em');lbl.setAttribute('fill',tInk());lbl.setAttribute('paint-order','stroke');lbl.setAttribute('stroke',tBg());lbl.setAttribute('stroke-width','2.5');lbl.textContent=(sw.name||'').toUpperCase();
-    // A router with a built-in radio covers the floor like an AP: draw its
-    // ring (clipped by walls) under the device box.
-    const wifiAp=showCoverage?routerAsAp(sw,F().scaleM):null;
-    if(wifiAp){
-      const ring=mk('path');ring.setAttribute('d',getCoveragePath(wifiAp));
-      ring.setAttribute('class',isSel?'ap-sel-outer':'ap-outer');ring.style.pointerEvents='none';
-      const covOp=Math.max(0,Math.min(1,(SETTINGS.coverageOpacity??100)/100));
-      if(covOp<1)ring.setAttribute('opacity',covOp);
-      g.appendChild(ring);
-    }
-    [box,icon,lbl].forEach(el=>g.appendChild(el));
-    g.addEventListener('pointerdown',e=>{
-      e.stopPropagation();
-      if(e.shiftKey&&mode==='sel'){toggleSelection(sw.id,'sw');return;}
-      sel(sw.id,'sw');
-      if(!sw.locked){const img=vpToImg(e.clientX,e.clientY);dragOffX=sw.fx*w-img.x;dragOffY=sw.fy*h-img.y;dragId=sw.id;dragType='sw';_dragInitialFx=sw.fx;_dragInitialFy=sw.fy;}
-    });
-    swLayer.appendChild(g);
-  });
-}
+function renderSWs(){renderSWLayer(swLayer,_layerCtx);}
 
 // ═══ CHANNEL OVERLAP ══════════════════════════════
-// Visually flag APs that share or overlap their RF channels AND whose
-// coverage circles touch. Two channels overlap if:
-//   - They're the same number on any band
-//   - Both are 2.4 GHz channels within 4 of each other (22 MHz wide,
-//     5 MHz apart — so 1&5 are the boundary case)
-// Channels parsed loosely: "6", "ch6", "auto" → numeric or "auto".
-function _parseChannel(c){
-  if(!c||c==='auto')return null;
-  const m=String(c).match(/(\d+)/);
-  return m?parseInt(m[1],10):null;
-}
-function _is24Channel(n){return Number.isInteger(n)&&n>=1&&n<=14;}
-function chanOverlap(a,b){
-  const ai=_parseChannel(a),bi=_parseChannel(b);
-  if(ai==null||bi==null)return false;
-  if(ai===bi)return true;
-  if(_is24Channel(ai)&&_is24Channel(bi)&&Math.abs(ai-bi)<5)return true;
-  return false;
-}
-// Width- and band-aware overlap between two APs: do their occupied frequency
-// ranges intersect? Falls back to the legacy channel-number heuristic when
-// either channel is 'auto'/unparsable.
-function apChansOverlap(a,b){
-  const ai=_parseChannel(a.channel),bi=_parseChannel(b.channel);
-  if(ai==null||bi==null)return false;
-  return channelsOverlapMhz(bandKey(a.freq),ai,a.chanWidth||20,bandKey(b.freq),bi,b.chanWidth||20);
-}
-function renderChannelOverlap(){
-  chOverlapLayer.innerHTML='';
-  const w=mapImg.naturalWidth,h=mapImg.naturalHeight;
-  if(!w||!h)return;
-  const aps=APS();
-  for(let i=0;i<aps.length;i++)for(let j=i+1;j<aps.length;j++){
-    const a=aps[i],b=aps[j];
-    if(!apChansOverlap(a,b))continue;
-    const ax=a.fx*w,ay=a.fy*h,bx=b.fx*w,by=b.fy*h;
-    const dist=Math.hypot(ax-bx,ay-by);
-    // Only flag pairs whose coverage areas overlap — otherwise interference
-    // is not really a concern, just a coincidental channel match.
-    if(dist>=(a.r+b.r)*0.9)continue;
-    const ln=mk('line');
-    ln.setAttribute('x1',ax);ln.setAttribute('y1',ay);
-    ln.setAttribute('x2',bx);ln.setAttribute('y2',by);
-    ln.setAttribute('class','ch-overlap-line');
-    chOverlapLayer.appendChild(ln);
-    const mx=(ax+bx)/2,my=(ay+by)/2;
-    const bg=mk('rect');
-    bg.setAttribute('x',mx-26);bg.setAttribute('y',my-10);
-    bg.setAttribute('width',52);bg.setAttribute('height',20);
-    bg.setAttribute('rx',10);bg.setAttribute('class','ch-overlap-bg');
-    chOverlapLayer.appendChild(bg);
-    const txt=mk('text');
-    txt.setAttribute('x',mx);txt.setAttribute('y',my);
-    txt.setAttribute('class','ch-overlap-lbl');
-    const labelA=a.channel==='auto'||!a.channel?'?':a.channel;
-    const labelB=b.channel==='auto'||!b.channel?'?':b.channel;
-    txt.textContent=labelA===labelB?`⚡ Ch ${labelA}`:`⚡ ${labelA}↔${labelB}`;
-    chOverlapLayer.appendChild(txt);
-  }
-}
+// Visually flag APs whose occupied channels overlap (band- and width-aware,
+// see ./src/channels.js) AND whose coverage circles touch.
+function renderChannelOverlap(){renderChannelOverlapLayer(chOverlapLayer,_layerCtx);}
 
-function renderOL(){
-  olLayer.innerHTML='';if(!showOL)return;
-  const w=mapImg.naturalWidth||1,h=mapImg.naturalHeight||1;
-  for(let i=0;i<APS().length;i++)for(let j=i+1;j<APS().length;j++){
-    const a=APS()[i],b=APS()[j];
-    const ax=a.fx*w,ay=a.fy*h,bx=b.fx*w,by=b.fy*h;
-    const dist=Math.hypot(ax-bx,ay-by);
-    if(dist<a.r+b.r){const c=mk('circle');c.setAttribute('cx',(ax+bx)/2);c.setAttribute('cy',(ay+by)/2);c.setAttribute('r',Math.max(8,(a.r+b.r-dist)*.42));c.setAttribute('class','ol-zone');olLayer.appendChild(c);}
-  }
-}
+function renderOL(){renderOverlapZoneLayer(olLayer,_layerCtx);}
 
 // Per-pixel signal-strength heatmap. We paint to an offscreen canvas at a
 // coarse grid resolution, shading each cell by the strongest contributor at
 // that point. v3 supports four metric modes (RSSI / SNR / MCS / Throughput)
 // + a band filter + neighbouring-floor leakage through slabs.
 
-function _heatColor(dbm){
-  // Legacy single-mode helper retained for code paths that still call it.
-  if(dbm===null||dbm===undefined||!Number.isFinite(dbm))return null;
-  for(const s of HEATMAP_STOPS){if(dbm>=s.dbm)return s.color;}
-  return null;
-}
-function _heatColorFor(mode,value){
-  if(value===null||value===undefined||!Number.isFinite(value))return null;
-  const stops=(HEATMAP_MODES[mode]||HEATMAP_MODES.rssi).stops;
-  for(const s of stops){if(value>=s.v)return s.color;}
-  return null;
-}
 function cycleHeatmapMode(){
   const keys=HEATMAP_MODE_KEYS;
   const cur=SETTINGS.heatmapMode||'rssi';
@@ -3545,28 +2735,6 @@ function cycleHeatmapBand(){
   render();autosave();
   toast('Heatmap band: '+SETTINGS.heatmapBand);
 }
-function _bandMatches(ap,bandFilter){
-  if(bandFilter==='all'||!bandFilter)return true;
-  const f=ap.freq||'';
-  if(bandFilter==='2.4')return f.indexOf('2.4')>=0;
-  if(bandFilter==='5')  return f==='5 GHz only'||f==='2.4 / 5 GHz';
-  if(bandFilter==='6')  return f.indexOf('6 GHz')>=0;
-  return true;
-}
-// Serialize an AP into the plain shape the heatmap job needs (structured-
-// cloneable for the worker; no DOM objects, no cache fields).
-function _heatApShape(ap){
-  const pat=AP_PATTERNS[ap.pattern]||AP_PATTERNS.omni;
-  return {
-    fx:ap.fx,fy:ap.fy,r:ap.r,freq:ap.freq,
-    band:bandKey(ap.freq),
-    channel:_parseChannel(ap.channel),
-    widthMhz:CHANNEL_WIDTHS.includes(ap.chanWidth)?ap.chanWidth:20,
-    arcDeg:pat.arc,headingDeg:ap.heading||0,
-    eirpDbm:effectiveEirp(ap),
-    bandFactor:bandLossMultiplier(ap.freq),
-  };
-}
 // Build the current floor's heatmap job, or null when there's nothing to paint.
 function _heatJob(){
   const w=mapImg.naturalWidth||0,h=mapImg.naturalHeight||0;
@@ -3575,7 +2743,7 @@ function _heatJob(){
   const modeDef=HEATMAP_MODES[mode]||HEATMAP_MODES.rssi;
   const bandFilter=SETTINGS.heatmapBand||'all';
   // WiFi routers radiate too (./src/routerWifi.js).
-  const aps=rfAps(F()).filter(ap=>_bandMatches(ap,bandFilter)).map(_heatApShape);
+  const aps=rfAps(F()).filter(ap=>bandMatches(ap,bandFilter)).map(heatApShape);
   // APs on the other floors, reaching this one through the slabs between.
   // Floors are stacked in tab order; plans are assumed to cover the same
   // footprint (positions carry over as fractions). Each AP's radius is
@@ -3590,8 +2758,8 @@ function _heatJob(){
       const slabs=Math.abs(i-curFloor);
       const k=((f.scaleM||100)/100)/mppHere;
       for(const ap of rfAps(f)){
-        if(!_bandMatches(ap,bandFilter))continue;
-        neighbour.push({..._heatApShape(ap),r:ap.r*k,slabs,verticalM:slabs*floorH});
+        if(!bandMatches(ap,bandFilter))continue;
+        neighbour.push({...heatApShape(ap),r:ap.r*k,slabs,verticalM:slabs*floorH});
       }
     });
   }
@@ -3677,136 +2845,15 @@ function renderHeat(){
 // Roaming overlap layer. Tints cells where ≥2 APs deliver ≥ ROAMING_OVERLAP_DBM
 // signal. Same canvas as the heatmap is unsuitable (different colour role), so
 // we use a dedicated SVG group with semi-transparent rects.
-function renderRoaming(){
-  const layer=document.getElementById('roaming-layer');
-  if(!layer)return;
-  layer.innerHTML='';
-  if(!SETTINGS.showRoamingOverlap)return;
-  const w=mapImg.naturalWidth||0,h=mapImg.naturalHeight||0;
-  if(!w||!h)return;
-  const aps=APS();
-  if(aps.length<2)return;
-  const walls=WALLS();
-  const propModel=SETTINGS.propagationModel||'logd';
-  const step=Math.max(6,Math.round(Math.min(w,h)/80));
-  // Render into a path of overlapping rects so the DOM stays small.
-  let d='';
-  for(let y=0;y<h;y+=step){
-    for(let x=0;x<w;x+=step){
-      let n=0;
-      for(const ap of aps){
-        const pat=AP_PATTERNS[ap.pattern]||AP_PATTERNS.omni;
-        const dbm=dbmAt(ap,x,y,w,h,walls,{
-          bandFactor:bandLossMultiplier(ap.freq),
-          arcDeg:pat.arc,headingDeg:ap.heading||0,
-          eirpDbm:effectiveEirp(ap),
-          model:propModel,
-          metersPerPx:(scaleM||100)/100,
-        });
-        if(dbm!==null && dbm>=ROAMING_OVERLAP_DBM){n++;if(n>=2)break;}
-      }
-      if(n>=2) d+=`M${x},${y}h${step}v${step}h${-step}Z`;
-    }
-  }
-  if(!d)return;
-  const path=mk('path');
-  path.setAttribute('d',d);
-  path.setAttribute('class','roaming-fill');
-  layer.appendChild(path);
-}
+function renderRoaming(){renderRoamingLayer(document.getElementById('roaming-layer'),_layerCtx);}
 
 // Annotation layer. Text labels and arrows live in floor.ANNOS.
-function renderAnnotations(){
-  const layer=document.getElementById('anno-layer');
-  if(!layer)return;
-  layer.innerHTML='';
-  const w=mapImg.naturalWidth||1,h=mapImg.naturalHeight||1;
-  for(const a of ANNOS()){
-    const x=(a.fx||0)*w, y=(a.fy||0)*h;
-    if(a.kind==='arrow'||a.kind==='dim'){
-      const x2=(a.fx2||a.fx||0)*w, y2=(a.fy2||a.fy||0)*h;
-      const ln=mk('line');
-      ln.setAttribute('x1',x);ln.setAttribute('y1',y);
-      ln.setAttribute('x2',x2);ln.setAttribute('y2',y2);
-      ln.setAttribute('class', a.kind==='dim' ? 'anno-dim' : 'anno-arrow');
-      ln.setAttribute('marker-end','url(#anno-arrowhead)');
-      layer.appendChild(ln);
-      if(a.kind==='dim'){
-        // Show distance label at the midpoint
-        const mx=(x+x2)/2, my=(y+y2)/2;
-        const dist=Math.hypot(x-x2,y-y2);
-        const m=Math.round(dist*(scaleM||100)/100*10)/10;
-        const lbl=mk('text');
-        lbl.setAttribute('x',mx);lbl.setAttribute('y',my-6);
-        lbl.setAttribute('class','anno-dim-label');
-        lbl.textContent=m+' m';
-        layer.appendChild(lbl);
-      }
-      if(a.text){
-        const lbl=mk('text');
-        lbl.setAttribute('x',x);lbl.setAttribute('y',y-10);
-        lbl.setAttribute('class','anno-text');
-        lbl.textContent=a.text;
-        layer.appendChild(lbl);
-      }
-    } else {
-      const lbl=mk('text');
-      lbl.setAttribute('x',x);lbl.setAttribute('y',y);
-      lbl.setAttribute('class','anno-text');
-      lbl.textContent=a.text||'Note';
-      layer.appendChild(lbl);
-    }
-  }
-}
+function renderAnnotations(){renderAnnoLayer(document.getElementById('anno-layer'),_layerCtx);}
 
 // Survey-sample layer. Each sample is a small circle coloured by its RSSI,
 // with a thin outline that turns red when the measured value is materially
 // stronger or weaker than the predicted value at that point.
-function renderSamples(){
-  const layer=document.getElementById('sample-layer');
-  if(!layer)return;
-  layer.innerHTML='';
-  const samples=SAMPLES();
-  if(!samples.length)return;
-  const w=mapImg.naturalWidth||1,h=mapImg.naturalHeight||1;
-  const walls=WALLS();
-  const propModel=SETTINGS.propagationModel||'logd';
-  for(const s of samples){
-    const x=(s.fx||0)*w, y=(s.fy||0)*h;
-    // Predicted: max dBm across local APs.
-    let predicted=-Infinity;
-    for(const ap of APS()){
-      const pat=AP_PATTERNS[ap.pattern]||AP_PATTERNS.omni;
-      const d=dbmAt(ap,x,y,w,h,walls,{
-        bandFactor:bandLossMultiplier(ap.freq),
-        arcDeg:pat.arc,headingDeg:ap.heading||0,
-        eirpDbm:effectiveEirp(ap),
-        model:propModel,
-        metersPerPx:(scaleM||100)/100,
-      });
-      if(d!==null&&d>predicted)predicted=d;
-    }
-    const measured=Number.isFinite(s.rssi)?s.rssi:-95;
-    const delta=predicted===-Infinity?null:(measured-predicted);
-    const color=_heatColor(measured)||'#666';
-    const c=mk('circle');
-    c.setAttribute('cx',x);c.setAttribute('cy',y);c.setAttribute('r',5);
-    c.setAttribute('fill',color);
-    c.setAttribute('class','sample-dot');
-    if(delta!==null && Math.abs(delta)>8){
-      c.setAttribute('stroke','#c0382b');c.setAttribute('stroke-width','2');
-    } else {
-      c.setAttribute('stroke','#000');c.setAttribute('stroke-width','1');
-    }
-    c.setAttribute('data-rssi',String(measured));
-    if(delta!==null){
-      const t=mk('title');
-      t.textContent=`Measured ${measured} dBm · Predicted ${Math.round(predicted)} dBm · Δ ${delta>=0?'+':''}${Math.round(delta)} dB`;
-      c.appendChild(t);
-    }
-    layer.appendChild(c);
-  }
-}
+function renderSamples(){renderSampleLayer(document.getElementById('sample-layer'),_layerCtx);}
 
 // ═══ ANNOTATION DRAWING ═══════════════════════════
 // Live preview while the user drags out an arrow / dim annotation.
@@ -3941,124 +2988,28 @@ function importSurveyCsv(input){
 }
 
 // ═══ AUTO CHANNEL + TX-POWER PLANNING ═════════════
-// Greedy graph-coloring channel assignment. Looks at all APs on the current
-// floor, picks a channel for each from its band's region-allowed list, and
-// favours channels that don't overlap with neighbours within 0.9*(rA+rB).
-function _regionChannels(band){
-  const region=REGULATORY_REGIONS[SETTINGS.regulatoryRegion||DEFAULT_REGULATORY_REGION]||REGULATORY_REGIONS[DEFAULT_REGULATORY_REGION];
-  if(band==='2.4')return region.channels24.slice();
-  if(band==='5')return region.channels5.slice();
-  if(band==='6')return region.channels6.slice();
-  return [];
-}
-function _bandForAp(ap){
-  const f=ap.freq||'';
-  if(f.indexOf('6 GHz')>=0)return '6';
-  if(f==='2.4 GHz only')return '2.4';
-  return '5';   // 5 GHz only and 2.4/5 GHz dual → plan on 5 GHz
-}
+// The planners live in ./src/rfPlanning.js; these apply them to the floor.
 function autoChannelPlan(){
   const aps=APS();
   if(!aps.length){toast('No APs to plan');return;}
   snapshot();
-  const w=mapImg.naturalWidth||1,h=mapImg.naturalHeight||1;
-  // For each AP, score each channel in its band by neighbour overlap penalty.
+  const plan=planChannels(aps,{...floorDims(F()),regionKey:SETTINGS.regulatoryRegion});
   let changed=0;
-  for(const ap of aps){
-    const band=_bandForAp(ap);
-    const list=_regionChannels(band);
-    if(!list.length)continue;
-    // Skip channels that are DFS in the current region (avoid unnecessary
-    // radar pre-emption hits) unless the AP already sits on one explicitly.
-    const region=REGULATORY_REGIONS[SETTINGS.regulatoryRegion||DEFAULT_REGULATORY_REGION];
-    const dfs=region?region.dfs||[]:[];
-    const candidates=list.filter(c=>!dfs.includes(c));
-    const pool=candidates.length?candidates:list;
-    let bestCh=pool[0], bestScore=Infinity;
-    const apWidth=ap.chanWidth||20;
-    for(const ch of pool){
-      let score=0;
-      for(const other of aps){
-        if(other===ap)continue;
-        if(_bandForAp(other)!==band)continue;
-        const ax=ap.fx*w, ay=ap.fy*h;
-        const bx=other.fx*w, by=other.fy*h;
-        const dist=Math.hypot(ax-bx,ay-by);
-        if(dist>=(ap.r+other.r)*0.9)continue;
-        const otherCh=parseInt(String(other.channel||''),10);
-        if(!Number.isFinite(otherCh))continue;
-        // Width-aware: spectrum overlap of the candidate (at this AP's width)
-        // vs the neighbour's actual channel+width is the real conflict test.
-        if(channelsOverlapMhz(band,ch,apWidth,band,otherCh,other.chanWidth||20)){
-          score+=otherCh===ch?10:5;
-        }else if((band==='5'||band==='6') && Math.abs(otherCh-ch)<4){
-          score+=1;   // adjacent-channel leakage penalty
-        }
-      }
-      if(score<bestScore){bestScore=score;bestCh=ch;}
-    }
-    if(String(ap.channel)!==String(bestCh)){ap.channel=String(bestCh);changed++;}
-  }
+  for(const [ap,ch] of plan)if(String(ap.channel)!==ch){ap.channel=ch;changed++;}
   render();renderRP();
   toast(`Auto channel: ${changed} AP${changed===1?'':'s'} updated`);
-}
-// Reference Tx power that maps to an AP's stored coverage radius `ap.r`.
-const TX_POWER_REF_DBM=20;
-// Effective coverage radius if the AP ran at `tx` dBm. Indoor path-loss
-// exponent ≈3, so the usable range scales as 10^(ΔdBm/30) — i.e. roughly
-// doubling for every +9 dB.
-function _radiusAtTx(baseR,tx){
-  return baseR*Math.pow(10,(tx-TX_POWER_REF_DBM)/30);
 }
 function autoTxPower(){
   const aps=APS();
   if(!aps.length){toast('No APs to plan');return;}
   snapshot();
-  const w=mapImg.naturalWidth||1,h=mapImg.naturalHeight||1;
-  // Try each Tx power (from 5 to 23 dBm) and pick the one whose resulting
-  // coverage overlaps neighbouring same-band APs by ~30 % of its own area —
-  // enough for roaming without blanketing the floor. The candidate radius
-  // scales with Tx power, so the heuristic actually discriminates.
-  for(const ap of aps){
-    let bestTx=TX_POWER_REF_DBM, bestDelta=Infinity;
-    const ax=ap.fx*w, ay=ap.fy*h;
-    for(const tx of [5,8,11,14,17,20,23]){
-      const a=_radiusAtTx(ap.r,tx);
-      let overlap=0;
-      const own=Math.PI*a*a;
-      for(const other of aps){
-        if(other===ap)continue;
-        if(_bandForAp(other)!==_bandForAp(ap))continue;
-        const bx=other.fx*w, by=other.fy*h;
-        const d=Math.hypot(ax-bx,ay-by);
-        const b=other.r;
-        if(d>=a+b)continue;
-        // Lens (circle–circle intersection) area approximation.
-        if(d<=Math.abs(a-b))overlap+=Math.PI*Math.min(a,b)**2;
-        else{
-          const a2=Math.acos((d*d+a*a-b*b)/(2*d*a))*a*a;
-          const b2=Math.acos((d*d+b*b-a*a)/(2*d*b))*b*b;
-          const tri=0.5*Math.sqrt(Math.max(0,(-d+a+b)*(d+a-b)*(d-a+b)*(d+a+b)));
-          overlap+=Math.max(0,a2+b2-tri);
-        }
-      }
-      const ratio=own?overlap/own:0;
-      const delta=Math.abs(ratio-0.3);
-      if(delta<bestDelta){bestDelta=delta;bestTx=tx;}
-    }
-    ap.txPowerDbm=bestTx;
-  }
+  for(const [ap,tx] of planTxPower(aps,floorDims(F())))ap.txPowerDbm=tx;
   invalidateCoverageCache();
   render();renderRP();calcCoverage();
   toast('Tx-power tuned for each AP');
 }
 
 // ═══ BOM + CABLE-SCHEDULE CSV EXPORTS ═════════════
-function _csvEscape(v){
-  const s=String(v??'');
-  if(/[",\n]/.test(s))return '"'+s.replace(/"/g,'""')+'"';
-  return s;
-}
 // The print popups are written by this page, so they inherit its CSP — which
 // forbids inline handlers. Attach the click from here instead.
 function _wirePrintButton(w){
@@ -4075,83 +3026,16 @@ function _downloadFile(filename,content,mime){
 }
 // Each _*CsvString builder returns the CSV text ('' when there is nothing to
 // export) so the single-file downloads and the handover pack share one source.
-function _bomCsvString(){
-  const tally=new Map(); // model → {kind, model, qty, poeWatts}
-  for(const f of FLOORS){
-    for(const ap of (f.APS||[])){
-      const k='AP|'+(ap.model||'');
-      const e=tally.get(k)||{kind:'AP',model:ap.model||'Custom/Other',qty:0,poeW:0};
-      e.qty++;e.poeW+=(AP_POE_W[ap.model]||0);
-      tally.set(k,e);
-    }
-    for(const c of (f.CAMS||[])){
-      const k='CAM|'+(c.model||'');
-      const e=tally.get(k)||{kind:'Camera',model:c.model||'Custom/Other',qty:0,poeW:0};
-      e.qty++;e.poeW+=((CAM_SPECS[c.model]||{}).poeW||0);
-      tally.set(k,e);
-    }
-    for(const sw of (f.SWS||[])){
-      const k='SW|'+(sw.model||'');
-      const e=tally.get(k)||{kind:'Switch',model:sw.model||'Custom/Other',qty:0,poeW:0};
-      e.qty++;
-      tally.set(k,e);
-    }
-  }
-  const rows=[['Kind','Model','Qty','Total PoE draw (W)']];
-  for(const e of tally.values())rows.push([e.kind,e.model,e.qty,e.poeW||'']);
-  // Cabling rollup: sum every device→switch run (with routing factor + slack)
-  // across all floors, then estimate boxes of cable needed.
-  const cable=cableTotals();
-  if(cable.runs>0){
-    rows.push([]);
-    rows.push(['Cabling','Ethernet runs',cable.runs,'']);
-    rows.push(['Cabling','Cable length incl. slack (m)',cable.totalM,'']);
-    const boxM=parseFloat(SETTINGS.cableBoxM)||305;
-    rows.push(['Cabling',`Cable boxes (${boxM} m)`,Math.ceil(cable.totalM/boxM),'']);
-  }
-  // NVR storage rollup for the camera fleet at the configured retention/codec.
-  const storGb=totalStorageGb();
-  if(storGb>0){
-    const days=parseInt(SETTINGS.retentionDays,10)||30;
-    const codec=SETTINGS.storageCodec==='h264'?'H.264':'H.265';
-    rows.push([]);
-    rows.push(['Storage',`NVR capacity for ${days} d retention (${codec})`,
-      storGb>=1000?(storGb/1000).toFixed(2)+' TB':Math.round(storGb)+' GB','']);
-  }
-  return rows.map(r=>r.map(_csvEscape).join(',')).join('\n');
-}
+// Builders live in ./src/csvExports.js; these supply the live measurements.
+const _bomCsvString=()=>bomCsv({floors:FLOORS,cable:cableTotals(),cableBoxM:SETTINGS.cableBoxM,
+  storageGb:totalStorageGb(),retentionDays:SETTINGS.retentionDays,storageCodec:SETTINGS.storageCodec});
+const _cableCsvString=()=>cableScheduleCsv({floors:FLOORS,runM:cableRunM});
+const _ipPlanCsvString=()=>ipPlanCsv({devices:allDevices(),vlanById});
+const _portMapCsvString=()=>portMapCsv(topologyModel().all.map(e=>({sw:e.sw,floor:e.floor,analysis:analyzeSwitch(e.sw,e.floor)})));
+const _inventoryCsvString=()=>inventoryCsv({devices:allDevices(),statusLabel:d=>statusMeta(d).label});
 function doBomCsv(){
   _downloadFile('bom.csv',_bomCsvString(),'text/csv');
   toast(t('toast.bom_exported'));
-}
-function _cableCsvString(){
-  const rows=[['Floor','Device','Type','Switch','Port','Length (m)','Slack (m)','Status']];
-  for(const f of FLOORS){
-    const w=mapImg.naturalWidth||1,h=mapImg.naturalHeight||1;
-    const sws=f.SWS||[];
-    const computeLen=(item)=>{
-      const sw=sws.find(s=>s.id===item.swId);
-      if(!sw)return null;
-      const dx=(item.fx-sw.fx)*w, dy=(item.fy-sw.fy)*h;
-      const px=Math.hypot(dx,dy);
-      const m=Math.round(px*(f.scaleM||100)/100*routingFactor()*10)/10;
-      const slack=Math.max(1,Math.round(m*0.1*10)/10);
-      const status=m>100?'OVER 100m':m>90?'Near limit':'OK';
-      return {m,slack,swName:sw.name||sw.id,status};
-    };
-    for(const ap of (f.APS||[])){
-      const c=computeLen(ap);
-      if(!c)continue;
-      rows.push([f.name||'',ap.name||ap.id,'AP',c.swName,ap.port||'',c.m,c.slack,c.status]);
-    }
-    for(const cam of (f.CAMS||[])){
-      const c=computeLen(cam);
-      if(!c)continue;
-      rows.push([f.name||'',cam.name||cam.id,'Camera',c.swName,cam.port||'',c.m,c.slack,c.status]);
-    }
-  }
-  if(rows.length<=1)return '';
-  return rows.map(r=>r.map(_csvEscape).join(',')).join('\n');
 }
 function doCableCsv(){
   const csv=_cableCsvString();
@@ -4161,19 +3045,6 @@ function doCableCsv(){
 }
 
 // IP plan: one row per device with any network identity, across all floors.
-function _ipPlanCsvString(){
-  const rows=[['Floor','Device','Type','Model','IP','VLAN','VLAN name','Subnet','In subnet','Switch','Port','MAC']];
-  for(const {dev,type,floor} of allDevices()){
-    if(!(dev.ip||dev.vlan||dev.mac))continue;
-    const v=vlanById(dev.vlan);
-    const sw=(floor.SWS||[]).find(s=>s.id===dev.swId);
-    const inSubnet=dev.ip&&v&&v.subnet?(ipInCidr(dev.ip,v.subnet)?'yes':'NO'):'';
-    rows.push([floor.name||'',dev.name||dev.id,type,dev.model||'',dev.ip||'',dev.vlan||'',
-      v?(v.name||''):'',v?(v.subnet||''):'',inSubnet,sw?(sw.name||sw.id):'',dev.port||'',dev.mac||'']);
-  }
-  if(rows.length<=1)return '';
-  return rows.map(r=>r.map(_csvEscape).join(',')).join('\n');
-}
 function doIpPlanCsv(){
   const csv=_ipPlanCsvString();
   if(!csv){toast('No device has an IP, VLAN or MAC yet');return;}
@@ -4183,32 +3054,6 @@ function doIpPlanCsv(){
 
 // Port map: one row per switch port (free ports included), plus clients
 // without a parseable port number.
-function _portMapCsvString(){
-  const rows=[['Switch','Floor','Switch model','Port','Device','Type','Device model','IP','VLAN','PoE (W)']];
-  const {all}=topologyModel();
-  for(const e of all){
-    const a=analyzeSwitch(e.sw,e.floor);
-    const swName=e.sw.name||e.sw.id, swFloor=e.floor.name||'', swModel=e.sw.model||'';
-    const byPort=new Map();
-    const noPort=[];
-    for(const c of a.clients){
-      const p=parseInt(c.port,10);
-      if(p>=1&&(a.ports==null||p<=a.ports))byPort.set(p,c);
-      else noPort.push(c);
-    }
-    const maxPort=a.ports!=null?a.ports:Math.max(0,...byPort.keys());
-    for(let p=1;p<=maxPort;p++){
-      const c=byPort.get(p);
-      rows.push(c
-        ?[swName,swFloor,swModel,p,c.name,c.type==='AP'?'AP':'Camera',c.model||'',c.ip||'',c.dev.vlan||'',c.w||'']
-        :[swName,swFloor,swModel,p,'— free —','','','','','']);
-    }
-    for(const c of noPort)
-      rows.push([swName,swFloor,swModel,c.port||'?',c.name,c.type==='AP'?'AP':'Camera',c.model||'',c.ip||'',c.dev.vlan||'',c.w||'']);
-  }
-  if(rows.length<=1)return '';
-  return rows.map(r=>r.map(_csvEscape).join(',')).join('\n');
-}
 function doPortMapCsv(){
   const csv=_portMapCsvString();
   if(!csv){toast('No switches placed yet');return;}
@@ -4218,17 +3063,6 @@ function doPortMapCsv(){
 
 // Inventory: the as-built record — identity, status and install fields for
 // every device in the building.
-function _inventoryCsvString(){
-  const rows=[['Floor','Type','Name','Model','Status','Serial','Asset tag','Firmware','MAC','IP','VLAN','Switch','Port','Notes']];
-  for(const {dev,type,floor} of allDevices()){
-    const sw=(floor.SWS||[]).find(s=>s.id===dev.swId);
-    rows.push([floor.name||'',type,dev.name||dev.id,dev.model||'',statusMeta(dev).label,
-      dev.serial||'',dev.assetTag||'',dev.firmware||'',dev.mac||'',dev.ip||'',dev.vlan||'',
-      sw?(sw.name||sw.id):'',dev.port||'',dev.comment||dev.notes||'']);
-  }
-  if(rows.length<=1)return '';
-  return rows.map(r=>r.map(_csvEscape).join(',')).join('\n');
-}
 function doInventoryCsv(){
   const csv=_inventoryCsvString();
   if(!csv){toast('Nothing placed yet');return;}
@@ -4418,106 +3252,15 @@ function restoreRevision(id){
     });
   });
 }
-function _diffRevisions(a,b){
-  // Walk floor by floor and report adds/removes/moves of APs+CAMs+SWs+DZs+WALLS.
-  const out=[];
-  const fLen=Math.max(a.length,b.length);
-  for(let i=0;i<fLen;i++){
-    const fa=a[i],fb=b[i];
-    if(!fa){out.push(`+ Floor "${fb.name||i}" added`);continue;}
-    if(!fb){out.push(`- Floor "${fa.name||i}" removed`);continue;}
-    for(const kind of ['APS','CAMS','SWS','DZS','WALLS']){
-      const la=fa[kind]||[],lb=fb[kind]||[];
-      const ids=new Set([...la.map(x=>x.id),...lb.map(x=>x.id)]);
-      for(const id of ids){
-        const ia=la.find(x=>x.id===id), ib=lb.find(x=>x.id===id);
-        if(ia && !ib)out.push(`- [${fa.name||i}] ${kind.slice(0,-1)} ${ia.name||id} removed`);
-        else if(!ia && ib)out.push(`+ [${fb.name||i}] ${kind.slice(0,-1)} ${ib.name||id} added`);
-        else if(ia && ib){
-          // Walls carry endpoint coords (fx1/fy1/fx2/fy2); everything else
-          // has a single fx/fy anchor.
-          const moved=kind==='WALLS'
-            ? (ia.fx1!==ib.fx1||ia.fy1!==ib.fy1||ia.fx2!==ib.fx2||ia.fy2!==ib.fy2)
-            : (ia.fx!==ib.fx||ia.fy!==ib.fy);
-          if(moved)out.push(`~ [${fa.name||i}] ${kind.slice(0,-1)} ${ia.name||id} ${kind==='WALLS'?'reshaped':'moved'}`);
-          // Field-level changes — the as-designed vs as-built story: identity,
-          // wiring and rollout fields, not geometry.
-          if(kind!=='WALLS'&&kind!=='DZS'){
-            for(const fld of ['name','model','ip','vlan','port','swId','status','serial','channel','txPower']){
-              const va=ia[fld]??'',vb=ib[fld]??'';
-              if(String(va)!==String(vb))out.push(`~ [${fa.name||i}] ${kind.slice(0,-1)} ${ia.name||id}: ${fld} ${va===''?'(empty)':va} → ${vb===''?'(empty)':vb}`);
-            }
-          }
-        }
-      }
-    }
-  }
-  return out;
-}
 function showRevisions(){
-  const wrap=document.createElement('div');wrap.className='settings-form';
-  if(!PROJECT_REVISIONS.length){
-    const e=document.createElement('div');e.className='ep-hint';
-    e.textContent='No revisions yet. Save the current state as the first revision below.';
-    wrap.appendChild(e);
-  } else {
-    const list=document.createElement('div');list.className='rev-list';
-    const showDiff=(lines,label)=>{
-      const old=wrap.querySelector('.rev-diff');if(old)old.remove();
-      const out=document.createElement('pre');out.className='rev-diff';
-      out.textContent=(label?label+'\n\n':'')+(lines.length?lines.join('\n'):'(no differences detected)');
-      wrap.appendChild(out);
-    };
-    for(const rev of PROJECT_REVISIONS){
-      const row=document.createElement('div');row.className='rev-row';
-      const name=document.createElement('div');name.className='rev-name';
-      name.textContent=(rev.baseline?'★ ':'')+rev.name;
-      if(rev.baseline)name.title='Design baseline';
-      const when=document.createElement('div');when.className='rev-when';when.textContent=new Date(rev.createdAt).toLocaleString(SETTINGS.locale||'en-GB');
-      // Mark as the design baseline (one at a time) — the "as-designed" state
-      // that later as-built diffs are read against.
-      const b=document.createElement('button');b.className='btn';b.textContent=rev.baseline?'★':'☆';
-      b.title=rev.baseline?'Unmark design baseline':'Mark as design baseline';
-      b.addEventListener('click',()=>{
-        const on=!rev.baseline;
-        PROJECT_REVISIONS.forEach(r=>r.baseline=false);
-        rev.baseline=on;
-        autosave();closeModal();showRevisions();
-      });
-      const d=document.createElement('button');d.className='btn';d.textContent='Diff vs now';
-      d.title='What changed between this revision and the current state';
-      d.addEventListener('click',()=>{
-        showDiff(_diffRevisions(rev.snapshot,_snapshotForRevision()),`${rev.name} → current state`);
-      });
-      const r=document.createElement('button');r.className='btn';r.textContent='Restore';
-      r.addEventListener('click',()=>{closeModal();restoreRevision(rev.id);});
-      const x=document.createElement('button');x.className='btn danger';x.textContent='×';x.title='Delete';
-      x.addEventListener('click',()=>{
-        PROJECT_REVISIONS=PROJECT_REVISIONS.filter(r=>r.id!==rev.id);
-        autosave();closeModal();showRevisions();
-      });
-      row.appendChild(name);row.appendChild(when);row.appendChild(b);row.appendChild(d);row.appendChild(r);row.appendChild(x);
-      list.appendChild(row);
-    }
-    wrap.appendChild(list);
-    if(PROJECT_REVISIONS.length>=2){
-      const diffBtn=document.createElement('button');diffBtn.className='btn';diffBtn.textContent='Diff last two revisions';
-      diffBtn.style.marginTop='12px';
-      diffBtn.addEventListener('click',()=>{
-        const a=PROJECT_REVISIONS[PROJECT_REVISIONS.length-2].snapshot;
-        const b=PROJECT_REVISIONS[PROJECT_REVISIONS.length-1].snapshot;
-        const lines=_diffRevisions(a,b);
-        const out=document.createElement('pre');out.className='rev-diff';
-        out.textContent=lines.length?lines.join('\n'):'(no differences detected)';
-        wrap.appendChild(out);
-      });
-      wrap.appendChild(diffBtn);
-    }
-  }
-  const saveBtn=document.createElement('button');saveBtn.className='btn btn-primary';saveBtn.textContent='Save current state as new revision';
-  saveBtn.style.marginTop='12px';
-  saveBtn.addEventListener('click',()=>{closeModal();newRevision();});
-  wrap.appendChild(saveBtn);
+  const wrap=revisionsEl(document,{revisions:PROJECT_REVISIONS,locale:SETTINGS.locale||'en-GB',
+    diffVsNow:rev=>_diffRevisions(rev.snapshot,_snapshotForRevision()),
+    diffLastTwo:()=>_diffRevisions(PROJECT_REVISIONS[PROJECT_REVISIONS.length-2].snapshot,PROJECT_REVISIONS[PROJECT_REVISIONS.length-1].snapshot),
+    onToggleBaseline:rev=>{const on=!rev.baseline;PROJECT_REVISIONS.forEach(r=>r.baseline=false);rev.baseline=on;autosave();closeModal();showRevisions();},
+    onRestore:rev=>{closeModal();restoreRevision(rev.id);},
+    onDelete:rev=>{PROJECT_REVISIONS=PROJECT_REVISIONS.filter(r=>r.id!==rev.id);autosave();closeModal();showRevisions();},
+    onNew:()=>{closeModal();newRevision();},
+  });
   showModalNode('Revisions',wrap,null);
 }
 
@@ -4526,120 +3269,24 @@ function showRevisions(){
 // rollout progress and inline status editing. The footer collects the
 // organization actions (bulk IPs, renaming, CSV/handover exports).
 function showInventory(){
-  const wrap=document.createElement('div');
-  wrap.style.cssText='font-family:inherit;font-size:13px';
   const devs=allDevices();
-  if(!devs.length){
-    wrap.textContent='Nothing placed yet. Add APs, cameras or switches first.';
-    showModalNode('Inventory',wrap,null);
-    return;
-  }
-  // Rollout progress pills.
-  const counts=deviceStatusCounts();
-  const prog=document.createElement('div');
-  prog.style.cssText='display:flex;gap:10px;flex-wrap:wrap;margin-bottom:10px;font-size:11px';
-  for(const s of DEVICE_STATUSES){
-    const m=DEVICE_STATUS_META[s];
-    const pill=document.createElement('span');
-    pill.style.cssText='display:flex;align-items:center;gap:5px';
-    pill.innerHTML=`<span style="width:9px;height:9px;border-radius:50%;background:${m.color}"></span>${m.label} <strong>${counts[s]}</strong>`;
-    prog.appendChild(pill);
-  }
-  const done=counts.live+counts.tested;
-  const pct=Math.round((done/devs.length)*100);
-  const pctEl=document.createElement('span');
-  pctEl.style.cssText='margin-left:auto;font-family:var(--font-mono);font-size:11px;opacity:.7';
-  pctEl.textContent=`${pct}% tested/live`;
-  prog.appendChild(pctEl);
-  wrap.appendChild(prog);
-  // Search box.
-  const search=document.createElement('input');
-  search.className='ep-in';search.type='text';search.placeholder='Filter by name, model, serial, IP, status…';
-  search.style.cssText='width:100%;margin-bottom:8px';
-  wrap.appendChild(search);
-  // Table.
-  const scroller=document.createElement('div');
-  scroller.style.cssText='max-height:46vh;overflow:auto;border:1px solid var(--ink-04);border-radius:3px';
-  const tbl=document.createElement('table');
-  tbl.style.cssText='width:100%;border-collapse:collapse;font-size:12px';
-  tbl.innerHTML=`<thead><tr style="position:sticky;top:0;background:var(--bg,inherit)">${
-    ['Floor','Type','Name','Model','Status','Serial','Asset','IP','Switch·Port']
-      .map(h=>`<th style="text-align:left;font-size:9px;letter-spacing:.12em;text-transform:uppercase;padding:6px 8px;border-bottom:1px solid var(--ink-04)">${h}</th>`).join('')
-  }</tr></thead>`;
-  const tbody=document.createElement('tbody');
-  tbl.appendChild(tbody);scroller.appendChild(tbl);wrap.appendChild(scroller);
-  const renderRows=()=>{
-    const q=(search.value||'').trim().toLowerCase();
-    tbody.innerHTML='';
-    let shown=0;
-    for(const entry of devs){
-      const {dev,type,floor,floorIdx}=entry;
-      const hay=[dev.name,dev.model,dev.serial,dev.assetTag,dev.firmware,dev.ip,dev.mac,dev.vlan,statusMeta(dev).label,floor.name].join(' ').toLowerCase();
-      if(q&&!hay.includes(q))continue;
-      shown++;
-      const sw=(floor.SWS||[]).find(s=>s.id===dev.swId);
-      const tr=document.createElement('tr');
-      tr.style.cssText='cursor:pointer';
-      const td=(html,mono)=>{const c=document.createElement('td');c.style.cssText=`padding:5px 8px;border-bottom:1px solid var(--ink-04)${mono?';font-family:\'Share Tech Mono\',monospace;font-size:10px':''}`;c.innerHTML=html;return c;};
-      tr.appendChild(td(esc(floor.name||`Floor ${floorIdx+1}`)));
-      tr.appendChild(td(type));
-      tr.appendChild(td(`<strong>${esc(dev.name||dev.id)}</strong>`));
-      tr.appendChild(td(esc(dev.model||'')));
-      // Inline status editor — the one field that changes during a rollout.
-      const stTd=td('');
-      const stSel=document.createElement('select');
-      stSel.className='ep-sel';stSel.style.cssText='font-size:11px;padding:2px 4px';
-      for(const s of DEVICE_STATUSES){
-        const o=document.createElement('option');o.value=s;o.textContent=DEVICE_STATUS_META[s].label;
-        if((dev.status||'planned')===s)o.selected=true;
-        stSel.appendChild(o);
-      }
-      stSel.style.color=statusMeta(dev).color;
-      stSel.addEventListener('click',e=>e.stopPropagation());
-      stSel.addEventListener('change',()=>{
-        snapshot();dev.status=stSel.value;stSel.style.color=statusMeta(dev).color;
-        render();renderList();autosave();
-      });
-      stTd.appendChild(stSel);tr.appendChild(stTd);
-      tr.appendChild(td(esc(dev.serial||'—'),true));
-      tr.appendChild(td(esc(dev.assetTag||'—'),true));
-      tr.appendChild(td(esc(dev.ip||'—'),true));
-      tr.appendChild(td(esc(sw?(sw.name||sw.id):'—')+(dev.port?` · ${esc(String(dev.port))}`:'')));
-      tr.addEventListener('click',()=>{
-        closeModal();
-        if(floorIdx!==curFloor)switchFloor(floorIdx);
-        setMode('sel');
-        const kind={AP:'ap',CAM:'cam',SW:'sw'}[type];
-        // The floor image loads async on a switch — give it a beat before zooming.
-        setTimeout(()=>sel(dev.id,kind,{zoom:true}),floorIdx!==curFloor?250:0);
-      });
-      tbody.appendChild(tr);
-    }
-    if(!shown){
-      const tr=document.createElement('tr');
-      tr.innerHTML=`<td colspan="9" style="padding:14px;text-align:center;opacity:.6">No matches.</td>`;
-      tbody.appendChild(tr);
-    }
-  };
-  renderRows();
-  search.addEventListener('input',renderRows);
-  // Footer: organization actions + exports.
-  const foot=document.createElement('div');
-  foot.style.cssText='display:flex;gap:6px;flex-wrap:wrap;margin-top:10px';
-  const mkBtn=(label,title,fn)=>{
-    const b=document.createElement('button');b.className='btn';b.textContent=label;b.title=title;
-    b.addEventListener('click',fn);foot.appendChild(b);
-  };
-  mkBtn('IP+ all','Fill every empty IP from its VLAN subnet',()=>{autoAssignIps();closeModal();showInventory();});
-  mkBtn('Auto-rename','Rename all devices to the convention in Settings → Organization',()=>{autoRenameDevices();closeModal();showInventory();});
-  mkBtn('⇣ Inventory CSV','Export this table as CSV',()=>doInventoryCsv());
-  mkBtn('⇣ IP plan CSV','One row per device with IP/VLAN/subnet',()=>doIpPlanCsv());
-  mkBtn('⇣ Port map CSV','One row per switch port',()=>doPortMapCsv());
-  const hb=document.createElement('button');hb.className='btn btn-primary';hb.textContent='⇩ Handover pack';
-  hb.title='Zip of the HTML summary + every CSV deliverable';
-  hb.addEventListener('click',()=>doHandoverPack());
-  foot.appendChild(hb);
-  wrap.appendChild(foot);
+  const wrap=inventoryEl(document,{devices:devs,statusMeta,
+    onStatus:(dev,st)=>{snapshot();dev.status=st;render();renderList();autosave();},
+    onOpen:({dev,type,floorIdx})=>{
+      closeModal();
+      if(floorIdx!==curFloor)switchFloor(floorIdx);
+      setMode('sel');
+      const kind={AP:'ap',CAM:'cam',SW:'sw'}[type];
+      // The floor image loads async on a switch — give it a beat before zooming.
+      setTimeout(()=>sel(dev.id,kind,{zoom:true}),floorIdx!==curFloor?250:0);
+    },
+    actions:{
+      ipAll:()=>{autoAssignIps();closeModal();showInventory();},
+      rename:()=>{autoRenameDevices();closeModal();showInventory();},
+      inventoryCsv:()=>doInventoryCsv(),ipPlanCsv:()=>doIpPlanCsv(),portMapCsv:()=>doPortMapCsv(),
+      handover:()=>doHandoverPack(),
+    }});
+  if(!devs.length){showModalNode('Inventory',wrap,null);return;}
   showModalNode('Inventory & rollout',wrap,null);
   document.getElementById('mdl').classList.add('wide-modal');
 }
@@ -4726,41 +3373,14 @@ function showPluginCatalogDialog(){
   });
 }
 
-function renderGrid(){
-  gridLayer.innerHTML='';if(!showGrid)return;
-  const w=mapImg.naturalWidth||1,h=mapImg.naturalHeight||1;
-  const g=mk('g');g.setAttribute('class','snap-grid');
-  for(let x=0;x<=w;x+=GRID_SZ){const l=mk('line');l.setAttribute('x1',x);l.setAttribute('y1',0);l.setAttribute('x2',x);l.setAttribute('y2',h);g.appendChild(l);}
-  for(let y=0;y<=h;y+=GRID_SZ){const l=mk('line');l.setAttribute('x1',0);l.setAttribute('y1',y);l.setAttribute('x2',w);l.setAttribute('y2',y);g.appendChild(l);}
-  gridLayer.appendChild(g);
-}
+function renderGrid(){renderGridLayer(gridLayer,_layerCtx);}
 
 function render(){_resetThemeCache();renderGrid();renderHeat();renderRoaming();renderOL();renderWalls();renderCables();renderSWs();renderAPs();renderCAMs();renderClients();renderDZs();renderChannelOverlap();renderAnnotations();renderSamples();renderAnnoPreview();renderRuler();updateCnt();updateApStickReadout();updateVlanLegend();}
 
 // Wireless clients: a dot per client with a dashed line to the AP it associates
 // to (strongest wall-aware signal), labelled with the RSSI — the RF→sim bridge
 // made visible. Clients are selectable; placement/edit/delete follow the usual flow.
-function renderClients(){
-  const layer=document.getElementById('client-layer');if(!layer)return;
-  layer.innerHTML='';
-  const w=mapImg.naturalWidth,h=mapImg.naturalHeight;if(!w||!h)return;
-  const aps=rfAps(F()),walls=WALLS();   // APs and WiFi routers
-  CLIENTS().forEach(cl=>{
-    if(!Number.isFinite(cl.fx)||!Number.isFinite(cl.fy))return;
-    const cx=cl.fx*w,cy=cl.fy*h;
-    const assoc=bestAp(cl,aps,walls,w,h,{model:SETTINGS.propagationModel,metersPerPx:(scaleM||100)/100});
-    const g=mk('g');g.setAttribute('class','client-grp');g.dataset.id=cl.id;g.style.pointerEvents='all';
-    if(assoc&&Number.isFinite(assoc.ap.fx)){
-      const ln=mk('line');ln.setAttribute('x1',cx);ln.setAttribute('y1',cy);ln.setAttribute('x2',assoc.ap.fx*w);ln.setAttribute('y2',assoc.ap.fy*h);ln.setAttribute('class','client-link');g.appendChild(ln);
-    }
-    const isSel=isSelected(cl.id,'client');
-    const dot=mk('circle');dot.setAttribute('cx',cx);dot.setAttribute('cy',cy);dot.setAttribute('r',8);dot.setAttribute('class','client-dot'+(isSel?' sel':''));g.appendChild(dot);
-    const lbl=mk('text');lbl.setAttribute('x',cx);lbl.setAttribute('y',cy-12);lbl.setAttribute('class','client-lbl');lbl.setAttribute('text-anchor','middle');
-    lbl.textContent=cl.name+(assoc?` · ${Math.round(assoc.dbm)} dBm`:' · no AP');g.appendChild(lbl);
-    g.addEventListener('pointerdown',e=>{e.stopPropagation();if(e.shiftKey&&mode==='sel'){toggleSelection(cl.id,'client');return;}sel(cl.id,'client');if(!cl.locked){const img=vpToImg(e.clientX,e.clientY);dragOffX=cl.fx*w-img.x;dragOffY=cl.fy*h-img.y;dragId=cl.id;dragType='client';}});
-    layer.appendChild(g);
-  });
-}
+function renderClients(){renderClientLayer(document.getElementById('client-layer'),_layerCtx);}
 function renderClientPanel(){
   const cl=CLIENTS().find(a=>a.id===selId);if(!cl)return;
   document.getElementById('rp-head').textContent='Edit Wireless Client';
@@ -4858,7 +3478,7 @@ function doResize(cx){
 // ═══ COVERAGE CALC ════════════════════════════════
 // Defers to the pure sampler in geometry.js so logic stays in one place.
 function sampleFloorCoverage(floor){
-  const w=mapImg.naturalWidth||1,h=mapImg.naturalHeight||1;
+  const {w,h}=floorDims(floor);
   return _sampleFloorCoverage(rfFloor(floor),w,h,_COV_OPTS);
 }
 // Wall-aware sampling is heavier than the old circle check, so coalesce calls
@@ -4973,22 +3593,6 @@ function _selectedDevice(){
 // Login/management details for a router/switch/AP/camera. Stored in the
 // project file only — stripped from Share links (see shareLink) and never
 // printed in reports. Shared markup so every device panel looks the same.
-const CRED_PROTOS=['https','http','ssh','telnet'];
-function credsBlock(dev){
-  const c=dev.creds||{};
-  const proto=c.proto||'https';
-  const protoOpts=CRED_PROTOS.map(p=>`<option value="${p}"${proto===p?' selected':''}>${p.toUpperCase()}</option>`).join('');
-  return `
-    <div class="ep-section">Credentials</div>
-    <div class="ep-row"><label class="ep-lbl">Protocol</label><select class="ep-sel" id="cred-proto" data-input-action="upd-creds">${protoOpts}</select></div>
-    <div class="ep-row"><label class="ep-lbl">Host / URL</label><input class="ep-in ep-mono" id="cred-host" value="${esc(c.host||'')}" data-input-action="upd-creds" placeholder="defaults to IP (${esc(dev.ip||'—')})"/></div>
-    <div class="ep-row"><label class="ep-lbl">Port</label><input class="ep-in ep-mono" id="cred-port" value="${esc(c.port||'')}" data-input-action="upd-creds" placeholder="443"/></div>
-    <div class="ep-row"><label class="ep-lbl">Username</label><input class="ep-in" id="cred-user" value="${esc(c.user||'')}" data-input-action="upd-creds" autocomplete="off"/></div>
-    <div class="ep-row"><label class="ep-lbl">Password</label><input class="ep-in ep-mono" id="cred-pass" type="password" value="${esc(c.pass||'')}" data-input-action="upd-creds" autocomplete="new-password"/><button class="btn" style="flex:0 0 auto;padding:4px 8px" data-action="toggle-pass" title="Show / hide password">👁</button></div>
-    <div class="ep-row"><label class="ep-lbl">SSH key</label><input class="ep-in ep-mono" id="cred-key" value="${esc(c.key||'')}" data-input-action="upd-creds" placeholder="~/.ssh/id_ed25519 (optional)"/></div>
-    <div class="ep-row"><a href="#" data-action="open-mgmt" style="font-size:11px">↗ Open management UI</a></div>
-    <div class="ep-row" style="font-size:10px;opacity:.55">Saved in the project file only — excluded from Share links and PDF/HTML reports.</div>`;
-}
 function updCreds(){
   const d=_selectedDevice();if(!d)return;
   snapshotSoon();
@@ -5238,6 +3842,21 @@ async function _rehydrateImages(){
   await preloadDeviceImages();
 }
 
+// Live values the inspector panels (./src/panels.js) need from the app.
+const _panelCtx={
+  get switches(){return SWS();},
+  get floors(){return FLOORS;},
+  get mPerPx(){return scaleM/100;},
+  get storageCodec(){return SETTINGS.storageCodec;},
+  deviceImageBlock:(item,type)=>deviceImageBlock(item,type),
+  devSwitchPorts:dev=>devSwitchPorts(dev),
+  airtimeLabel:ap=>_airtimeLabel(ap),
+  radiusMaxPx:(b,m)=>radiusMaxPx(b,m),
+  vlanDatalist:()=>vlanDatalist(),
+  analyze:sw=>analyzeSwitch(sw),
+  camStorageLabel:c=>_camStorageLabel(c),
+  wallPx:w=>_wallPx(w),
+};
 function renderRP(){
   const rph=document.getElementById('rp-head');
   if(!selId){rph.textContent='Properties';rpBody.innerHTML='<div class="rp-empty"><div class="rp-empty-icon">◎</div><div class="rp-empty-txt">Select an item<br>to edit properties</div></div>';return;}
@@ -5257,79 +3876,10 @@ function _camStorageLabel(c){
   return `${br} Mbps → ${gb>=1000?(gb/1000).toFixed(2)+' TB':Math.round(gb)+' GB'} / ${days} d`;
 }
 // Building-wide recording storage at the current retention/codec settings.
-function totalStorageGb(){
-  const days=parseInt(SETTINGS.retentionDays,10)||30;
-  let gb=0;
-  for(const f of FLOORS)for(const c of (f.CAMS||[]))
-    gb+=storageGb(cameraBitrateMbps(c.resolution||'4K',SETTINGS.storageCodec,c.bitrateMbps),days);
-  return gb;
-}
 function renderCAMPanel(){
   const c=CAMS().find(x=>x.id===selId);if(!c)return;
   document.getElementById('rp-head').textContent='Edit Camera';
-  const mOpts=buildGroupedOptions(CAM_MODEL_GROUPS,c.model||'G4 Pro');
-  const realR=Math.round((c.range||80)*(scaleM/100));
-  const swOptions=SWS().map(sw=>`<option value="${esc(sw.id)}"${sw.id===c.swId?' selected':''}>${esc(sw.name)} · ${esc(sw.model||'')}</option>`).join('');
-  rpBody.innerHTML=`
-    ${deviceImageBlock(c,'cam')}
-    <div class="ep-section">Identity</div>
-    <div class="ep-row"><label class="ep-lbl">Name</label><input class="ep-in" id="cam-name" value="${esc(c.name)}" data-input-action="upd-cam"/></div>
-    <div class="ep-row"><label class="ep-lbl">Model</label><select class="ep-sel" id="cam-model" data-input-action="upd-cam">${mOpts}</select></div>
-    <div class="ep-row"><label class="ep-lbl">Resolution</label>
-      <select class="ep-sel" id="cam-res" data-input-action="upd-cam">
-        ${['8MP','4K','5MP','4MP','2MP','12MP','1080p','720p'].map(r=>`<option${c.resolution===r?' selected':''}>${r}</option>`).join('')}
-      </select>
-    </div>
-    <div class="ep-section">Lens</div>
-    <div class="ep-row ep-slider-row">
-      <label class="ep-lbl">Field of View</label>
-      <input class="ep-rng" id="cam-fov" type="range" min="10" max="360" value="${Math.round(c.fov||80)}" data-input-action="upd-cam-fov"/>
-      <span class="ep-rng-val" id="cam-fov-v">${Math.round(c.fov||80)}°</span>
-    </div>
-    <div class="ep-row ep-slider-row">
-      <label class="ep-lbl">View Range</label>
-      <input class="ep-rng" id="cam-range" type="range" min="20" max="${radiusMaxPx(400,150)}" value="${Math.round(c.range||80)}" data-input-action="upd-cam-range"/>
-      <span class="ep-rng-val" id="cam-range-v">${realR}m</span>
-    </div>
-    <div class="ep-row ep-slider-row">
-      <label class="ep-lbl">Heading</label>
-      <input class="ep-rng" id="cam-heading" type="range" min="0" max="359" value="${Math.round(c.heading||0)}" data-input-action="upd-cam-heading"/>
-      <span class="ep-rng-val" id="cam-heading-v">${Math.round(c.heading||0)}°</span>
-    </div>
-    <div class="ep-section">DORI (IEC 62676-4)</div>
-    <div class="ep-row" style="font-family:'Share Tech Mono';font-size:11px;line-height:1.7;display:block">
-      ${doriDistancesM(c.resolution||'4K',Math.max(10,Math.min(360,c.fov||80))).map(b=>
-        `<span style="color:${b.color}">●</span> ${esc(b.label)} (${b.ppm} px/m) ≤ ${b.m>=100?Math.round(b.m):b.m.toFixed(1)} m<br>`).join('')}
-    </div>
-    <div class="ep-section">Recording</div>
-    <div class="ep-row"><label class="ep-lbl">Bitrate (Mbps)</label><input class="ep-in ep-mono" id="cam-bitrate" type="number" min="0" step="0.5" value="${c.bitrateMbps||''}" data-input-action="upd-cam" placeholder="auto: ${cameraBitrateMbps(c.resolution||'4K',SETTINGS.storageCodec)}"/></div>
-    <div class="ep-row"><label class="ep-lbl">Storage</label><span class="ep-rng-val" id="cam-storage-v">${_camStorageLabel(c)}</span></div>
-    <div class="ep-section">Color</div>
-    <div class="color-swatches">
-      ${AP_COLORS.map(col=>{
-        const isSel=(c.color||'')===col.value;
-        return `<button class="color-swatch${col.value?'':' color-default'}${isSel?' on':''}" ${col.value?`style="background:${col.value}"`:''} data-action="set-cam-color" data-arg="${esc(col.value)}" title="${esc(col.label)}" aria-label="${esc(col.label)}"></button>`;
-      }).join('')}
-    </div>
-    <div class="ep-section">Network / PoE</div>
-    <div class="ep-row"><label class="ep-lbl">IP Address</label><input class="ep-in ep-mono" id="cam-ip" value="${esc(c.ip||'')}" data-input-action="upd-cam" placeholder="192.168.1.x"/><button class="btn" style="flex:0 0 auto;padding:4px 8px" data-action="suggest-ip-cam" title="Suggest next free IP in this device's VLAN subnet">IP+</button></div>
-    <div class="ep-row"><label class="ep-lbl">MAC Address</label><input class="ep-in ep-mono" id="cam-mac" value="${esc(c.mac||'')}" data-input-action="upd-cam" placeholder="aa:bb:cc:dd:ee:ff"/></div>
-    <div class="ep-row"><label class="ep-lbl">Switch</label>
-      <select class="ep-sel" id="cam-sw" data-input-action="upd-cam">
-        <option value=""${!c.swId?' selected':''}>— None —</option>${swOptions}
-      </select>
-    </div>
-    <div class="ep-row"><label class="ep-lbl">Switch Port</label>${c.swId
-      ? portControl(devSwitchPorts(c),c.port,'id="cam-port" data-input-action="upd-cam"')
-      : `<input class="ep-in" id="cam-port" value="${esc(c.port||'')}" data-input-action="upd-cam" placeholder="Assign a switch first" disabled/>`}</div>
-    <div class="ep-row"><label class="ep-lbl">VLAN</label><input class="ep-in" id="cam-vlan" list="vlan-list" value="${esc(c.vlan||'')}" data-input-action="upd-cam" placeholder="20"/>${vlanDatalist()}</div>
-    ${inventoryBlock(c,'cam','upd-cam')}
-    <div class="ep-section">Options</div>
-    <label class="ep-check"><input type="checkbox" ${c.locked?'checked':''} data-change-action="toggle-lock"/><span>Lock position</span></label>
-    ${credsBlock(c)}
-    <div class="ep-section">Notes</div>
-    <div class="ep-row"><textarea class="ep-txt" id="cam-notes" rows="3" data-input-action="upd-cam" placeholder="Mount type, lens info, install notes…">${esc(c.notes||'')}</textarea></div>
-    <button class="btn ep-del" data-action="ask-del">✕ Delete Camera</button>`;
+  rpBody.innerHTML=camPanelHtml(c,_panelCtx);
   _wireDeviceImg();
 }
 function updCam(){
@@ -5370,31 +3920,7 @@ function setCamColor(col){const c=CAMS().find(x=>x.id===selId);if(!c)return;snap
 function renderWallPanel(){
   const w=WALLS().find(x=>x.id===selId);if(!w)return;
   document.getElementById('rp-head').textContent='Edit Wall';
-  const mat=WALL_MATERIALS[w.material]||WALL_MATERIALS.drywall;
-  const px=_wallPx(w);
-  const lengthPx=Math.hypot(px.x2-px.x1,px.y2-px.y1);
-  const lengthM=(lengthPx*(scaleM/100)).toFixed(1);
-  const opts=WALL_MATERIAL_KEYS.map(k=>{
-    const m=WALL_MATERIALS[k];
-    return `<option value="${k}"${k===w.material?' selected':''}>${esc(m.label)} · ${m.loss} dB</option>`;
-  }).join('');
-  rpBody.innerHTML=`
-    <div class="ep-section">Material</div>
-    <div class="ep-row">
-      <select class="ep-sel" id="wall-mat" data-change-action="upd-wall">${opts}</select>
-    </div>
-    <div class="ep-section">Info</div>
-    <div class="ep-row">
-      <div class="ep-lbl">Length</div>
-      <div class="ep-readout">${lengthM} m</div>
-    </div>
-    <div class="ep-row">
-      <div class="ep-lbl">Signal Loss</div>
-      <div class="ep-readout">${mat.loss} dB</div>
-    </div>
-    <div class="ep-section">Notes</div>
-    <div class="ep-row"><textarea class="ep-txt" id="wall-notes" rows="3" data-input-action="upd-wall-notes" placeholder="Construction detail, partial-height, glazing…">${esc(w.notes||'')}</textarea></div>
-    <button class="btn ep-del" data-action="ask-del">✕ Delete Wall</button>`;
+  rpBody.innerHTML=wallPanelHtml(w,_panelCtx);
 }
 
 function updWall(){
@@ -5409,179 +3935,20 @@ function updWall(){
 function renderAPPanel(){
   const ap=APS().find(a=>a.id===selId);if(!ap)return;
   document.getElementById('rp-head').textContent='Edit AP';
-  const mOpts=buildGroupedOptions(AP_MODEL_GROUPS,ap.model||'U6 Pro');
-  const realR=Math.round(ap.r*(scaleM/100));
-  rpBody.innerHTML=`
-    ${deviceImageBlock(ap,'ap')}
-    <div class="ep-section">Identity</div>
-    <div class="ep-row"><label class="ep-lbl">Name</label><input class="ep-in" id="ep-name" value="${esc(ap.name)}" data-input-action="upd-ap"/></div>
-    <div class="ep-row"><label class="ep-lbl">AP Model</label><select class="ep-sel" id="ep-model" data-input-action="upd-ap">${mOpts}</select></div>
-    <div class="ep-row"><label class="ep-lbl">Frequency</label>
-      <select class="ep-sel" id="ep-freq" data-input-action="upd-ap">
-        <option ${ap.freq==='2.4 / 5 GHz'?'selected':''}>2.4 / 5 GHz</option>
-        <option ${ap.freq==='5 GHz only'?'selected':''}>5 GHz only</option>
-        <option ${ap.freq==='2.4 GHz only'?'selected':''}>2.4 GHz only</option>
-        <option ${ap.freq==='6 GHz (WiFi 6E)'?'selected':''}>6 GHz (WiFi 6E)</option>
-      </select></div>
-    <div class="ep-section">Signal</div>
-    <div class="sig-chips">
-      <div class="sig-chip ${ap.sig==='strong'?'on':''}" data-action="set-sig" data-arg="strong">Strong</div>
-      <div class="sig-chip ${ap.sig==='medium'?'on':''}" data-action="set-sig" data-arg="medium">Medium</div>
-      <div class="sig-chip ${ap.sig==='weak'?'on':''}" data-action="set-sig" data-arg="weak">Weak</div>
-    </div>
-    <div class="ep-section">Color</div>
-    <div class="color-swatches">
-      ${AP_COLORS.map(c=>{
-        const isSel=(ap.color||'')===c.value;
-        const swatchStyle=c.value?`style="background:${c.value}"`:'class-default';
-        return `<button class="color-swatch${c.value?'':' color-default'}${isSel?' on':''}" ${c.value?`style="background:${c.value}"`:''} data-action="set-color" data-arg="${esc(c.value)}" title="${esc(c.label)}" aria-label="${esc(c.label)}"></button>`;
-      }).join('')}
-    </div>
-    <div class="ep-section">Coverage Range</div>
-    <div class="ep-row ep-slider-row">
-      <input class="ep-rng" id="ep-r" type="range" min="15" max="${radiusMaxPx(500,100)}" value="${Math.round(ap.r)}" data-input-action="upd-ap-r"/>
-      <span class="ep-rng-val" id="ep-rv">${realR}m</span>
-    </div>
-    <div class="ep-section">Antenna Pattern</div>
-    <div class="ep-row"><label class="ep-lbl">Pattern</label>
-      <select class="ep-sel" id="ep-pattern" data-input-action="upd-ap">
-        ${AP_PATTERN_KEYS.map(k=>`<option value="${k}"${(ap.pattern||'omni')===k?' selected':''}>${esc(AP_PATTERNS[k].label)}</option>`).join('')}
-      </select>
-    </div>
-    <div class="ep-row ep-slider-row" id="ep-heading-row" style="${(ap.pattern&&ap.pattern!=='omni'&&ap.pattern!=='ceiling')?'':'display:none'}">
-      <label class="ep-lbl">Heading</label>
-      <input class="ep-rng" id="ep-heading" type="range" min="0" max="359" value="${Math.round(ap.heading||0)}" data-input-action="upd-ap-heading"/>
-      <span class="ep-rng-val" id="ep-heading-v">${Math.round(ap.heading||0)}°</span>
-    </div>
-    <div class="ep-section">Radio</div>
-    <div class="ep-row"><label class="ep-lbl">Channel</label><input class="ep-in ep-mono" id="ep-channel" value="${esc(ap.channel||'auto')}" data-input-action="upd-ap" placeholder="auto · 6 · 36 · 149 …"/></div>
-    <div class="ep-row"><label class="ep-lbl">Width (MHz)</label>
-      <select class="ep-sel" id="ep-chanwidth" data-input-action="upd-ap">
-        ${CHANNEL_WIDTHS.map(cw=>`<option value="${cw}"${(ap.chanWidth||20)===cw?' selected':''}>${cw} MHz${cw===320?' (WiFi 7)':''}</option>`).join('')}
-      </select></div>
-    <div class="ep-row"><label class="ep-lbl">TX Power</label><input class="ep-in ep-mono" id="ep-txpower" value="${esc(ap.txPower||'auto')}" data-input-action="upd-ap" placeholder="auto · low · medium · high · 20 dBm"/></div>
-    <div class="ep-section">Capacity</div>
-    <div class="ep-row"><label class="ep-lbl">Clients</label><input class="ep-in ep-mono" id="ep-clients" type="number" min="0" max="500" value="${ap.capacityClients??25}" data-input-action="upd-ap" title="Expected concurrent clients on this AP"/></div>
-    <div class="ep-row"><label class="ep-lbl">Airtime est.</label><span class="ep-rng-val" id="ep-airtime-v">${_airtimeLabel(ap)}</span></div>
-    <div class="ep-section">Network Info</div>
-    <div class="ep-row"><label class="ep-lbl">IP Address</label><input class="ep-in" id="ep-ip" value="${esc(ap.ip||'')}" data-input-action="upd-ap" placeholder="192.168.1.x"/><button class="btn" style="flex:0 0 auto;padding:4px 8px" data-action="suggest-ip-ap" title="Suggest next free IP in this device's VLAN subnet">IP+</button></div>
-    <div class="ep-row"><label class="ep-lbl">MAC Address</label><input class="ep-in ep-mono" id="ep-mac" value="${esc(ap.mac||'')}" data-input-action="upd-ap" placeholder="aa:bb:cc:dd:ee:ff"/></div>
-    <div class="ep-row"><label class="ep-lbl">Switch</label>
-      <select class="ep-sel" id="ep-sw" data-input-action="upd-ap">
-        <option value=""${!ap.swId?' selected':''}>— None —</option>
-        ${SWS().map(sw=>`<option value="${esc(sw.id)}"${sw.id===ap.swId?' selected':''}>${esc(sw.name)} · ${esc(sw.model||'')}</option>`).join('')}
-      </select>
-    </div>
-    <div class="ep-row"><label class="ep-lbl">Switch Port</label>${ap.swId
-      ? portControl(devSwitchPorts(ap),ap.port,'id="ep-port" data-input-action="upd-ap"')
-      : `<input class="ep-in" id="ep-port" value="${esc(ap.port||'')}" data-input-action="upd-ap" placeholder="Assign a switch first" disabled/>`}</div>
-    <div class="ep-row"><label class="ep-lbl">VLAN</label><input class="ep-in" id="ep-vlan" list="vlan-list" value="${esc(ap.vlan||'')}" data-input-action="upd-ap" placeholder="10"/>${vlanDatalist()}</div>
-    ${inventoryBlock(ap,'ep','upd-ap')}
-    <div class="ep-section">Options</div>
-    <label class="ep-check"><input type="checkbox" ${ap.locked?'checked':''} data-change-action="toggle-lock"/><span>Lock position</span></label>
-    <div class="ep-btn-row">
-      <button class="btn" data-action="duplicate">⧉ Duplicate</button>
-    </div>
-    ${credsBlock(ap)}
-    <div class="ep-section">Notes</div>
-    <div class="ep-row"><textarea class="ep-txt" id="ep-notes" rows="4" data-input-action="upd-ap" placeholder="Cable run, switch port, install notes...">${esc(ap.notes||'')}</textarea></div>
-    <button class="btn ep-del" data-action="ask-del">✕ Delete AP</button>`;
+  rpBody.innerHTML=apPanelHtml(ap,_panelCtx);
   _wireDeviceImg();
 }
 
 function renderDZPanel(){
   const dz=DZS().find(a=>a.id===selId);if(!dz)return;
   document.getElementById('rp-head').textContent='Edit Dead Zone';
-  const realR=Math.round(dz.r*(scaleM/100));
-  rpBody.innerHTML=`
-    <div class="ep-section">Label</div>
-    <div class="ep-row"><input class="ep-in" id="dz-lbl" value="${esc(dz.label)}" data-input-action="upd-dz"/></div>
-    <div class="ep-section">Radius</div>
-    <div class="ep-row ep-slider-row">
-      <input class="ep-rng" id="dz-r" type="range" min="10" max="${radiusMaxPx(300,60)}" value="${Math.round(dz.r)}" data-input-action="upd-dz-r"/>
-      <span class="ep-rng-val" id="dz-rv">${realR}m</span>
-    </div>
-    <label class="ep-check"><input type="checkbox" ${dz.locked?'checked':''} data-change-action="toggle-lock"/><span>Lock position</span></label>
-    <div class="ep-section">Notes</div>
-    <div class="ep-row"><textarea class="ep-txt" id="dz-notes" rows="3" data-input-action="upd-dz" placeholder="Why this area is a dead zone, remediation plan…">${esc(dz.notes||'')}</textarea></div>
-    <button class="btn ep-del" data-action="ask-del">✕ Delete</button>`;
+  rpBody.innerHTML=dzPanelHtml(dz,_panelCtx);
 }
 
 function renderSWPanel(){
   const sw=SWS().find(a=>a.id===selId);if(!sw)return;
-  // Built-in WiFi (only for models that have a radio — ./src/routerWifi.js).
-  const wifiSpec=routerWifiSpec(sw.model);
-  const wifiRow=wifiSpec?`<label class="ep-check"><input type="checkbox" id="sw-wifi" ${sw.wifi===false?'':'checked'} data-input-action="upd-sw"/><span>Built-in WiFi — ${esc(wifiSpec.std)}, ${esc(wifiSpec.freq)}, about ${esc(wifiSpec.rangeM)} m (coverage, and wireless clients can join it)</span></label>`:'';
   document.getElementById('rp-head').textContent='Edit Switch/Router';
-  const mOpts=buildGroupedOptions(SW_MODEL_GROUPS,sw.model||'USW-24-PoE');
-  // If the stored model isn't in our known list, treat it as a custom override
-  const isCustom=!SW_MODELS.includes(sw.model||'');
-  const a=analyzeSwitch(sw);
-  const derivedPorts=swPortCount(sw.model);
-  // Any other switch in the building is a candidate uplink target (grouped by
-  // floor so risers to another floor are easy to pick).
-  const uplinkOpts=FLOORS.map((f,i)=>{
-    const opts=(f.SWS||[]).filter(s=>s.id!==sw.id)
-      .map(s=>`<option value="${esc(s.id)}"${s.id===sw.uplinkId?' selected':''}>${esc(s.name)} · ${esc(s.model||'')}</option>`).join('');
-    return opts?`<optgroup label="${esc(f.name||('Floor '+(i+1)))}">${opts}</optgroup>`:'';
-  }).join('');
-  const uplink2Opts=FLOORS.map((f,i)=>{
-    const opts=(f.SWS||[]).filter(s=>s.id!==sw.id)
-      .map(s=>`<option value="${esc(s.id)}"${s.id===sw.uplink2Id?' selected':''}>${esc(s.name)} · ${esc(s.model||'')}</option>`).join('');
-    return opts?`<optgroup label="${esc(f.name||('Floor '+(i+1)))}">${opts}</optgroup>`:'';
-  }).join('');
-  const statusColor=a.overBudget||a.overPorts||a.classFails.length?'#c0382b':'#1e7d3c';
-  const portTxt=a.ports!=null?`${a.used}/${a.ports}`:`${a.used}`;
-  const statusLine=`${a.draw.toFixed(0)} W${a.budget>0?` / ${a.budget} W${a.headroom!=null?` (${a.headroom}% free)`:''}`:''} · ${portTxt} ports${a.swCls?` · ${a.swCls.toUpperCase()}`:' · no PoE'}`;
-  rpBody.innerHTML=`
-    ${deviceImageBlock(sw,'sw')}
-    <div class="ep-section">Identity</div>
-    <div class="ep-row"><label class="ep-lbl">Name</label><input class="ep-in" id="sw-name" value="${esc(sw.name)}" data-input-action="upd-sw"/></div>
-    <div class="ep-row"><label class="ep-lbl">Model</label><select class="ep-sel" id="sw-model" data-input-action="upd-sw">${mOpts}</select></div>
-    <div class="ep-row" id="sw-custom-row" style="${isCustom?'':'display:none'}">
-      <label class="ep-lbl">Custom Model Name</label>
-      <input class="ep-in" id="sw-model-custom" value="${isCustom?esc(sw.model||''):''}" data-input-action="upd-sw" placeholder="Enter model name"/>
-    </div>
-    <div class="ep-row"><label class="ep-lbl">IP Address</label><input class="ep-in ep-mono" id="sw-ip" value="${esc(sw.ip||'')}" data-input-action="upd-sw" placeholder="192.168.1.1"/></div>
-    <div class="ep-row"><label class="ep-lbl">MAC Address</label><input class="ep-in ep-mono" id="sw-mac" value="${esc(sw.mac||'')}" data-input-action="upd-sw" placeholder="aa:bb:cc:dd:ee:ff"/></div>
-    <div class="ep-row"><label class="ep-lbl">PoE Budget (W)</label><input class="ep-in ep-mono" id="sw-poe" type="number" min="0" value="${sw.poeBudget||0}" data-input-action="upd-sw" placeholder="0 for non-PoE"/></div>
-    <div class="ep-row"><label class="ep-lbl">Port Count</label><input class="ep-in ep-mono" id="sw-ports" type="number" min="0" value="${sw.ports||''}" data-input-action="upd-sw" placeholder="${derivedPorts!=null?derivedPorts:'auto'}"/></div>
-    <div class="ep-row"><label class="ep-lbl">Uplink To</label>
-      <select class="ep-sel" id="sw-uplink" data-input-action="upd-sw">
-        <option value=""${!sw.uplinkId?' selected':''}>— None (root) —</option>${uplinkOpts}
-      </select>
-    </div>
-    <div class="ep-row"><label class="ep-lbl">Uplink Type</label>
-      <select class="ep-sel" id="sw-uplinkmode" data-input-action="upd-sw">
-        <option value="trunk"${sw.uplinkMode!=='routed'?' selected':''}>Trunk (L2)</option>
-        <option value="routed"${sw.uplinkMode==='routed'?' selected':''}>Routed (L3 /30)</option>
-      </select>
-    </div>
-    <div class="ep-row"><label class="ep-lbl">Redundant uplink</label>
-      <select class="ep-sel" id="sw-uplink2" data-input-action="upd-sw" title="A second trunk to another switch. Spanning tree blocks one link and fails over to the other.">
-        <option value=""${!sw.uplink2Id?' selected':''}>— None —</option>${uplink2Opts}
-      </select>
-    </div>
-    <div class="ep-row"><label class="ep-lbl">STP priority</label><input class="ep-in ep-mono" id="sw-stp" type="number" min="0" max="61440" step="4096" value="${Number.isFinite(sw.stpPriority)?sw.stpPriority:''}" data-input-action="upd-sw" placeholder="32768 (lowest becomes root)"/></div>
-    <label class="ep-check"><input type="checkbox" id="sw-l3" ${sw.role==='l3'?'checked':''} data-input-action="upd-sw"/><span>Layer 3 — routes between VLANs (set a gateway IP per VLAN in Project Settings)</span></label>
-    ${wifiRow}
-    <div class="ep-row"><button class="btn" data-action="open-console" style="width:100%">⌨ CLI Console (IOS / RouterOS)</button></div>
-    <div class="ep-row" style="font-family:'Share Tech Mono';font-size:11px;color:${statusColor};opacity:.9">${esc(statusLine)}</div>
-    <div class="ep-section">Connected Devices (${a.used})</div>
-    ${a.clients.length
-      ? a.clients.map(c=>`<div class="ep-row"><label class="ep-lbl">${c.type==='AP'?'●':'◉'} ${esc(c.name)}</label>${portControl(a.ports,c.port,`data-input-action="upd-sw-port" data-dev-id="${esc(c.dev.id)}" data-dev-type="${c.type==='AP'?'ap':'cam'}"`)}</div>`).join('')
-      : `<div class="ep-row" style="opacity:.6;font-size:11px">None assigned. Set this switch on an AP/camera, or use ⚯ Auto-cable.</div>`}
-    <div class="ep-section">Icon Size</div>
-    <div class="ep-row ep-slider-row">
-      <input class="ep-rng" id="sw-size" type="range" min="10" max="80" value="${sw.size||22}" data-input-action="upd-sw-size"/>
-      <span class="ep-rng-val" id="sw-size-v">${sw.size||22}px</span>
-    </div>
-    ${inventoryBlock(sw,'sw','upd-sw')}
-    ${credsBlock(sw)}
-    <div class="ep-section">Notes</div>
-    <div class="ep-row"><textarea class="ep-txt" id="sw-notes" rows="3" data-input-action="upd-sw" placeholder="Location, uplink, config notes...">${esc(sw.notes||'')}</textarea></div>
-    <label class="ep-check"><input type="checkbox" ${sw.locked?'checked':''} data-change-action="toggle-lock"/><span>Lock position</span></label>
-    <button class="btn ep-del" data-action="ask-del">✕ Delete</button>`;
+  rpBody.innerHTML=swPanelHtml(sw,_panelCtx);
   _wireDeviceImg();
 }
 
@@ -6736,238 +5103,44 @@ document.addEventListener('keydown',e=>{
 });
 
 // ═══ SETTINGS PANEL ═══════════════════════════════
-// Per-project branding/locale shown in HTML & PDF exports. Built as DOM nodes
-// (no innerHTML) so user-supplied strings are inert.
-// Lay the flat settings form out like System Settings: section list on the
-// left, one grouped card per section on the right. All sections stay in the
-// page (the list scrolls to them) so nothing is hidden from find/keyboard.
-function _paneSettings(form){
-  const groups=[];let cur=null;
-  for(const k of [...form.children]){
-    if(k.classList.contains('settings-heading')){cur={title:k.textContent,nodes:[]};groups.push(cur);}
-    else{if(!cur){cur={title:'General',nodes:[]};groups.push(cur);}cur.nodes.push(k);}
-  }
-  if(groups.length<2)return;
-  const nav=document.createElement('div');nav.className='settings-nav';
-  const panes=document.createElement('div');panes.className='settings-panes';
-  const items=[];
-  groups.forEach((g,i)=>{
-    const pane=document.createElement('section');pane.className='settings-pane';
-    const h=document.createElement('div');h.className='settings-pane-title';h.textContent=g.title;
-    const card=document.createElement('div');card.className='settings-card';
-    card.append(...g.nodes);
-    pane.append(h,card);panes.appendChild(pane);
-    const b=document.createElement('button');b.type='button';b.className='settings-nav-item'+(i===0?' active':'');b.textContent=g.title;
-    b.addEventListener('click',()=>{
-      items.forEach(x=>x.classList.toggle('active',x===b));
-      pane.scrollIntoView({block:'start',behavior:'smooth'});
-    });
-    items.push(b);nav.appendChild(b);
-  });
-  form.replaceChildren(nav,panes);
-  form.classList.add('paned');
-}
+// The form lives in ./src/settingsUI.js; this applies what it reads back.
 function showSettings(){
-  const wrap=document.createElement('div');wrap.className='settings-form';
-
-  // ── Helpers for compact rows ──
-  const inputs={};
-  const addText=(key,label,placeholder)=>{
-    const row=document.createElement('div');row.className='ep-row';
-    const lbl=document.createElement('label');lbl.className='ep-lbl';lbl.textContent=label;
-    const inp=document.createElement('input');inp.className='ep-in';inp.type='text';
-    inp.value=SETTINGS[key]??'';inp.placeholder=placeholder||'';
-    row.appendChild(lbl);row.appendChild(inp);wrap.appendChild(row);
-    inputs[key]=inp;
-  };
-  const addNumber=(key,label,min,max,step)=>{
-    const row=document.createElement('div');row.className='ep-row';
-    const lbl=document.createElement('label');lbl.className='ep-lbl';lbl.textContent=label;
-    const inp=document.createElement('input');inp.className='ep-in';inp.type='number';
-    if(min!==undefined)inp.min=min;if(max!==undefined)inp.max=max;
-    if(step!==undefined)inp.step=step;
-    inp.value=String(SETTINGS[key]??'');
-    row.appendChild(lbl);row.appendChild(inp);wrap.appendChild(row);
-    inputs[key]=inp;
-  };
-  const addSelect=(key,label,options)=>{
-    const row=document.createElement('div');row.className='ep-row';
-    const lbl=document.createElement('label');lbl.className='ep-lbl';lbl.textContent=label;
-    const sel=document.createElement('select');sel.className='ep-in';
-    for(const o of options){
-      const op=document.createElement('option');op.value=o.value;op.textContent=o.label;
-      if(String(SETTINGS[key])===String(o.value))op.selected=true;
-      sel.appendChild(op);
-    }
-    row.appendChild(lbl);row.appendChild(sel);wrap.appendChild(row);
-    inputs[key]=sel;
-  };
-  const addCheck=(key,label)=>{
-    const row=document.createElement('div');row.className='ep-row';
-    const lbl=document.createElement('label');lbl.className='ep-lbl';lbl.textContent=label;
-    const inp=document.createElement('input');inp.type='checkbox';
-    inp.checked=!!SETTINGS[key];
-    row.appendChild(lbl);row.appendChild(inp);wrap.appendChild(row);
-    inputs[key]=inp;
-  };
-  const addHeading=(text)=>{
-    const h=document.createElement('div');h.className='settings-heading';h.textContent=text;
-    wrap.appendChild(h);
-  };
-
-  // ── Branding ──
-  addHeading('Branding');
-  addText('company','Company / Brand','Plexus');
-  addText('tagline','Tagline','Network Planning');
-  addText('contact','Contact','hello@plexus.example');
-  addText('metaLine','Cover meta line','optional, shown above the logo on exports');
-  addText('reportTitle','Report title','Network Audit Report');
-  addText('footerLine','Footer line','optional, shown in HTML/PDF report footer');
-  addText('logoDataUrl','Brand logo (data URL)','data:image/png;base64,...');
-  addText('locale','Date locale','en-GB');
-  addSelect('language','UI language',availableLangs().map(c=>({value:c,label:c})));
-
-  // ── Coverage display ──
-  addHeading('Coverage display');
-  const opacityRow=document.createElement('div');opacityRow.className='ep-row ep-slider-row';
-  const opacityLbl=document.createElement('label');opacityLbl.className='ep-lbl';opacityLbl.textContent='Coverage opacity';
-  const opacityIn=document.createElement('input');
-  opacityIn.type='range';opacityIn.min='20';opacityIn.max='100';opacityIn.step='5';
-  opacityIn.className='ep-rng';
-  const initialOpacity=Math.max(20,Math.min(100,Math.round(SETTINGS.coverageOpacity??100)));
-  opacityIn.value=String(initialOpacity);
-  const opacityVal=document.createElement('span');opacityVal.className='ep-rng-val';opacityVal.textContent=initialOpacity+'%';
-  opacityRow.appendChild(opacityLbl);opacityRow.appendChild(opacityIn);opacityRow.appendChild(opacityVal);
-  wrap.appendChild(opacityRow);
   const savedOpacity=SETTINGS.coverageOpacity??100;
-  opacityIn.addEventListener('input',()=>{
-    const v=parseInt(opacityIn.value,10)||100;
-    opacityVal.textContent=v+'%';
-    SETTINGS.coverageOpacity=v;
-    render();
-  });
-  addSelect('heatmapMode','Heatmap mode',HEATMAP_MODE_KEYS.map(k=>({value:k,label:HEATMAP_MODES[k].label})));
-  addSelect('heatmapBand','Heatmap band',[
-    {value:'all',label:'All bands'},
-    {value:'2.4',label:'2.4 GHz'},
-    {value:'5',label:'5 GHz'},
-    {value:'6',label:'6 GHz'},
-  ]);
-  addCheck('showRoamingOverlap','Show roaming-overlap layer (≥2 APs ≥ -67 dBm)');
-
-  // ── RF model + regulatory ──
-  addHeading('RF model & regulatory');
-  addSelect('propagationModel','Propagation model',PROPAGATION_MODEL_KEYS.map(k=>({value:k,label:PROPAGATION_MODELS[k].label})));
-  addSelect('regulatoryRegion','Regulatory region',REGULATORY_REGION_KEYS.map(k=>({value:k,label:REGULATORY_REGIONS[k].label})));
-  addNumber('noiseFloorDbm','Noise floor (dBm)',-110,-70,1);
-  addNumber('floorSlabAttenDb','Floor slab attenuation (dB)',0,40,1);
-  addNumber('floorHeightM','Floor-to-floor height (m)',2,10,0.1);
-  addCheck('showFloorLeakage','Include other floors in heatmap (through the slabs)');
-
-  // ── Architect scale ──
-  addHeading('Drawing scale');
-  addSelect('archScale','Architect scale preset',[
-    {value:'',label:'Custom (use scale toolbar)'},
-    ...ARCH_SCALE_PRESETS.map(p=>({value:p.label,label:`${p.label} (${p.m100px} m / 100 px)`})),
-  ]);
-
-  // ── Organization ──
-  addHeading('Organization');
-  addText('siteCode','Site code','HQ — feeds {site} in the name pattern');
-  addText('namePattern','Device name pattern','{site}-F{floor}-{type}{nn}');
-  const nameHint=document.createElement('div');nameHint.className='ep-hint';
-  nameHint.textContent='Tokens: {site} {floor} {type} {n}/{nn}/{nnn}. Validate flags names that break the pattern; Inventory → Auto-rename applies it to every device.';
-  wrap.appendChild(nameHint);
-
-  // ── Cabling & capacity ──
-  addHeading('Cabling & capacity');
-  addNumber('cableRoutingFactor','Cable routing factor',1,3,0.05);
-  addNumber('cableBoxM','Cable box length (m)',1,1000,1);
-  addNumber('expectedClients','Expected concurrent clients',0,100000,1);
-  addNumber('perClientMbps','Per-client demand (Mbps)',0.5,100,0.5);
-  addCheck('colorByVlan','Colour devices by VLAN on the map');
-
-  // ── Cameras: DORI + storage ──
-  addHeading('Cameras');
-  addCheck('showDori','Show DORI pixel-density bands in camera cones');
-  addNumber('retentionDays','Video retention (days)',1,365,1);
-  addSelect('storageCodec','Recording codec',[
-    {value:'h265',label:'H.265 / HEVC'},
-    {value:'h264',label:'H.264 / AVC'},
-  ]);
-
-  // ── VLAN registry ──
-  addHeading('VLANs');
-  const vlanWrap=document.createElement('div');
-  const vlanRows=[];
-  const addVlanRow=(v)=>{
-    const row=document.createElement('div');row.className='ep-row';row.style.cssText='display:flex;gap:4px;align-items:center';
-    const id=document.createElement('input');id.className='ep-in';id.placeholder='ID';id.value=(v&&v.id)||'';id.style.cssText='width:50px;flex:0 0 auto';
-    const name=document.createElement('input');name.className='ep-in';name.placeholder='Name';name.value=(v&&v.name)||'';
-    const color=document.createElement('input');color.type='color';color.value=(v&&v.color)||'#1565c0';color.style.cssText='width:30px;height:28px;padding:0;border:none;background:none;flex:0 0 auto';
-    const subnet=document.createElement('input');subnet.className='ep-in ep-mono';subnet.placeholder='10.0.10.0/24';subnet.value=(v&&v.subnet)||'';subnet.style.cssText='width:118px;flex:0 0 auto';
-    const gw=document.createElement('input');gw.className='ep-in ep-mono';gw.placeholder='gateway';gw.title='Gateway/SVI IP for inter-VLAN routing (L3)';gw.value=(v&&v.gateway)||'';gw.style.cssText='width:92px;flex:0 0 auto';
-    const del=document.createElement('button');del.className='btn';del.textContent='✕';del.style.cssText='flex:0 0 auto;padding:4px 8px';
-    const entry={id,name,color,subnet,gw};
-    del.addEventListener('click',()=>{row.remove();const i=vlanRows.indexOf(entry);if(i>=0)vlanRows.splice(i,1);});
-    row.append(id,name,color,subnet,gw,del);
-    vlanWrap.appendChild(row);
-    vlanRows.push(entry);
-  };
-  vlanList().forEach(addVlanRow);
-  wrap.appendChild(vlanWrap);
-  const addVlanBtn=document.createElement('button');addVlanBtn.className='btn';addVlanBtn.textContent='+ Add VLAN';addVlanBtn.style.marginTop='4px';
-  addVlanBtn.addEventListener('click',()=>addVlanRow());
-  wrap.appendChild(addVlanBtn);
-
-  // ── Security ──
-  addHeading('Security');
-  const credRow=document.createElement('div');credRow.className='ep-row';
-  const credLbl=document.createElement('label');credLbl.className='ep-lbl';credLbl.textContent='Credentials passphrase';
-  const credInp=document.createElement('input');
-  credInp.type='password';credInp.className='ep-in';credInp.autocomplete='new-password';
-  credInp.value=CREDS.pass;credInp.placeholder='blank = store credentials unencrypted';
-  credRow.append(credLbl,credInp);wrap.appendChild(credRow);
-  const credHint=document.createElement('div');credHint.className='ep-hint';
-  credHint.textContent='When set, device credentials are AES-256-GCM encrypted in saved project files and never written to autosave or Share links. Session-only — not stored anywhere; you re-enter it to unlock an encrypted project.';
-  wrap.appendChild(credHint);
-
-  const hint=document.createElement('div');
-  hint.className='ep-hint';
-  hint.textContent='Saved with the project. Used in HTML/PDF exports, the heatmap pipeline, the top-bar brand label, and channel/Tx planning. Routing factor scales straight-line cable runs; VLAN subnets feed the “suggest IP” buttons.';
-  wrap.appendChild(hint);
-
+  const form=settingsForm(document,{settings:SETTINGS,vlans:vlanList(),credsPass:CREDS.pass,langs:availableLangs(),
+    onOpacityPreview:v=>{SETTINGS.coverageOpacity=v;render();}});
+  const archScaleAtOpen=SETTINGS.archScale||'';
   const apply=()=>{
     let changed=false;
+    const {inputs,vlans:newVlans,opacity,credPass}=form.read();
     // Strings
-    for(const k of ['company','tagline','contact','metaLine','reportTitle','footerLine','logoDataUrl','locale','language','propagationModel','regulatoryRegion','heatmapMode','heatmapBand','archScale','siteCode','namePattern','storageCodec','unifiUrl','unifiSite','unifiUser']){
+    for(const k of SETTINGS_STRING_KEYS){
       if(!inputs[k])continue;
       const val=(inputs[k].value||'').trim();
       if(String(SETTINGS[k]||'')!==val){SETTINGS[k]=val;changed=true;}
     }
     // Numbers
-    for(const k of ['noiseFloorDbm','floorSlabAttenDb','floorHeightM','cableRoutingFactor','cableBoxM','expectedClients','perClientMbps','retentionDays']){
+    for(const k of SETTINGS_NUMBER_KEYS){
       if(!inputs[k])continue;
       const v=parseFloat(inputs[k].value);
       if(Number.isFinite(v)&&SETTINGS[k]!==v){SETTINGS[k]=v;changed=true;}
     }
     // Bools
-    for(const k of ['showRoamingOverlap','showFloorLeakage','colorByVlan','showDori']){
+    for(const k of SETTINGS_BOOL_KEYS){
       if(!inputs[k])continue;
       const v=!!inputs[k].checked;
       if(SETTINGS[k]!==v){SETTINGS[k]=v;changed=true;}
     }
     // VLAN registry.
-    const newVlans=vlanRows.map(e=>({id:(e.id.value||'').trim(),name:(e.name.value||'').trim(),color:e.color.value||'',subnet:(e.subnet.value||'').trim(),gateway:(e.gw.value||'').trim()})).filter(v=>v.id||v.name);
     if(JSON.stringify(newVlans)!==JSON.stringify(vlanList())){SETTINGS.vlans=newVlans;changed=true;}
     // Credentials passphrase (session-only; never persisted to SETTINGS).
-    if(CREDS.locked){if(credInp.value)_tryUnlock(credInp.value);}
-    else CREDS.setPass(credInp.value);
-    const opacity=parseInt(opacityIn.value,10)||100;
+    if(CREDS.locked){if(credPass)_tryUnlock(credPass);}
+    else CREDS.setPass(credPass);
     if(SETTINGS.coverageOpacity!==opacity){SETTINGS.coverageOpacity=opacity;changed=true;}
     if(SETTINGS.language)setLang(SETTINGS.language);
-    // Apply architect scale: convert to m/100px and propagate to current floor.
-    if(SETTINGS.archScale){
+    // Apply an architect scale preset to the current floor only when it was
+    // picked in this dialog. It used to be re-applied on every OK, wiping a
+    // floor's ruler-calibrated scale whenever any other setting was edited.
+    if(SETTINGS.archScale&&SETTINGS.archScale!==archScaleAtOpen){
       const preset=ARCH_SCALE_PRESETS.find(p=>p.label===SETTINGS.archScale);
       if(preset){
         setScaleM(preset.m100px);
@@ -6987,8 +5160,7 @@ function showSettings(){
       render();
     }
   };
-  _paneSettings(wrap);
-  showModalNode('Project Settings',wrap,apply,cancel);
+  showModalNode('Project Settings',form.el,apply,cancel);
   document.getElementById('mdl').classList.add('wide-modal','settings-modal');
 }
 
@@ -7064,6 +5236,8 @@ function showHelp(){
 // initImage()'s start-up poll ever re-rendered.
 if(typeof mapImg!=='undefined'&&mapImg)mapImg.addEventListener('load',()=>{
   if(!mapImg.naturalWidth)return;
+  const key=_floorDimKey(F());
+  if(key)_floorDims.set(key,{w:mapImg.naturalWidth,h:mapImg.naturalHeight});
   fitZoom();render();renderMM();updateScaleBar();calcCoverage();updateEmptyState();
   // Lengths and ranges in the list and the inspector are measured on the plan
   // image too: refresh them, or walls read "0.0 m" until the next edit.

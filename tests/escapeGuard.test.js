@@ -40,6 +40,25 @@ describe('app.js markup interpolations', () => {
   it('no unreviewed raw attribute interpolation', () => {
     expect(found.attrs.filter((e) => !allow.attrs.includes(e))).toEqual([]);
   });
+});
+
+// Code moved out of app.js must stay under the same ratchet: every module in
+// files/src is scanned, with its own reviewed allowlist (allow.modules[file]).
+describe('files/src markup interpolations', () => {
+  const dir = new URL('../files/src/', import.meta.url);
+  const files = fs.readdirSync(dir).filter((f) => f.endsWith('.js') && !f.startsWith('._'));
+  it('scans every module', () => expect(files.length).toBeGreaterThan(40));
+  for (const f of files) {
+    it(`${f}: no unreviewed raw interpolation`, () => {
+      const found = rawInterpolations(fs.readFileSync(new URL(f, dir), 'utf8'));
+      const ok = (allow.modules && allow.modules[f]) || { fields: [], attrs: [] };
+      expect({ fields: found.fields.filter((e) => !ok.fields.includes(e)), attrs: found.attrs.filter((e) => !ok.attrs.includes(e)) })
+        .toEqual({ fields: [], attrs: [] });
+    });
+  }
+});
+
+describe('scanner self-test', () => {
   it('the scanner catches the patterns it exists for', () => {
     const bad = rawInterpolations('x=`<input value="${ap.name}"/><td>${dev.ip}</td><b>${esc(ap.name)}</b>`');
     expect(bad.fields).toEqual(['ap.name', 'dev.ip']);
