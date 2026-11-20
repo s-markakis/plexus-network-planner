@@ -36,3 +36,23 @@ describe('diffRevisions', () => {
     expect(diffRevisions([fl()], [b])).toEqual(['~ [G] AP AP-1: ip 10.0.0.5 → (empty)']);
   });
 });
+
+describe('diffRevisions — floor matching and RF fields', () => {
+  it('matches floors by id: deleting a middle floor reports just that floor', () => {
+    const a = [fl({ id: 'f1', name: 'G' }), fl({ id: 'f2', name: 'First' }), fl({ id: 'f3', name: 'Second' })];
+    const b = [a[0], a[2]];
+    expect(diffRevisions(a, b)).toEqual(['- Floor "First" removed']);
+  });
+  it('reports a renamed floor and reorders without noise', () => {
+    const a = [fl({ id: 'f1', name: 'G' }), fl({ id: 'f2', name: 'First' })];
+    expect(diffRevisions(a, [a[1], { ...a[0], name: 'Ground' }])).toEqual(['~ Floor "G" renamed to "Ground"']);
+  });
+  it('falls back to position when floors have no ids', () => {
+    const a = [fl({ id: undefined, name: 'G' })];
+    expect(diffRevisions(a, [fl({ id: undefined, name: 'G' })])).toEqual([]);
+  });
+  it('sees Auto-power and channel-width changes', () => {
+    const b = fl({ APS: [{ id: 'a1', name: 'AP-1', fx: 0.1, fy: 0.1, ip: '10.0.0.5', port: '1', txPowerDbm: 14, chanWidth: 40 }] });
+    expect(diffRevisions([fl()], [b])).toEqual(['~ [G] AP AP-1: chanWidth (empty) → 40', '~ [G] AP AP-1: txPowerDbm (empty) → 14']);
+  });
+});
