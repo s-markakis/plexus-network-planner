@@ -1120,14 +1120,15 @@ function showValidation(){
   };
   if(hasMap){APS().forEach(ap=>checkRun(ap,ap.name));CAMS().forEach(c=>checkRun(c,c.name));}
   // Unassigned devices (informational).
-  APS().forEach(ap=>{if(!ap.swId)infos.push(`${esc(ap.name)} is not assigned to a switch.`);});
+  APS().forEach(ap=>{if(!ap.swId)infos.push(`${ap.name} is not assigned to a switch.`);});
   CAMS().forEach(c=>{if(!c.swId)infos.push(`${c.name} is not assigned to a switch.`);});
-  // Duplicate IPs across all floor devices + switches.
+  // Duplicate IPs, building-wide (addresses are global): APs, cameras and
+  // switches on every floor. Messages are text (shown via textContent).
   const ipMap=new Map();
-  const noteIp=(ip,name)=>{const k=(ip||'').trim();if(!k)return;if(ipMap.has(k))warns.push(`Duplicate IP ${k}: ${ipMap.get(k)} and ${name}.`);else ipMap.set(k,name);};
-  APS().forEach(ap=>noteIp(ap.ip,ap.name));
-  CAMS().forEach(c=>noteIp(c.ip,c.name));
-  sws.forEach(sw=>noteIp(sw.ip,sw.name));
+  const where=(fl,name)=>FLOORS.length>1&&fl!==f?`${name} (${fl.name||'another floor'})`:name;
+  const noteIp=(ip,label)=>{const k=(ip||'').trim();if(!k)return;if(ipMap.has(k))warns.push(`Duplicate IP ${k}: ${ipMap.get(k)} and ${label}.`);else ipMap.set(k,label);};
+  for(const fl of [f,...FLOORS.filter(x=>x!==f)])
+    for(const list of [fl.APS,fl.CAMS,fl.SWS])for(const d of (list||[]))noteIp(d.ip,where(fl,d.name));
   // VLANs referenced but not in the registry (only when a registry exists).
   if(vlanList().length){
     const checkVlan=(dev,label)=>{const v=(dev.vlan||'').trim();if(v&&!vlanById(v))warns.push(`${label}: VLAN "${v}" is not in the VLAN registry.`);};
@@ -1173,9 +1174,9 @@ function showValidation(){
     for(const ap of APS()){
       if(!(ap.capacityClients>0))continue;
       const pct=apAirtimePct(ap,f);
-      if(pct===Infinity)errors.push(`${esc(ap.name)}: expected ${ap.capacityClients} clients but the cell delivers no usable throughput.`);
-      else if(pct>100)errors.push(`${esc(ap.name)}: airtime ~${pct}% — ${ap.capacityClients} clients × ${parseFloat(SETTINGS.perClientMbps)||5} Mbps exceeds what this cell can carry.`);
-      else if(pct>80)warns.push(`${esc(ap.name)}: airtime ~${pct}% — near saturation; consider a wider channel or another AP.`);
+      if(pct===Infinity)errors.push(`${ap.name}: expected ${ap.capacityClients} clients but the cell delivers no usable throughput.`);
+      else if(pct>100)errors.push(`${ap.name}: airtime ~${pct}% — ${ap.capacityClients} clients × ${parseFloat(SETTINGS.perClientMbps)||5} Mbps exceeds what this cell can carry.`);
+      else if(pct>80)warns.push(`${ap.name}: airtime ~${pct}% — near saturation; consider a wider channel or another AP.`);
     }
   }
   // Policies (reachability intent): a violated policy is a design error.
