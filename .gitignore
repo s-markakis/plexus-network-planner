@@ -49,3 +49,7 @@ build/
 
 # Electron-builder output (installers)
 release/
+
+# macOS AppleDouble sidecars (created on exFAT/non-HFS volumes)
+._*
+.DS_Store
