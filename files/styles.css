@@ -1791,10 +1791,33 @@ button.ckt-hop{cursor:pointer}button.ckt-hop:hover{border-color:var(--ink-45)}
 .ckt-from{display:flex;gap:8px;align-items:flex-end}
 .ckt-sub{font-size:12px;font-weight:600;margin-top:4px}
 .ckt-hops{display:flex;flex-direction:column;gap:4px;max-height:40vh;overflow:auto}
-.ckt-hoprow{display:grid;grid-template-columns:130px 1fr 80px 1fr auto auto auto;gap:4px;align-items:center}
+.ckt-hoprow{display:grid;grid-template-columns:130px 1fr 80px 1fr auto;gap:4px;align-items:center}
+/* Fixed width: a row with a photo thumbnail must line up with rows without. */
+.ckt-hopctl{display:flex;align-items:center;justify-content:flex-end;gap:2px;width:160px}
+.ckt-hopctl .btn{padding:3px 6px;min-width:0}
+.ckt-thumb{width:28px;height:28px;object-fit:cover;border-radius:4px;border:1px solid var(--hair);cursor:zoom-in;margin-right:2px}
+.ckt-photo-full{max-width:100%;max-height:60vh;object-fit:contain;align-self:center;border-radius:6px;border:1px solid var(--hair);background:var(--surface-2)}
 .ckt-port{width:100%}
 .ckt-notes{resize:vertical}
+.ckt-tools{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+.ckt-flash{font-size:12px;color:var(--ink-55);display:flex;align-items:center;gap:6px}
+.ckt-flash:empty{display:none}
+.ckt-has-photo{font-size:10px}
+/* Save / Back are ordinary buttons, not stretched across the dialog. */
+.ckt-root .ckt-actions{align-items:center}
+.ckt-root .ckt-actions .btn{flex:0 0 auto;font-size:12px;padding:6px 16px}
 @media (max-width:640px){.ckt-hoprow{grid-template-columns:1fr 1fr}.ckt-from{flex-direction:column;align-items:stretch}}
+
+/* Device panel: "Circuits: n · Show → · ＋ Record". */
+.rp-ckt{display:flex;align-items:center;gap:6px;font-size:12px;margin:2px 0 10px}
+.rp-ckt-lbl{flex:1;color:var(--ink-55)}
+.rp-ckt .btn{padding:3px 8px;font-size:11.5px}
+
+/* A circuit traced on the map: halo + line through its devices, a ring on each. */
+.ckt-hl-halo{fill:none;stroke:#fff;stroke-opacity:.85;stroke-width:9;stroke-linecap:round;stroke-linejoin:round;pointer-events:none}
+.ckt-hl-line{fill:none;stroke:#0a84ff;stroke-width:4;stroke-linecap:round;stroke-linejoin:round;stroke-dasharray:10 6;pointer-events:none}
+.ckt-hl-ring{fill:rgba(10,132,255,.12);stroke:#0a84ff;stroke-width:3;pointer-events:none}
+.ckt-hl-start{stroke-width:4;fill:rgba(10,132,255,.22)}
 
 /* An empty map <img> (no plan yet) must not show the broken-image glyph + alt. */
 #mi:not([src]),#mi[src=""]{visibility:hidden}

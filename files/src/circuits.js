@@ -6,6 +6,8 @@
 // Stored at project.settings.circuits. Plan data is untrusted (files are
 // shared between technicians), so everything is normalised and size-capped.
 
+import { esc } from './html.js';
+
 export const HOP_TYPES = ['device', 'patch', 'outlet', 'converter', 'cable', 'other'];
 export const HOP_TYPE_LABELS = {
   device: 'Device', patch: 'Patch panel', outlet: 'Wall outlet',
@@ -20,12 +22,23 @@ const DEVICE_LISTS = [['APS', 'ap'], ['CAMS', 'cam'], ['SWS', 'sw']];
 
 const str = (v, max = MAX_TEXT) => (typeof v === 'string' ? v : typeof v === 'number' && Number.isFinite(v) ? String(v) : '').slice(0, max);
 
+// A hop may carry one photo (a patch panel, an outlet). In the app it is an
+// IndexedDB id; in a saved file the image is inlined as a data: URL, and only
+// an image data: URL is accepted — a shared file must not make the app fetch
+// from someone else's server.
+const IMG_ID_RE = /^img_[a-z0-9_]{1,40}$/i;
+const HOP_IMG_RE = /^data:image\/(png|jpeg|webp|gif);base64,[A-Za-z0-9+/=]+$/;
+const MAX_HOP_IMG = 3_000_000;   // chars of data: URL (~2.2 MB image)
+
 function normHop(h) {
   if (!h || typeof h !== 'object') return null;
   const type = HOP_TYPES.includes(h.type) ? h.type : 'other';
   const hop = { type, ref: type === 'device' ? str(h.ref) : '', port: str(h.port), label: str(h.label), note: str(h.note) };
+  // Photo fields only when present, so a photo-less hop keeps its shape.
+  if (typeof h.imgId === 'string' && IMG_ID_RE.test(h.imgId)) hop.imgId = h.imgId;
+  if (typeof h.img === 'string' && h.img.length <= MAX_HOP_IMG && HOP_IMG_RE.test(h.img)) hop.img = h.img;
   // A hop with nothing in it documents nothing.
-  if (!hop.ref && !hop.port && !hop.label && !hop.note) return null;
+  if (!hop.ref && !hop.port && !hop.label && !hop.note && !hop.imgId && !hop.img) return null;
   return hop;
 }
 
@@ -211,8 +224,180 @@ export function mergeTrace(hops, derived) {
   for (const d of derived) {
     // Keep a recorded port if the plan has none (uplink ports aren't modelled).
     const prev = hops.find((h) => h.type === 'device' && h.ref === d.ref);
-    out.push({ ...d, port: d.port || (prev ? prev.port : ''), note: prev ? prev.note : '' });
+    const keep = { ...d, port: d.port || (prev ? prev.port : ''), note: prev ? prev.note : '' };
+    if (prev && prev.imgId) keep.imgId = prev.imgId;   // a photo stays with its device hop
+    if (prev && prev.img) keep.img = prev.img;
+    out.push(keep);
     if (after.has(d.ref)) out.push(...after.get(d.ref));
   }
   return out.slice(0, MAX_HOPS);
+}
+
+// ── Labels, conflicts, bulk creation, exports ────────────────────────────────
+
+/** Comparable form of a label or port: "PP-1", "pp 1" and "PP1" are one panel. */
+export function normLabel(s) {
+  return foldText(s == null ? '' : s).replace(/[^\p{L}\p{N}]/gu, '');
+}
+
+/**
+ * Where a new hop goes: after the passive hops that follow the end device and
+ * before the next device (usually its switch) — passive plant sits between the
+ * end device and the switch far more often than beyond it.
+ */
+export function newHopIndex(hops) {
+  for (let i = 1; i < hops.length; i++) if (hops[i].type === 'device') return i;
+  return hops.length;
+}
+
+/** Labels already used, per passive hop type, for autocomplete. First spelling wins. */
+export function labelSuggestions(circuits) {
+  /** @type {Record<string, Map<string,string>>} */
+  const by = {};
+  for (const t of HOP_TYPES) if (t !== 'device') by[t] = new Map();
+  for (const c of circuits || []) for (const h of (c && c.hops) || []) {
+    if (!h || h.type === 'device' || !by[h.type] || !h.label) continue;
+    const k = normLabel(h.label);
+    if (k && !by[h.type].has(k)) by[h.type].set(k, h.label);
+  }
+  /** @type {Record<string, string[]>} */
+  const out = {};
+  for (const [t, m] of Object.entries(by)) out[t] = [...m.values()].sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+  return out;
+}
+
+/**
+ * Physical points claimed by more than one circuit: a patch-panel position or a
+ * wall-outlet port (label + port), or a cable label (meant to be unique). Two
+ * circuits on one point means one of the records is wrong.
+ * @returns {{key:string, type:string, label:string, port:string, circuits:{id:string,name:string}[]}[]}
+ */
+export function circuitConflicts(circuits) {
+  /** @type {Map<string, any>} */
+  const seen = new Map();
+  for (const c of circuits || []) {
+    const mine = new Set();
+    for (const h of (c && c.hops) || []) {
+      let key = null;
+      if ((h.type === 'patch' || h.type === 'outlet') && normLabel(h.label) && normLabel(h.port)) key = `${h.type}|${normLabel(h.label)}|${normLabel(h.port)}`;
+      else if (h.type === 'cable' && normLabel(h.label)) key = `cable|${normLabel(h.label)}`;
+      if (!key || mine.has(key)) continue;
+      mine.add(key);
+      if (!seen.has(key)) seen.set(key, { key, type: h.type, label: h.label, port: h.type === 'cable' ? '' : h.port, circuits: [] });
+      seen.get(key).circuits.push({ id: c.id, name: c.name || c.id });
+    }
+  }
+  return [...seen.values()].filter((e) => e.circuits.length > 1);
+}
+
+/** @param {{type:string,label:string,port:string,circuits:{name:string}[]}} e */
+export function conflictText(e) {
+  const where = e.type === 'cable' ? `Cable label ${e.label}` : `${HOP_TYPE_LABELS[e.type]} ${e.label} #${e.port}`;
+  return `${where} is on ${e.circuits.length} circuits: ${e.circuits.map((c) => c.name).join(', ')}`;
+}
+
+/**
+ * Circuits for every AP and camera that has none yet, path filled from the
+ * plan. A device not cabled to a switch is skipped (its path would be only
+ * itself). Switches are left out: their uplinks are already on the endpoints'
+ * paths.
+ * @returns {{created:any[], existing:number, unlinked:string[]}}
+ */
+export function bulkCircuits(project, existing, { tech = '', date = '' } = {}, idx = deviceIndex(project)) {
+  const list = Array.isArray(existing) ? existing : [];
+  const have = new Set(list.map((c) => c.from).filter(Boolean));
+  const taken = new Set(list.map((c) => c.id));
+  const room = Math.max(0, MAX_CIRCUITS - list.length);
+  /** @type {any[]} */ const created = [];
+  /** @type {string[]} */ const unlinked = [];
+  let already = 0;
+  for (const [id, d] of idx) {
+    if (d.type === 'sw') continue;
+    if (have.has(id)) { already++; continue; }
+    const hops = autoTrace(project, id, idx);
+    if (hops.length < 2) { unlinked.push(str(d.item.name) || id); continue; }
+    if (created.length >= room) break;
+    const cid = newCircuitId(taken);
+    taken.add(cid);
+    created.push({ id: cid, name: str(d.item.name) || id, from: id, hops, tech: str(tech), date: /^\d{4}-\d{2}-\d{2}$/.test(date) ? date : '', notes: '' });
+  }
+  return { created, existing: already, unlinked };
+}
+
+/**
+ * One flat record per circuit for the exports: the end device, the switch and
+ * port it lands on, and the passive plant by type.
+ */
+export function circuitRows(project, circuits, idx = deviceIndex(project)) {
+  const floors = (project && Array.isArray(project.floors)) ? project.floors : [];
+  const devName = (ref) => (idx.get(ref) && idx.get(ref).item.name) || ref;
+  return (circuits || []).map((c) => {
+    const passive = (type) => c.hops.filter((h) => h.type === type).map((h) => hopText(h, idx)).join('; ');
+    const end = idx.get(c.from);
+    const later = c.hops.slice(1).filter((h) => h.type === 'device');
+    const sw = later.find((h) => idx.has(h.ref) && idx.get(h.ref).type === 'sw') || later[0];
+    return {
+      id: c.id, name: c.name,
+      device: c.from ? devName(c.from) : '',
+      deviceType: end ? end.type : '',
+      floor: end ? ((floors[end.floor] && floors[end.floor].name) || `Floor ${end.floor + 1}`) : '',
+      switchName: sw ? devName(sw.ref) : '',
+      switchPort: sw ? sw.port : '',
+      patch: passive('patch'), outlet: passive('outlet'), cable: passive('cable'),
+      converter: passive('converter'), other: passive('other'),
+      path: pathText(c, idx), tech: c.tech, date: c.date, notes: c.notes,
+      check: circuitDrift(project, c, idx).join('; '),
+    };
+  });
+}
+
+/** Rows in rack order: by switch, then port (numeric where it is a number). */
+export function sortBySwitchPort(rows) {
+  const portKey = (p) => { const n = parseInt(String(p || ''), 10); return Number.isFinite(n) ? n : Infinity; };
+  return [...rows].sort((a, b) => (a.switchName || '￿').localeCompare(b.switchName || '￿', undefined, { numeric: true })
+    || portKey(a.switchPort) - portKey(b.switchPort)
+    || String(a.switchPort).localeCompare(String(b.switchPort), undefined, { numeric: true })
+    || String(a.name).localeCompare(String(b.name), undefined, { numeric: true }));
+}
+
+/** IndexedDB ids of hop photos, for the image store's liveness check. */
+export function circuitImageIds(circuits, out = new Set()) {
+  for (const c of circuits || []) for (const h of (c && c.hops) || []) if (h && h.imgId) out.add(h.imgId);
+  return out;
+}
+
+/**
+ * Printable cable labels: two per circuit, A at the device end and B at the
+ * switch end, each naming the circuit and both ends. A complete HTML document.
+ */
+export function cableLabelsHtml(rows, { title = 'Cable labels' } = {}) {
+  const lbl = (r, end) => {
+    const ends = `${r.device || '?'} ⇄ ${r.switchName || '?'}${r.switchPort ? ' · ' + r.switchPort : ''}`;
+    const plant = [r.patch, r.outlet].filter(Boolean).join(' · ');
+    return `<div class="lbl"><span class="end">${end}</span><div class="nm">${esc(r.name || r.device || r.id)}</div><div class="ln">${esc(ends)}</div>${plant ? `<div class="pl">${esc(plant)}</div>` : ''}</div>`;
+  };
+  const cells = rows.map((r) => lbl(r, 'A') + lbl(r, 'B')).join('');
+  const n = rows.length, labels = n * 2;
+  return `<!DOCTYPE html><html><head><meta charset="UTF-8"/><title>${esc(title)}</title><style>
+@page{size:A4;margin:10mm}*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Helvetica Neue',Arial,sans-serif;color:#000;background:#fff;padding:12px}
+.hd{font-size:12px;margin-bottom:8px;color:#444}
+.sheet{display:grid;grid-template-columns:repeat(3,1fr);gap:3mm}
+.lbl{position:relative;border:1px dashed #888;height:24mm;padding:2mm 3mm;overflow:hidden;break-inside:avoid}
+.end{position:absolute;top:1.5mm;right:2mm;font-size:9px;font-weight:700;border:1px solid #000;border-radius:2px;padding:0 3px}
+.nm{font-size:13px;font-weight:700;margin-right:18px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ln{font-size:10px;margin-top:1.5mm;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.pl{font-size:9px;color:#333;margin-top:1mm;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.print-btn{margin-top:14px;padding:10px 22px;background:#000;color:#fff;border:none;border-radius:2px;font-size:12px;cursor:pointer}
+@media print{body{padding:0}.print-btn,.hd{display:none}}
+</style></head><body><div class="hd">${esc(title)} — ${n} circuit(s), ${labels} labels. A = device end, B = switch end.</div>
+<div class="sheet">${cells}</div><button class="print-btn">Print / Save as PDF</button></body></html>`;
+}
+
+/** Technical-report section: the patch schedule as a table ('' with no circuits). */
+export function circuitsReportHtml(rows) {
+  const count = rows.length;
+  if (!count) return '';
+  const tr = sortBySwitchPort(rows).map((r) => `<tr><td><strong>${esc(r.name)}</strong></td><td>${esc(r.device)}</td><td class="mono">${esc(r.switchName + (r.switchPort ? ' · ' + r.switchPort : ''))}</td><td class="mono">${esc(r.patch || '—')}</td><td>${esc(r.outlet || '—')}</td><td class="mono">${esc(r.cable || '—')}</td><td class="muted">${esc([r.tech, r.date].filter(Boolean).join(' · ') || '—')}</td></tr>${r.check ? `<tr class="note-row"><td colspan="7">⚠ ${esc(r.check)}</td></tr>` : ''}`).join('');
+  return `<h2><span>Circuits &amp; patch schedule</span><span class="floor-cov">${count}</span></h2><table><thead><tr><th>Circuit</th><th>Device</th><th>Switch · port</th><th>Patch panel</th><th>Outlet</th><th>Cable</th><th>Recorded</th></tr></thead><tbody>${tr}</tbody></table>`;
 }
