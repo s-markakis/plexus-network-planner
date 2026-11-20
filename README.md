@@ -114,7 +114,7 @@ Download the installer for your OS from
 
 | OS | File | First-launch note (unsigned build) |
 |----|------|-------------------------------------|
-| **macOS** | `.dmg` / `.zip` | Right-click → **Open** → **Open**. If still blocked: `xattr -dr com.apple.quarantine "/Applications/Plexus.app"` |
+| **macOS** | `.dmg` / `.zip` | Drag Plexus to Applications and open it once — macOS blocks it. Then **System Settings → Privacy & Security → Open Anyway** (macOS 15+; on older macOS, right-click → **Open** → **Open**). Builds before 3.8.2 show *"damaged"* instead; for those: `xattr -dr com.apple.quarantine "/Applications/Plexus.app"` |
 | **Windows** | `.exe` (NSIS) | SmartScreen → **More info** → **Run anyway** |
 | **Linux** | `.AppImage` / `.deb` | `chmod +x *.AppImage` then run |
 

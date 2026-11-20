@@ -6,7 +6,16 @@ versioning follows [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [3.8.2] — 2026-11-20
+
 ### Fixed
+- **macOS: the downloaded app opens.** Earlier macOS builds carried a broken
+  code signature, so macOS called the app *"damaged"* and offered no way to
+  open it. The app is now ad-hoc signed: macOS still asks once (it isn't
+  signed by an Apple developer ID), then **Privacy & Security → Open Anyway**
+  lets it run. Install notes in the README are updated for macOS 15+.
+- The source repository no longer carries macOS `._*` metadata files (they
+  were never packaged into the app).
 - Selecting a device in the list no longer zooms out (an AP's coverage radius
   was fitted, often larger than the room); it keeps the zoom and only pans.
 - Escape closes an open menu before it deselects, and a right-click closes an
