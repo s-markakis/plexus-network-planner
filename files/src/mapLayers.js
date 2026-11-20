@@ -5,6 +5,9 @@
 
 import { doriDistancesM } from './cameras.js';
 import { routerAsAp } from './routerWifi.js';
+import { AP_PATTERNS, ROAMING_OVERLAP_DBM, HEATMAP_STOPS } from './constants.js';
+import { dbmAt, bandLossMultiplier, effectiveEirp } from './geometry.js';
+import { apChansOverlap } from './channels.js';
 
 /** Wedge (or full-circle → null) path for a camera's view area. */
 export function _camWedgePath(cx,cy,r,heading,fov){
@@ -351,4 +354,196 @@ export function renderSWLayer(layer, ctx){
     g.addEventListener('pointerdown',e=>ctx.onItemPointerDown('sw',sw,e));
     layer.appendChild(g);
   });
+}
+
+/** RSSI → heat colour (null when unknown). */
+export function _heatColor(dbm){
+  // Legacy single-mode helper retained for code paths that still call it.
+  if(dbm===null||dbm===undefined||!Number.isFinite(dbm))return null;
+  for(const s of HEATMAP_STOPS){if(dbm>=s.dbm)return s.color;}
+  return null;
+}
+
+export function renderAnnoLayer(layer, ctx){
+  const mk=(tag)=>ctx.doc.createElementNS('http://www.w3.org/2000/svg',tag);
+  if(!layer)return;
+  layer.innerHTML='';
+  const w=ctx.w||1,h=ctx.h||1;
+  for(const a of ctx.annos){
+    const x=(a.fx||0)*w, y=(a.fy||0)*h;
+    if(a.kind==='arrow'||a.kind==='dim'){
+      const x2=(a.fx2||a.fx||0)*w, y2=(a.fy2||a.fy||0)*h;
+      const ln=mk('line');
+      ln.setAttribute('x1',x);ln.setAttribute('y1',y);
+      ln.setAttribute('x2',x2);ln.setAttribute('y2',y2);
+      ln.setAttribute('class', a.kind==='dim' ? 'anno-dim' : 'anno-arrow');
+      ln.setAttribute('marker-end','url(#anno-arrowhead)');
+      layer.appendChild(ln);
+      if(a.kind==='dim'){
+        // Show distance label at the midpoint
+        const mx=(x+x2)/2, my=(y+y2)/2;
+        const dist=Math.hypot(x-x2,y-y2);
+        const m=Math.round(dist*(ctx.scaleM||100)/100*10)/10;
+        const lbl=mk('text');
+        lbl.setAttribute('x',mx);lbl.setAttribute('y',my-6);
+        lbl.setAttribute('class','anno-dim-label');
+        lbl.textContent=m+' m';
+        layer.appendChild(lbl);
+      }
+      if(a.text){
+        const lbl=mk('text');
+        lbl.setAttribute('x',x);lbl.setAttribute('y',y-10);
+        lbl.setAttribute('class','anno-text');
+        lbl.textContent=a.text;
+        layer.appendChild(lbl);
+      }
+    } else {
+      const lbl=mk('text');
+      lbl.setAttribute('x',x);lbl.setAttribute('y',y);
+      lbl.setAttribute('class','anno-text');
+      lbl.textContent=a.text||'Note';
+      layer.appendChild(lbl);
+    }
+  }
+}
+
+export function renderSampleLayer(layer, ctx){
+  const mk=(tag)=>ctx.doc.createElementNS('http://www.w3.org/2000/svg',tag);
+  if(!layer)return;
+  layer.innerHTML='';
+  const samples=ctx.samples;
+  if(!samples.length)return;
+  const w=ctx.w||1,h=ctx.h||1;
+  const walls=ctx.walls;
+  const propModel=ctx.settings.propagationModel||'logd';
+  for(const s of samples){
+    const x=(s.fx||0)*w, y=(s.fy||0)*h;
+    // Predicted: max dBm across local APs.
+    let predicted=-Infinity;
+    for(const ap of ctx.aps){
+      const pat=AP_PATTERNS[ap.pattern]||AP_PATTERNS.omni;
+      const d=dbmAt(ap,x,y,w,h,walls,{
+        bandFactor:bandLossMultiplier(ap.freq),
+        arcDeg:pat.arc,headingDeg:ap.heading||0,
+        eirpDbm:effectiveEirp(ap),
+        model:propModel,
+        metersPerPx:(ctx.scaleM||100)/100,
+      });
+      if(d!==null&&d>predicted)predicted=d;
+    }
+    const measured=Number.isFinite(s.rssi)?s.rssi:-95;
+    const delta=predicted===-Infinity?null:(measured-predicted);
+    const color=_heatColor(measured)||'#666';
+    const c=mk('circle');
+    c.setAttribute('cx',x);c.setAttribute('cy',y);c.setAttribute('r',5);
+    c.setAttribute('fill',color);
+    c.setAttribute('class','sample-dot');
+    if(delta!==null && Math.abs(delta)>8){
+      c.setAttribute('stroke','#c0382b');c.setAttribute('stroke-width','2');
+    } else {
+      c.setAttribute('stroke','#000');c.setAttribute('stroke-width','1');
+    }
+    c.setAttribute('data-rssi',String(measured));
+    if(delta!==null){
+      const t=mk('title');
+      t.textContent=`Measured ${measured} dBm · Predicted ${Math.round(predicted)} dBm · Δ ${delta>=0?'+':''}${Math.round(delta)} dB`;
+      c.appendChild(t);
+    }
+    layer.appendChild(c);
+  }
+}
+
+export function renderRoamingLayer(layer, ctx){
+  const mk=(tag)=>ctx.doc.createElementNS('http://www.w3.org/2000/svg',tag);
+  if(!layer)return;
+  layer.innerHTML='';
+  if(!ctx.settings.showRoamingOverlap)return;
+  const w=ctx.w||0,h=ctx.h||0;
+  if(!w||!h)return;
+  const aps=ctx.aps;
+  if(aps.length<2)return;
+  const walls=ctx.walls;
+  const propModel=ctx.settings.propagationModel||'logd';
+  const step=Math.max(6,Math.round(Math.min(w,h)/80));
+  // Render into a path of overlapping rects so the DOM stays small.
+  let d='';
+  for(let y=0;y<h;y+=step){
+    for(let x=0;x<w;x+=step){
+      let n=0;
+      for(const ap of aps){
+        const pat=AP_PATTERNS[ap.pattern]||AP_PATTERNS.omni;
+        const dbm=dbmAt(ap,x,y,w,h,walls,{
+          bandFactor:bandLossMultiplier(ap.freq),
+          arcDeg:pat.arc,headingDeg:ap.heading||0,
+          eirpDbm:effectiveEirp(ap),
+          model:propModel,
+          metersPerPx:(ctx.scaleM||100)/100,
+        });
+        if(dbm!==null && dbm>=ROAMING_OVERLAP_DBM){n++;if(n>=2)break;}
+      }
+      if(n>=2) d+=`M${x},${y}h${step}v${step}h${-step}Z`;
+    }
+  }
+  if(!d)return;
+  const path=mk('path');
+  path.setAttribute('d',d);
+  path.setAttribute('class','roaming-fill');
+  layer.appendChild(path);
+}
+
+export function renderChannelOverlapLayer(layer, ctx){
+  const mk=(tag)=>ctx.doc.createElementNS('http://www.w3.org/2000/svg',tag);
+  layer.innerHTML='';
+  const w=ctx.w,h=ctx.h;
+  if(!w||!h)return;
+  const aps=ctx.aps;
+  for(let i=0;i<aps.length;i++)for(let j=i+1;j<aps.length;j++){
+    const a=aps[i],b=aps[j];
+    if(!apChansOverlap(a,b))continue;
+    const ax=a.fx*w,ay=a.fy*h,bx=b.fx*w,by=b.fy*h;
+    const dist=Math.hypot(ax-bx,ay-by);
+    // Only flag pairs whose coverage areas overlap — otherwise interference
+    // is not really a concern, just a coincidental channel match.
+    if(dist>=(a.r+b.r)*0.9)continue;
+    const ln=mk('line');
+    ln.setAttribute('x1',ax);ln.setAttribute('y1',ay);
+    ln.setAttribute('x2',bx);ln.setAttribute('y2',by);
+    ln.setAttribute('class','ch-overlap-line');
+    layer.appendChild(ln);
+    const mx=(ax+bx)/2,my=(ay+by)/2;
+    const bg=mk('rect');
+    bg.setAttribute('x',mx-26);bg.setAttribute('y',my-10);
+    bg.setAttribute('width',52);bg.setAttribute('height',20);
+    bg.setAttribute('rx',10);bg.setAttribute('class','ch-overlap-bg');
+    layer.appendChild(bg);
+    const txt=mk('text');
+    txt.setAttribute('x',mx);txt.setAttribute('y',my);
+    txt.setAttribute('class','ch-overlap-lbl');
+    const labelA=a.channel==='auto'||!a.channel?'?':a.channel;
+    const labelB=b.channel==='auto'||!b.channel?'?':b.channel;
+    txt.textContent=labelA===labelB?`⚡ Ch ${labelA}`:`⚡ ${labelA}↔${labelB}`;
+    layer.appendChild(txt);
+  }
+}
+
+export function renderOverlapZoneLayer(layer, ctx){
+  const mk=(tag)=>ctx.doc.createElementNS('http://www.w3.org/2000/svg',tag);
+  layer.innerHTML='';if(!ctx.showOL)return;
+  const w=ctx.w||1,h=ctx.h||1;
+  for(let i=0;i<ctx.aps.length;i++)for(let j=i+1;j<ctx.aps.length;j++){
+    const a=ctx.aps[i],b=ctx.aps[j];
+    const ax=a.fx*w,ay=a.fy*h,bx=b.fx*w,by=b.fy*h;
+    const dist=Math.hypot(ax-bx,ay-by);
+    if(dist<a.r+b.r){const c=mk('circle');c.setAttribute('cx',(ax+bx)/2);c.setAttribute('cy',(ay+by)/2);c.setAttribute('r',Math.max(8,(a.r+b.r-dist)*.42));c.setAttribute('class','ol-zone');layer.appendChild(c);}
+  }
+}
+
+export function renderGridLayer(layer, ctx){
+  const mk=(tag)=>ctx.doc.createElementNS('http://www.w3.org/2000/svg',tag);
+  layer.innerHTML='';if(!ctx.showGrid)return;
+  const w=ctx.w||1,h=ctx.h||1;
+  const g=mk('g');g.setAttribute('class','snap-grid');
+  for(let x=0;x<=w;x+=ctx.gridSize){const l=mk('line');l.setAttribute('x1',x);l.setAttribute('y1',0);l.setAttribute('x2',x);l.setAttribute('y2',h);g.appendChild(l);}
+  for(let y=0;y<=h;y+=ctx.gridSize){const l=mk('line');l.setAttribute('x1',0);l.setAttribute('y1',y);l.setAttribute('x2',w);l.setAttribute('y2',y);g.appendChild(l);}
+  layer.appendChild(g);
 }

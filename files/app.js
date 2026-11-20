@@ -102,7 +102,7 @@ import {settingsForm,SETTINGS_STRING_KEYS,SETTINGS_NUMBER_KEYS,SETTINGS_BOOL_KEY
 import {revisionsEl} from './src/revisionsUI.js';
 import * as _pb from './src/panelBlocks.js';
 import {apPanelHtml,swPanelHtml,camPanelHtml,wallPanelHtml,dzPanelHtml} from './src/panels.js';
-import {renderAPLayer,renderDZLayer,renderCableLayer,renderCAMLayer,renderSWLayer} from './src/mapLayers.js';
+import {renderAPLayer,renderDZLayer,renderCableLayer,renderCAMLayer,renderSWLayer,renderAnnoLayer,renderSampleLayer,renderRoamingLayer,renderChannelOverlapLayer,renderOverlapZoneLayer,renderGridLayer} from './src/mapLayers.js';
 const {credsBlock,inventoryBlock,portOptions,portControl,statusOptions,buildGroupedOptions,CRED_PROTOS}=_pb;
 import {remoteImageHosts,stripRemoteImages} from './src/remoteImages.js';
 import {evaluatePolicies} from './src/policy.js';
@@ -342,6 +342,8 @@ const _layerCtx={
   get scaleM(){return scaleM;},get mPerPx(){return scaleM/100;},get floorScaleM(){return F().scaleM;},
   get zoom(){return scale;},get routingFactor(){return routingFactor();},
   get showCables(){return showCables;},get showCoverage(){return showCoverage;},
+  get annos(){return ANNOS();},get samples(){return SAMPLES();},
+  get showOL(){return showOL;},get showGrid(){return showGrid;},gridSize:GRID_SZ,
   isSelected:(id,type)=>isSelected(id,type),statusDimmed:d=>statusDimmed(d),vlanColor:v=>vlanColor(v),
   hexToRgba:(c,a)=>hexToRgba(c,a),tInk:a=>tInk(a),tBg:a=>tBg(a),
   getCoveragePath:ap=>getCoveragePath(ap),getInnerCoveragePath:ap=>getInnerCoveragePath(ap),
@@ -2773,62 +2775,15 @@ function renderSWs(){renderSWLayer(swLayer,_layerCtx);}
 // ═══ CHANNEL OVERLAP ══════════════════════════════
 // Visually flag APs whose occupied channels overlap (band- and width-aware,
 // see ./src/channels.js) AND whose coverage circles touch.
-function renderChannelOverlap(){
-  chOverlapLayer.innerHTML='';
-  const w=mapImg.naturalWidth,h=mapImg.naturalHeight;
-  if(!w||!h)return;
-  const aps=APS();
-  for(let i=0;i<aps.length;i++)for(let j=i+1;j<aps.length;j++){
-    const a=aps[i],b=aps[j];
-    if(!apChansOverlap(a,b))continue;
-    const ax=a.fx*w,ay=a.fy*h,bx=b.fx*w,by=b.fy*h;
-    const dist=Math.hypot(ax-bx,ay-by);
-    // Only flag pairs whose coverage areas overlap — otherwise interference
-    // is not really a concern, just a coincidental channel match.
-    if(dist>=(a.r+b.r)*0.9)continue;
-    const ln=mk('line');
-    ln.setAttribute('x1',ax);ln.setAttribute('y1',ay);
-    ln.setAttribute('x2',bx);ln.setAttribute('y2',by);
-    ln.setAttribute('class','ch-overlap-line');
-    chOverlapLayer.appendChild(ln);
-    const mx=(ax+bx)/2,my=(ay+by)/2;
-    const bg=mk('rect');
-    bg.setAttribute('x',mx-26);bg.setAttribute('y',my-10);
-    bg.setAttribute('width',52);bg.setAttribute('height',20);
-    bg.setAttribute('rx',10);bg.setAttribute('class','ch-overlap-bg');
-    chOverlapLayer.appendChild(bg);
-    const txt=mk('text');
-    txt.setAttribute('x',mx);txt.setAttribute('y',my);
-    txt.setAttribute('class','ch-overlap-lbl');
-    const labelA=a.channel==='auto'||!a.channel?'?':a.channel;
-    const labelB=b.channel==='auto'||!b.channel?'?':b.channel;
-    txt.textContent=labelA===labelB?`⚡ Ch ${labelA}`:`⚡ ${labelA}↔${labelB}`;
-    chOverlapLayer.appendChild(txt);
-  }
-}
+function renderChannelOverlap(){renderChannelOverlapLayer(chOverlapLayer,_layerCtx);}
 
-function renderOL(){
-  olLayer.innerHTML='';if(!showOL)return;
-  const w=mapImg.naturalWidth||1,h=mapImg.naturalHeight||1;
-  for(let i=0;i<APS().length;i++)for(let j=i+1;j<APS().length;j++){
-    const a=APS()[i],b=APS()[j];
-    const ax=a.fx*w,ay=a.fy*h,bx=b.fx*w,by=b.fy*h;
-    const dist=Math.hypot(ax-bx,ay-by);
-    if(dist<a.r+b.r){const c=mk('circle');c.setAttribute('cx',(ax+bx)/2);c.setAttribute('cy',(ay+by)/2);c.setAttribute('r',Math.max(8,(a.r+b.r-dist)*.42));c.setAttribute('class','ol-zone');olLayer.appendChild(c);}
-  }
-}
+function renderOL(){renderOverlapZoneLayer(olLayer,_layerCtx);}
 
 // Per-pixel signal-strength heatmap. We paint to an offscreen canvas at a
 // coarse grid resolution, shading each cell by the strongest contributor at
 // that point. v3 supports four metric modes (RSSI / SNR / MCS / Throughput)
 // + a band filter + neighbouring-floor leakage through slabs.
 
-function _heatColor(dbm){
-  // Legacy single-mode helper retained for code paths that still call it.
-  if(dbm===null||dbm===undefined||!Number.isFinite(dbm))return null;
-  for(const s of HEATMAP_STOPS){if(dbm>=s.dbm)return s.color;}
-  return null;
-}
 function cycleHeatmapMode(){
   const keys=HEATMAP_MODE_KEYS;
   const cur=SETTINGS.heatmapMode||'rssi';
@@ -2960,136 +2915,15 @@ function renderHeat(){
 // Roaming overlap layer. Tints cells where ≥2 APs deliver ≥ ROAMING_OVERLAP_DBM
 // signal. Same canvas as the heatmap is unsuitable (different colour role), so
 // we use a dedicated SVG group with semi-transparent rects.
-function renderRoaming(){
-  const layer=document.getElementById('roaming-layer');
-  if(!layer)return;
-  layer.innerHTML='';
-  if(!SETTINGS.showRoamingOverlap)return;
-  const w=mapImg.naturalWidth||0,h=mapImg.naturalHeight||0;
-  if(!w||!h)return;
-  const aps=APS();
-  if(aps.length<2)return;
-  const walls=WALLS();
-  const propModel=SETTINGS.propagationModel||'logd';
-  const step=Math.max(6,Math.round(Math.min(w,h)/80));
-  // Render into a path of overlapping rects so the DOM stays small.
-  let d='';
-  for(let y=0;y<h;y+=step){
-    for(let x=0;x<w;x+=step){
-      let n=0;
-      for(const ap of aps){
-        const pat=AP_PATTERNS[ap.pattern]||AP_PATTERNS.omni;
-        const dbm=dbmAt(ap,x,y,w,h,walls,{
-          bandFactor:bandLossMultiplier(ap.freq),
-          arcDeg:pat.arc,headingDeg:ap.heading||0,
-          eirpDbm:effectiveEirp(ap),
-          model:propModel,
-          metersPerPx:(scaleM||100)/100,
-        });
-        if(dbm!==null && dbm>=ROAMING_OVERLAP_DBM){n++;if(n>=2)break;}
-      }
-      if(n>=2) d+=`M${x},${y}h${step}v${step}h${-step}Z`;
-    }
-  }
-  if(!d)return;
-  const path=mk('path');
-  path.setAttribute('d',d);
-  path.setAttribute('class','roaming-fill');
-  layer.appendChild(path);
-}
+function renderRoaming(){renderRoamingLayer(document.getElementById('roaming-layer'),_layerCtx);}
 
 // Annotation layer. Text labels and arrows live in floor.ANNOS.
-function renderAnnotations(){
-  const layer=document.getElementById('anno-layer');
-  if(!layer)return;
-  layer.innerHTML='';
-  const w=mapImg.naturalWidth||1,h=mapImg.naturalHeight||1;
-  for(const a of ANNOS()){
-    const x=(a.fx||0)*w, y=(a.fy||0)*h;
-    if(a.kind==='arrow'||a.kind==='dim'){
-      const x2=(a.fx2||a.fx||0)*w, y2=(a.fy2||a.fy||0)*h;
-      const ln=mk('line');
-      ln.setAttribute('x1',x);ln.setAttribute('y1',y);
-      ln.setAttribute('x2',x2);ln.setAttribute('y2',y2);
-      ln.setAttribute('class', a.kind==='dim' ? 'anno-dim' : 'anno-arrow');
-      ln.setAttribute('marker-end','url(#anno-arrowhead)');
-      layer.appendChild(ln);
-      if(a.kind==='dim'){
-        // Show distance label at the midpoint
-        const mx=(x+x2)/2, my=(y+y2)/2;
-        const dist=Math.hypot(x-x2,y-y2);
-        const m=Math.round(dist*(scaleM||100)/100*10)/10;
-        const lbl=mk('text');
-        lbl.setAttribute('x',mx);lbl.setAttribute('y',my-6);
-        lbl.setAttribute('class','anno-dim-label');
-        lbl.textContent=m+' m';
-        layer.appendChild(lbl);
-      }
-      if(a.text){
-        const lbl=mk('text');
-        lbl.setAttribute('x',x);lbl.setAttribute('y',y-10);
-        lbl.setAttribute('class','anno-text');
-        lbl.textContent=a.text;
-        layer.appendChild(lbl);
-      }
-    } else {
-      const lbl=mk('text');
-      lbl.setAttribute('x',x);lbl.setAttribute('y',y);
-      lbl.setAttribute('class','anno-text');
-      lbl.textContent=a.text||'Note';
-      layer.appendChild(lbl);
-    }
-  }
-}
+function renderAnnotations(){renderAnnoLayer(document.getElementById('anno-layer'),_layerCtx);}
 
 // Survey-sample layer. Each sample is a small circle coloured by its RSSI,
 // with a thin outline that turns red when the measured value is materially
 // stronger or weaker than the predicted value at that point.
-function renderSamples(){
-  const layer=document.getElementById('sample-layer');
-  if(!layer)return;
-  layer.innerHTML='';
-  const samples=SAMPLES();
-  if(!samples.length)return;
-  const w=mapImg.naturalWidth||1,h=mapImg.naturalHeight||1;
-  const walls=WALLS();
-  const propModel=SETTINGS.propagationModel||'logd';
-  for(const s of samples){
-    const x=(s.fx||0)*w, y=(s.fy||0)*h;
-    // Predicted: max dBm across local APs.
-    let predicted=-Infinity;
-    for(const ap of APS()){
-      const pat=AP_PATTERNS[ap.pattern]||AP_PATTERNS.omni;
-      const d=dbmAt(ap,x,y,w,h,walls,{
-        bandFactor:bandLossMultiplier(ap.freq),
-        arcDeg:pat.arc,headingDeg:ap.heading||0,
-        eirpDbm:effectiveEirp(ap),
-        model:propModel,
-        metersPerPx:(scaleM||100)/100,
-      });
-      if(d!==null&&d>predicted)predicted=d;
-    }
-    const measured=Number.isFinite(s.rssi)?s.rssi:-95;
-    const delta=predicted===-Infinity?null:(measured-predicted);
-    const color=_heatColor(measured)||'#666';
-    const c=mk('circle');
-    c.setAttribute('cx',x);c.setAttribute('cy',y);c.setAttribute('r',5);
-    c.setAttribute('fill',color);
-    c.setAttribute('class','sample-dot');
-    if(delta!==null && Math.abs(delta)>8){
-      c.setAttribute('stroke','#c0382b');c.setAttribute('stroke-width','2');
-    } else {
-      c.setAttribute('stroke','#000');c.setAttribute('stroke-width','1');
-    }
-    c.setAttribute('data-rssi',String(measured));
-    if(delta!==null){
-      const t=mk('title');
-      t.textContent=`Measured ${measured} dBm · Predicted ${Math.round(predicted)} dBm · Δ ${delta>=0?'+':''}${Math.round(delta)} dB`;
-      c.appendChild(t);
-    }
-    layer.appendChild(c);
-  }
-}
+function renderSamples(){renderSampleLayer(document.getElementById('sample-layer'),_layerCtx);}
 
 // ═══ ANNOTATION DRAWING ═══════════════════════════
 // Live preview while the user drags out an arrow / dim annotation.
@@ -3609,14 +3443,7 @@ function showPluginCatalogDialog(){
   });
 }
 
-function renderGrid(){
-  gridLayer.innerHTML='';if(!showGrid)return;
-  const w=mapImg.naturalWidth||1,h=mapImg.naturalHeight||1;
-  const g=mk('g');g.setAttribute('class','snap-grid');
-  for(let x=0;x<=w;x+=GRID_SZ){const l=mk('line');l.setAttribute('x1',x);l.setAttribute('y1',0);l.setAttribute('x2',x);l.setAttribute('y2',h);g.appendChild(l);}
-  for(let y=0;y<=h;y+=GRID_SZ){const l=mk('line');l.setAttribute('x1',0);l.setAttribute('y1',y);l.setAttribute('x2',w);l.setAttribute('y2',y);g.appendChild(l);}
-  gridLayer.appendChild(g);
-}
+function renderGrid(){renderGridLayer(gridLayer,_layerCtx);}
 
 function render(){_resetThemeCache();renderGrid();renderHeat();renderRoaming();renderOL();renderWalls();renderCables();renderSWs();renderAPs();renderCAMs();renderClients();renderDZs();renderChannelOverlap();renderAnnotations();renderSamples();renderAnnoPreview();renderRuler();updateCnt();updateApStickReadout();updateVlanLegend();}
 
