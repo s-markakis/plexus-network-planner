@@ -76,13 +76,19 @@ describe('address allocation', () => {
       expect(off).toBeLessThan(size - 1);
     }
   });
-  it('subnetUsage counts exactly the distinct addresses inside', () => {
+  it('subnetUsage counts exactly the distinct host-pool addresses inside', () => {
     for (let i = 0; i < 800; i++) {
       const base = u32(), bits = int(22, 29);
       const cidr = `${dotted(base)}/${bits}`;
       const net = netOfBig(base, bits);
       const ips = Array.from({ length: int(0, 30) }, () => dotted(rand() < 0.6 ? Number(net) + int(0, 2 ** (32 - bits) - 1) : u32()));
-      const want = new Set(ips.filter((s) => netOfBig(ipToInt(s), bits) === net)).size;
+      // The pool is host index 2 … size-2 (network, .1 gateway, broadcast excluded).
+      const size = 2 ** (32 - bits);
+      const want = new Set(ips.filter((s) => {
+        if (netOfBig(ipToInt(s), bits) !== net) return false;
+        const i = ipToInt(s) - Number(net);
+        return i >= 2 && i <= size - 2;
+      })).size;
       expect(subnetUsage(cidr, ips).used).toBe(want);
     }
   });

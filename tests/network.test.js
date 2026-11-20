@@ -154,6 +154,15 @@ describe('subnetUsage', () => {
     expect(u.capacity).toBe(5);
     expect(u.pct).toBe(100);
   });
+  it('does not count the network, gateway (.1) or broadcast addresses', () => {
+    // Router on .1 plus 252 hosts in a /24: one address (.254) is still free.
+    const ips = ['10.0.10.1', ...Array.from({ length: 252 }, (_, i) => `10.0.10.${i + 2}`), '10.0.10.0', '10.0.10.255'];
+    const u = subnetUsage('10.0.10.0/24', ips);
+    expect(u.used).toBe(252);
+    expect(u.pct).toBe(100);           // rounds, but…
+    expect(u.used < u.capacity).toBe(true);   // …one host is free
+    expect(subnetUsage('10.0.0.0/30', ['10.0.0.1', '10.0.0.2']).used).toBe(1);
+  });
   it('returns null for an unusable CIDR but not for a tiny one', () => {
     expect(subnetUsage('', [])).toBeNull();
     expect(subnetUsage('10.0.0.0/30', []).capacity).toBe(1); // /30 still has one offerable host

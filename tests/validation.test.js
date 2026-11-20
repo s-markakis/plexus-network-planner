@@ -41,7 +41,16 @@ describe('validatePlan', () => {
     const r = validatePlan(c);
     expect(r.warns).toContain('AP-1: VLAN "99" is not in the VLAN registry.');
     expect(r.warns).toContain('CAM-1: IP 10.9.9.9 is outside VLAN 10 subnet 10.0.0.0/30.');
-    expect(r.errors).toContain('VLAN 10 subnet 10.0.0.0/30 is full (2/1 hosts).');
+    expect(r.errors).toContain('VLAN 10 subnet 10.0.0.0/30 is full (1/1 hosts).');
+  });
+  it('one free address left is a warning, not "full"', () => {
+    const c = base();
+    c.vlans = [{ id: '10', subnet: '10.0.10.0/24' }];
+    c.floor.APS = []; c.floor.SWS = [];
+    c.floors = [c.floor, { name: 'F', APS: Array.from({ length: 252 }, (_, i) => ({ id: 'x' + i, name: 'x' + i, ip: `10.0.10.${i + 2}` })), CAMS: [], SWS: [] }];
+    const r = validatePlan(c);
+    expect(r.errors).toEqual([]);
+    expect(r.warns).toEqual(['VLAN 10 subnet 10.0.10.0/24 is 99% full (252/253 hosts).']);
   });
   it('names are plain text (no HTML escaping)', () => {
     const c = base();

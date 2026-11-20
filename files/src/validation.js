@@ -84,8 +84,9 @@ export function validatePlan(ctx) {
       if (!v.subnet) continue;
       const u = subnetUsage(v.subnet, allIps);
       if (!u) continue;
-      if (u.pct >= 100) errors.push(`VLAN ${v.id} subnet ${v.subnet} is full (${u.used}/${u.capacity} hosts).`);
-      else if (u.pct >= 90) warns.push(`VLAN ${v.id} subnet ${v.subnet} is ${u.pct}% full (${u.used}/${u.capacity} hosts).`);
+      // "Full" by count, not the rounded percentage (252/253 rounds to 100).
+      if (u.used >= u.capacity) errors.push(`VLAN ${v.id} subnet ${v.subnet} is full (${u.used}/${u.capacity} hosts).`);
+      else if (u.pct >= 90) warns.push(`VLAN ${v.id} subnet ${v.subnet} is ${Math.min(u.pct, 99)}% full (${u.used}/${u.capacity} hosts).`);
     }
   }
   // Naming convention (only when one with a number is configured).
