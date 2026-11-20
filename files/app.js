@@ -90,6 +90,7 @@ import {projectForShare} from './src/shareLink.js';
 import {bomCsv,cableScheduleCsv,ipPlanCsv,portMapCsv,inventoryCsv} from './src/csvExports.js';
 import {diffRevisions as _diffRevisions} from './src/revisionDiff.js';
 import {planChannels,planTxPower} from './src/rfPlanning.js';
+import {validatePlan} from './src/validation.js';
 import {remoteImageHosts,stripRemoteImages} from './src/remoteImages.js';
 import {evaluatePolicies} from './src/policy.js';
 import {compileTopology} from './src/simCompile.js';
@@ -1090,121 +1091,19 @@ function autoAssignSwitches(){
 // One pass over the current floor surfacing wiring/PoE problems before
 // handoff, grouped by severity. Cable-length checks need a placed map (scale).
 function showValidation(){
+  // The checks live in ./src/validation.js; this supplies the live plan.
   const f=F();
-  const errors=[],warns=[],infos=[];
-  const sws=SWS();
-  for(const sw of sws){
-    const a=analyzeSwitch(sw,f);
-    if(a.overBudget)errors.push(`${sw.name}: PoE draw ${a.draw.toFixed(0)} W exceeds ${a.budget} W budget.`);
-    else if(a.budget>0 && a.headroom!=null && a.headroom<10 && a.draw>0)warns.push(`${sw.name}: only ${a.headroom}% PoE headroom left.`);
-    if(a.overPorts)errors.push(`${sw.name}: ${a.used} devices on ${a.ports} ports — over capacity.`);
-    for(const c of a.classFails)errors.push(`${c.name} needs ${c.cls} PoE but ${sw.name} delivers ${a.swCls||'none'}.`);
-    if(!a.swCls && a.clients.some(c=>c.w>0))warns.push(`${sw.name} has PoE devices but no PoE budget set.`);
-    // Duplicate port labels on the same switch.
-    const seen=new Map();
-    for(const c of a.clients){
-      const p=(c.port||'').trim().toLowerCase();
-      if(!p)continue;
-      if(seen.has(p))warns.push(`${sw.name}: port "${c.port}" used by both ${seen.get(p)} and ${c.name}.`);
-      else seen.set(p,c.name);
-    }
-  }
-  // Cable-run length (real scale → needs a map).
   const hasMap=!!(mapImg.naturalWidth&&mapImg.naturalHeight);
-  const checkRun=(dev,label)=>{
-    if(!dev.swId)return;
-    const sw=sws.find(s=>s.id===dev.swId);if(!sw)return;
-    const m=cableRunM(dev,sw,f);
-    if(m>100)errors.push(`${label}: cable run to ${sw.name} is ${m.toFixed(0)} m (>100 m Ethernet limit).`);
-    else if(m>90)warns.push(`${label}: cable run to ${sw.name} is ${m.toFixed(0)} m (near 100 m limit).`);
-  };
-  if(hasMap){APS().forEach(ap=>checkRun(ap,ap.name));CAMS().forEach(c=>checkRun(c,c.name));}
-  // Unassigned devices (informational).
-  APS().forEach(ap=>{if(!ap.swId)infos.push(`${ap.name} is not assigned to a switch.`);});
-  CAMS().forEach(c=>{if(!c.swId)infos.push(`${c.name} is not assigned to a switch.`);});
-  // Duplicate IPs, building-wide (addresses are global): APs, cameras and
-  // switches on every floor. Messages are text (shown via textContent).
-  const ipMap=new Map();
-  const where=(fl,name)=>FLOORS.length>1&&fl!==f?`${name} (${fl.name||'another floor'})`:name;
-  const noteIp=(ip,label)=>{const k=(ip||'').trim();if(!k)return;if(ipMap.has(k))warns.push(`Duplicate IP ${k}: ${ipMap.get(k)} and ${label}.`);else ipMap.set(k,label);};
-  for(const fl of [f,...FLOORS.filter(x=>x!==f)])
-    for(const list of [fl.APS,fl.CAMS,fl.SWS])for(const d of (list||[]))noteIp(d.ip,where(fl,d.name));
-  // VLANs referenced but not in the registry (only when a registry exists).
-  if(vlanList().length){
-    const checkVlan=(dev,label)=>{const v=(dev.vlan||'').trim();if(v&&!vlanById(v))warns.push(`${label}: VLAN "${v}" is not in the VLAN registry.`);};
-    APS().forEach(ap=>checkVlan(ap,ap.name));
-    CAMS().forEach(c=>checkVlan(c,c.name));
-  }
-  // IPs that sit outside their VLAN's declared subnet (floor devices).
-  const checkIpSubnet=(dev,label)=>{
-    const v=vlanById(dev.vlan);
-    const ip=(dev.ip||'').trim();
-    if(!ip||!v||!v.subnet)return;
-    if(!ipInCidr(ip,v.subnet))warns.push(`${label}: IP ${ip} is outside VLAN ${v.id} subnet ${v.subnet}.`);
-  };
-  APS().forEach(ap=>checkIpSubnet(ap,ap.name));
-  CAMS().forEach(c=>checkIpSubnet(c,c.name));
-  // Subnet pool exhaustion (building-wide — IPs are global).
-  if(vlanList().length){
-    const allIps=[];
-    for(const fl of FLOORS)for(const list of [fl.APS,fl.CAMS,fl.SWS])for(const d of (list||[]))if(d.ip)allIps.push(d.ip);
-    for(const v of vlanList()){
-      if(!v.subnet)continue;
-      const u=subnetUsage(v.subnet,allIps);
-      if(!u)continue;
-      if(u.pct>=100)errors.push(`VLAN ${v.id} subnet ${v.subnet} is full (${u.used}/${u.capacity} hosts).`);
-      else if(u.pct>=90)warns.push(`VLAN ${v.id} subnet ${v.subnet} is ${u.pct}% full (${u.used}/${u.capacity} hosts).`);
-    }
-  }
-  // Naming convention (when one is configured in Settings → Organization).
-  if(patternHasNumber(SETTINGS.namePattern)){
-    const offenders=[];
-    for(const [list,type] of [[APS(),'AP'],[CAMS(),'CAM'],[SWS(),'SW']]){
-      for(const dev of list)
-        if(!nameMatches(dev.name,SETTINGS.namePattern,namingCtx(type,curFloor)))offenders.push(dev.name||dev.id);
-    }
-    if(offenders.length){
-      const shown=offenders.slice(0,3).join(', ');
-      warns.push(`${offenders.length} device name${offenders.length===1?'':'s'} break the "${SETTINGS.namePattern}" convention (${shown}${offenders.length>3?', …':''}) — Inventory → Auto-rename fixes them.`);
-    }
-  }
-  // Per-AP airtime utilization (this floor). Demand = clients × per-client
-  // Mbps vs what the cell actually delivers on average.
-  if(hasMap){
-    for(const ap of APS()){
-      if(!(ap.capacityClients>0))continue;
-      const pct=apAirtimePct(ap,f);
-      if(pct===Infinity)errors.push(`${ap.name}: expected ${ap.capacityClients} clients but the cell delivers no usable throughput.`);
-      else if(pct>100)errors.push(`${ap.name}: airtime ~${pct}% — ${ap.capacityClients} clients × ${parseFloat(SETTINGS.perClientMbps)||5} Mbps exceeds what this cell can carry.`);
-      else if(pct>80)warns.push(`${ap.name}: airtime ~${pct}% — near saturation; consider a wider channel or another AP.`);
-    }
-  }
-  // Policies (reachability intent): a violated policy is a design error.
-  if(Array.isArray(SETTINGS.policies)&&SETTINGS.policies.length){
-    try{
-      const pr=evaluatePolicies(simProject(),SETTINGS.policies).results;
-      for(const r of pr){
-        if(r.status==='fail'){const v=r.violations[0];errors.push(`Policy violated — ${r.label}: ${v.from} (${v.fromIp}) → ${v.to} (${v.toIp})${r.violations.length>1?` (+${r.violations.length-1} more)`:''}.`);}
-        else if(r.status==='skipped')warns.push(`Policy not testable — ${r.label}: ${r.reason}.`);
-      }
-      const okN=pr.filter(r=>r.status==='pass').length;
-      if(okN)infos.push(`${okN} reachability polic${okN===1?'y holds':'ies hold'}.`);
-    }catch(_){warns.push('Policies could not be evaluated (the plan does not simulate).');}
-  }
-  // Client-capacity rollup (building-wide; only when an expectation is set).
-  const expected=parseInt(SETTINGS.expectedClients,10)||0;
-  if(expected>0){
-    const cap=totalClientCapacity();
-    if(cap<expected)warns.push(`Client capacity ${cap} < expected ${expected} — consider more/denser APs.`);
-    else infos.push(`Client capacity ${cap} ≥ expected ${expected}.`);
-  }
-  // Camera storage rollup (building-wide).
-  const storGb=totalStorageGb();
-  if(storGb>0){
-    const days=parseInt(SETTINGS.retentionDays,10)||30;
-    infos.push(`Camera recording needs ~${storGb>=1000?(storGb/1000).toFixed(2)+' TB':Math.round(storGb)+' GB'} of NVR storage for ${days}-day retention (${SETTINGS.storageCodec==='h264'?'H.264':'H.265'}).`);
-  }
-
+  const {errors,warns,infos}=validatePlan({
+    floor:f,floors:FLOORS,vlans:vlanList(),settings:SETTINGS,hasMap,
+    analyze:sw=>analyzeSwitch(sw,f),
+    runM:(dev,sw)=>cableRunM(dev,sw,f),
+    airtimePct:ap=>apAirtimePct(ap,f),
+    nameOk:patternHasNumber(SETTINGS.namePattern)?(dev,type)=>nameMatches(dev.name,SETTINGS.namePattern,namingCtx(type,curFloor)):null,
+    evalPolicies:()=>evaluatePolicies(simProject(),SETTINGS.policies).results,
+    clientCapacity:totalClientCapacity,
+    storageGb:totalStorageGb(),
+  });
   const wrap=document.createElement('div');
   wrap.style.cssText='font-family:inherit;font-size:13px';
   // The ✓ banner keys off problems only — informational lines (e.g. the NVR
