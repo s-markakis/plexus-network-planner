@@ -89,6 +89,7 @@ import {deviceIndex} from './src/circuits.js';
 import {projectForShare} from './src/shareLink.js';
 import {bomCsv,cableScheduleCsv,ipPlanCsv,portMapCsv,inventoryCsv} from './src/csvExports.js';
 import {diffRevisions as _diffRevisions} from './src/revisionDiff.js';
+import {planChannels,planTxPower} from './src/rfPlanning.js';
 import {remoteImageHosts,stripRemoteImages} from './src/remoteImages.js';
 import {evaluatePolicies} from './src/policy.js';
 import {compileTopology} from './src/simCompile.js';
@@ -1986,7 +1987,7 @@ function _syncToolbarFromSettings(){
   if(vlanBtn)vlanBtn.classList.toggle('active',!!SETTINGS.colorByVlan);
 }
 
-// ═══ ID SYNC ══════════════════════════════════════
+// ═══ ID SYNC + VIEWPORT (pan, zoom, pointer input) ═
 // After loading a project (from file or autosave), the global `nid` counter
 // might be lower than the highest ID already in use. If we let `nid` reset
 // to 1, the next placed AP gets an ID like "ap1" — which collides with an
@@ -3969,113 +3970,22 @@ function importSurveyCsv(input){
 }
 
 // ═══ AUTO CHANNEL + TX-POWER PLANNING ═════════════
-// Greedy graph-coloring channel assignment. Looks at all APs on the current
-// floor, picks a channel for each from its band's region-allowed list, and
-// favours channels that don't overlap with neighbours within 0.9*(rA+rB).
-function _regionChannels(band){
-  const region=REGULATORY_REGIONS[SETTINGS.regulatoryRegion||DEFAULT_REGULATORY_REGION]||REGULATORY_REGIONS[DEFAULT_REGULATORY_REGION];
-  if(band==='2.4')return region.channels24.slice();
-  if(band==='5')return region.channels5.slice();
-  if(band==='6')return region.channels6.slice();
-  return [];
-}
-function _bandForAp(ap){
-  const f=ap.freq||'';
-  if(f.indexOf('6 GHz')>=0)return '6';
-  if(f==='2.4 GHz only')return '2.4';
-  return '5';   // 5 GHz only and 2.4/5 GHz dual → plan on 5 GHz
-}
+// The planners live in ./src/rfPlanning.js; these apply them to the floor.
 function autoChannelPlan(){
   const aps=APS();
   if(!aps.length){toast('No APs to plan');return;}
   snapshot();
-  const w=mapImg.naturalWidth||1,h=mapImg.naturalHeight||1;
-  // For each AP, score each channel in its band by neighbour overlap penalty.
+  const plan=planChannels(aps,{...floorDims(F()),regionKey:SETTINGS.regulatoryRegion});
   let changed=0;
-  for(const ap of aps){
-    const band=_bandForAp(ap);
-    const list=_regionChannels(band);
-    if(!list.length)continue;
-    // Skip channels that are DFS in the current region (avoid unnecessary
-    // radar pre-emption hits) unless the AP already sits on one explicitly.
-    const region=REGULATORY_REGIONS[SETTINGS.regulatoryRegion||DEFAULT_REGULATORY_REGION];
-    const dfs=region?region.dfs||[]:[];
-    const candidates=list.filter(c=>!dfs.includes(c));
-    const pool=candidates.length?candidates:list;
-    let bestCh=pool[0], bestScore=Infinity;
-    const apWidth=ap.chanWidth||20;
-    for(const ch of pool){
-      let score=0;
-      for(const other of aps){
-        if(other===ap)continue;
-        if(_bandForAp(other)!==band)continue;
-        const ax=ap.fx*w, ay=ap.fy*h;
-        const bx=other.fx*w, by=other.fy*h;
-        const dist=Math.hypot(ax-bx,ay-by);
-        if(dist>=(ap.r+other.r)*0.9)continue;
-        const otherCh=parseInt(String(other.channel||''),10);
-        if(!Number.isFinite(otherCh))continue;
-        // Width-aware: spectrum overlap of the candidate (at this AP's width)
-        // vs the neighbour's actual channel+width is the real conflict test.
-        if(channelsOverlapMhz(band,ch,apWidth,band,otherCh,other.chanWidth||20)){
-          score+=otherCh===ch?10:5;
-        }else if((band==='5'||band==='6') && Math.abs(otherCh-ch)<4){
-          score+=1;   // adjacent-channel leakage penalty
-        }
-      }
-      if(score<bestScore){bestScore=score;bestCh=ch;}
-    }
-    if(String(ap.channel)!==String(bestCh)){ap.channel=String(bestCh);changed++;}
-  }
+  for(const [ap,ch] of plan)if(String(ap.channel)!==ch){ap.channel=ch;changed++;}
   render();renderRP();
   toast(`Auto channel: ${changed} AP${changed===1?'':'s'} updated`);
-}
-// Reference Tx power that maps to an AP's stored coverage radius `ap.r`.
-const TX_POWER_REF_DBM=20;
-// Effective coverage radius if the AP ran at `tx` dBm. Indoor path-loss
-// exponent ≈3, so the usable range scales as 10^(ΔdBm/30) — i.e. roughly
-// doubling for every +9 dB.
-function _radiusAtTx(baseR,tx){
-  return baseR*Math.pow(10,(tx-TX_POWER_REF_DBM)/30);
 }
 function autoTxPower(){
   const aps=APS();
   if(!aps.length){toast('No APs to plan');return;}
   snapshot();
-  const w=mapImg.naturalWidth||1,h=mapImg.naturalHeight||1;
-  // Try each Tx power (from 5 to 23 dBm) and pick the one whose resulting
-  // coverage overlaps neighbouring same-band APs by ~30 % of its own area —
-  // enough for roaming without blanketing the floor. The candidate radius
-  // scales with Tx power, so the heuristic actually discriminates.
-  for(const ap of aps){
-    let bestTx=TX_POWER_REF_DBM, bestDelta=Infinity;
-    const ax=ap.fx*w, ay=ap.fy*h;
-    for(const tx of [5,8,11,14,17,20,23]){
-      const a=_radiusAtTx(ap.r,tx);
-      let overlap=0;
-      const own=Math.PI*a*a;
-      for(const other of aps){
-        if(other===ap)continue;
-        if(_bandForAp(other)!==_bandForAp(ap))continue;
-        const bx=other.fx*w, by=other.fy*h;
-        const d=Math.hypot(ax-bx,ay-by);
-        const b=other.r;
-        if(d>=a+b)continue;
-        // Lens (circle–circle intersection) area approximation.
-        if(d<=Math.abs(a-b))overlap+=Math.PI*Math.min(a,b)**2;
-        else{
-          const a2=Math.acos((d*d+a*a-b*b)/(2*d*a))*a*a;
-          const b2=Math.acos((d*d+b*b-a*a)/(2*d*b))*b*b;
-          const tri=0.5*Math.sqrt(Math.max(0,(-d+a+b)*(d+a-b)*(d-a+b)*(d+a+b)));
-          overlap+=Math.max(0,a2+b2-tri);
-        }
-      }
-      const ratio=own?overlap/own:0;
-      const delta=Math.abs(ratio-0.3);
-      if(delta<bestDelta){bestDelta=delta;bestTx=tx;}
-    }
-    ap.txPowerDbm=bestTx;
-  }
+  for(const [ap,tx] of planTxPower(aps,floorDims(F())))ap.txPowerDbm=tx;
   invalidateCoverageCache();
   render();renderRP();calcCoverage();
   toast('Tx-power tuned for each AP');
