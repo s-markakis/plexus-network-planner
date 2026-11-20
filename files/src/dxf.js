@@ -28,8 +28,8 @@ export function parseDxf(text) {
   };
 
   let inEntities = false;
-  let ent = null;           // current entity being accumulated
-  let polyOpen = null;      // legacy POLYLINE accumulator {pts, closed}
+  /** @type {any} */ let ent = null;           // current entity being accumulated
+  /** @type {any} */ let polyOpen = null;      // legacy POLYLINE accumulator {pts, closed}
 
   const flush = () => {
     if (!ent) return;

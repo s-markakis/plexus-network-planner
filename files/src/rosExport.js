@@ -114,7 +114,8 @@ export function planDeviceModel(project, swId, opts = {}) {
       if (!v.gateway) continue;
       const p = prefixOf(v.subnet);
       if (!validIp(v.gateway) || p == null) { warnings.push(`VLAN ${v.id}: gateway/subnet invalid — gateway not configured`); continue; }
-      svis.push({ vlan: vlanNum(v.id), name: `vlan${vlanNum(v.id)}`, address: v.gateway, prefix: p });
+      const vid = /** @type {number} */ (vlanNum(v.id));   // vlanReg holds valid ids only
+      svis.push({ vlan: vid, name: `vlan${vid}`, address: v.gateway, prefix: p });
     }
   }
 
@@ -122,7 +123,7 @@ export function planDeviceModel(project, swId, opts = {}) {
   let mgmt = null;
   if (validIp(sw.ip) && !svis.some((s) => s.address === sw.ip)) {
     const home = vlanReg.find((v) => v.subnet && ipInCidr(sw.ip, v.subnet));
-    if (home) mgmt = { address: sw.ip, prefix: prefixOf(home.subnet), vlan: vlanNum(home.id) };
+    if (home) mgmt = { address: sw.ip, prefix: /** @type {number} */ (prefixOf(home.subnet)), vlan: /** @type {number} */ (vlanNum(home.id)) };
     else { mgmt = { address: sw.ip, prefix: 24, vlan: 1 }; warnings.push(`management IP ${sw.ip} is in no VLAN subnet — assumed /24 on VLAN 1`); }
   } else if (sw.ip && !validIp(sw.ip)) warnings.push(`management IP ${rosText(sw.ip)} is invalid — skipped`);
 
@@ -132,7 +133,7 @@ export function planDeviceModel(project, swId, opts = {}) {
   const vset = new Set(accessPorts.map((p) => p.vlan));
   for (const s of svis) vset.add(s.vlan);
   if (mgmt) vset.add(mgmt.vlan);
-  if (trunks.length) for (const v of vlanReg) vset.add(vlanNum(v.id));
+  if (trunks.length) for (const v of vlanReg) vset.add(/** @type {number} */ (vlanNum(v.id)));
   const vlans = [...vset].filter((n) => n != null).sort((a, b) => a - b);
   /** @type {Record<string,string>} */
   const vlanNames = {};

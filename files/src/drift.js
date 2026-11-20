@@ -53,6 +53,7 @@ function vlanIds(spec) {
  *   addresses:Array<{address:string,iface:string}>, routes:Array<{dst:string,gateway:string}>}}
  */
 export function parseRouterOsExport(text) {
+  /** @type {any} */
   const res = { identity: '', filtering: null, bridges: [], ports: [], vlanTable: [], vlanIfaces: [], addresses: [], routes: [] };
   // Join backslash-continued lines, drop comments.
   const lines = [];
@@ -141,10 +142,10 @@ export function diffAgainstPlan(model, actual) {
   const anyPrefix = (address) => actual.addresses.find((a) => a.address.split('/')[0] === address);
   for (const s of model.svis) {
     if (hasAddr(s.address, s.prefix)) {
-      const a = actual.addresses.find((x) => x.address === `${s.address}/${s.prefix}`);
+      const a = /** @type {any} */ (actual.addresses.find((x) => x.address === `${s.address}/${s.prefix}`));
       const vi = actual.vlanIfaces.find((v) => v.name === a.iface);
       if (!vi || vi.vlanId !== s.vlan) add('warn', 'gateway', `VLAN ${s.vlan} gateway ${s.address} is on interface "${a.iface}", not a VLAN ${s.vlan} interface`);
-    } else if (anyPrefix(s.address)) add('warn', 'gateway', `VLAN ${s.vlan} gateway ${s.address}: prefix is ${anyPrefix(s.address).address.split('/')[1]}, plan says /${s.prefix}`);
+    } else if (anyPrefix(s.address)) add('warn', 'gateway', `VLAN ${s.vlan} gateway ${s.address}: prefix is ${/** @type {any} */ (anyPrefix(s.address)).address.split('/')[1]}, plan says /${s.prefix}`);
     else add('error', 'gateway', `VLAN ${s.vlan} gateway ${s.address}/${s.prefix} is not configured`);
   }
   if (model.mgmt) {
@@ -201,7 +202,7 @@ export function remediationScript(model, actual) {
     else if (a.pvid !== p.vlan || (/tagged/.test(a.frameTypes) && !/untagged/.test(a.frameTypes))) portCmds.push(`set [find interface=${p.iface}] pvid=${p.vlan} frame-types=${ACCESS}`);
     else if (a.disabled) portCmds.push(`set [find interface=${p.iface}] disabled=no`);
   }
-  const trunks = model.trunks.filter((t) => t.iface);
+  const trunks = /** @type {Array<{iface:string, peerName:string}>} */ (model.trunks.filter((t) => t.iface));
   for (const t of trunks) if (!portBy.has(t.iface)) portCmds.push(`add bridge=${bridge} interface=${t.iface} frame-types=admit-only-vlan-tagged comment="trunk to ${q(t.peerName)}"`);
   if (portCmds.length) lines.push('/interface bridge port', ...portCmds);
 

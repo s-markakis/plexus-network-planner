@@ -13,14 +13,23 @@ const SSH_HOST_RE = /^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,253}[A-Za-z0-9])?$/;
 // token, and ssh would parse `-x@host` as an option.
 const SSH_USER_RE = /^[A-Za-z0-9._+][A-Za-z0-9._+-]{0,63}$/;
 const SSH_KEY_RE  = /^[A-Za-z0-9._~/-]{1,256}$/;
+// IPv6 literal (optionally with a zone id, fe80::1%en0). Hex, ':' and '.' only,
+// so it can't start an option and carries no shell or cmd metacharacters.
+const SSH_HOST6_RE = /^(?=[0-9A-Fa-f:.]*:)[0-9A-Fa-f:.]{2,45}(?:%[A-Za-z0-9._-]{1,32})?$/;
+// Windows key path: drive letter + backslash/slash path, same safe charset
+// (no spaces — the Windows launcher passes tokens to cmd unquoted).
+const SSH_KEY_WIN_RE = /^[A-Za-z]:[\\/][A-Za-z0-9._~\\/-]{1,250}$/;
 
-function buildSshArgv(t = {}) {
-  const host = String(t.host || '').trim();
-  if (!SSH_HOST_RE.test(host)) return { ok: false, error: 'Invalid SSH host' };
+function buildSshArgv(t = {}, platform = process.platform) {
+  // Accept "[2001:db8::1]" as typed in URLs; ssh wants the bare literal.
+  const host = String(t.host || '').trim().replace(/^\[(.*)\]$/, '$1');
+  if (!SSH_HOST_RE.test(host) && !SSH_HOST6_RE.test(host)) return { ok: false, error: 'Invalid SSH host' };
+  // cmd expands %…% on Windows: no zone ids there.
+  if (platform === 'win32' && host.includes('%')) return { ok: false, error: 'Invalid SSH host' };
   const argv = ['ssh'];
   if (t.key != null && String(t.key).trim() !== '') {
     let key = String(t.key).trim();
-    if (!SSH_KEY_RE.test(key)) return { ok: false, error: 'Invalid key path' };
+    if (!SSH_KEY_RE.test(key) && !(platform === 'win32' && SSH_KEY_WIN_RE.test(key))) return { ok: false, error: 'Invalid key path' };
     // Expand a leading ~ to the real home dir so the path still resolves when
     // the token is shell-quoted (single quotes would otherwise suppress ~).
     if (key.startsWith('~/')) key = os.homedir() + key.slice(1);
@@ -58,4 +67,4 @@ function buildSshPullArgv(t = {}) {
   return { ok: true, argv: ['ssh', '-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=yes', '-o', 'ConnectTimeout=8', '-T', ...rest, cmd] };
 }
 
-module.exports = { buildSshArgv, buildSshPullArgv, PULL_COMMANDS, SSH_HOST_RE, SSH_USER_RE, SSH_KEY_RE };
+module.exports = { buildSshArgv, buildSshPullArgv, PULL_COMMANDS, SSH_HOST_RE, SSH_HOST6_RE, SSH_USER_RE, SSH_KEY_RE, SSH_KEY_WIN_RE };

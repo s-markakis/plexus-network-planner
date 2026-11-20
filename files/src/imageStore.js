@@ -28,7 +28,7 @@ export async function idbPutImage(id,dataUrl){
   return new Promise((resolve,reject)=>{
     const tx=db.transaction(IDB_STORE,'readwrite');
     tx.objectStore(IDB_STORE).put(dataUrl,id);
-    tx.oncomplete=()=>resolve();
+    tx.oncomplete=()=>resolve(undefined);
     tx.onerror=()=>reject(tx.error);
   });
 }
@@ -49,7 +49,7 @@ export async function idbDeleteImage(id){
   return new Promise((resolve,reject)=>{
     const tx=db.transaction(IDB_STORE,'readwrite');
     tx.objectStore(IDB_STORE).delete(id);
-    tx.oncomplete=()=>resolve();
+    tx.oncomplete=()=>resolve(undefined);
     tx.onerror=()=>reject(tx.error);
   });
 }

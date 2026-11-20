@@ -48,7 +48,7 @@
     "vanilla-js"
   ],
   "engines": {
-    "node": ">=18"
+    "node": ">=22.22"
   },
   "scripts": {
     "dev": "vite --port 5173",
@@ -64,8 +64,8 @@
     "app:build": "npm run package:web && electron-builder --publish never",
     "test": "vitest run",
     "test:watch": "vitest",
-    "typecheck": "tsc --noEmit",
-    "verify": "vitest run && tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.strict.json --noEmit",
+    "verify": "vitest run && npm run typecheck",
     "prepare": "git config core.hooksPath .githooks 2>/dev/null || true",
     "e2e": "playwright test",
     "e2e:install": "playwright install --with-deps chromium",
@@ -73,17 +73,17 @@
     "docs:media": "playwright test -c playwright.media.config.js"
   },
   "dependencies": {
-    "electron-updater": "^6.3.9",
+    "electron-updater": "^6.8.11",
     "pdfjs-dist": "^4.10.38"
   },
   "devDependencies": {
     "@playwright/test": "^1.47.0",
-    "electron": "^42.4.0",
-    "electron-builder": "^25.1.8",
-    "jsdom": "^22.1.0",
+    "electron": "^42.11.18",
+    "electron-builder": "^26.18.0",
+    "jsdom": "^31.0.1",
     "typescript": "^5.5.0",
-    "vite": "^5.4.0",
-    "vitest": "^2.1.0"
+    "vite": "^8.3.8",
+    "vitest": "^5.1.1"
   },
   "build": {
     "appId": "com.plexus.networkplanner",

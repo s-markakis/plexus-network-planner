@@ -63,7 +63,7 @@ export function reportLang(settings = {}) {
 // Survey statistics for one floor's measurement points, or null when none.
 /** @param {Array<{rssi?:number}>|undefined} samples @param {number} [target] */
 export function surveyStats(samples, target = -67) {
-  const vals = (samples || []).map((s) => s && s.rssi).filter((v) => Number.isFinite(v));
+  const vals = /** @type {number[]} */ ((samples || []).map((s) => s && s.rssi).filter((v) => Number.isFinite(v)));
   if (!vals.length) return null;
   const avg = Math.round(vals.reduce((a, b) => a + b, 0) / vals.length);
   return { n: vals.length, avg, min: Math.min(...vals), okPct: Math.round(vals.filter((v) => v >= target).length / vals.length * 100), target };

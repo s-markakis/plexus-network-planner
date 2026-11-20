@@ -128,7 +128,7 @@ npm run dev          # browser dev server → http://localhost:5173
 npm run app:dev      # OR launch the desktop app
 ```
 
-Requires **Node 18+** (LTS recommended).
+Requires **Node 22.22+** to build and test (the desktop app ships its own runtime).
 
 ---
 
@@ -700,6 +700,22 @@ saved project contains no plaintext credentials anywhere (revision snapshots
 never carry them). The desktop app pins a UniFi controller's certificate on first
 use — you approve the fingerprint once, and a changed certificate stops the
 connection before any credential is sent.
+
+Without a passphrase, device passwords are saved in plain text (Save asks first,
+once per session), are left out of the browser autosave, and the desktop app
+writes project files readable by your user only. Share links carry the design
+only — no credentials, controller login, MACs, serials or floor images. A
+project that loads images from other servers asks before contacting them. In the
+desktop app only the main window can use native features (SSH, rosconf, files,
+controller); report and print windows get none. Plain-`http://` controllers need
+an explicit yes before the password is sent.
+
+**Known limitation — unsigned builds.** Releases are not code-signed. On Windows
+and Linux the app updates itself from GitHub Releases, checking each download
+against the SHA-512 published in the same release; that protects against a
+corrupted download, not against a compromised release. Until the builds are
+signed, the integrity of an update rests on the security of the GitHub account
+and the release workflow (actions pinned by commit, tests gate every tag).
 
 ## License
 

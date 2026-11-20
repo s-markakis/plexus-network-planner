@@ -5,7 +5,10 @@
 
 const { contextBridge, ipcRenderer } = require('electron');
 
-contextBridge.exposeInMainWorld('plexusNative', {
+// Child windows inherit this preload. The report/print popups (about:blank)
+// get no bridge at all; the main process also refuses IPC from anything but
+// the app's top frame.
+if (location.protocol === 'file:' && window.top === window && !window.opener) contextBridge.exposeInMainWorld('plexusNative', {
   // UniFi controller sync (network access happens in the main process so we
   // can talk to self-signed controllers without loosening the renderer).
   unifiPull: (cfg) => ipcRenderer.invoke('unifi:pull', cfg),

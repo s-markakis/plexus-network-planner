@@ -1,0 +1,8 @@
+{
+  // strictNullChecks for the pure modules in files/src (app.js is not there
+  // yet). Ratchet: keep this at zero errors; widen "include" as code moves out
+  // of app.js.
+  "extends": "./tsconfig.json",
+  "compilerOptions": { "strictNullChecks": true },
+  "include": ["files/src/**/*.js"]
+}

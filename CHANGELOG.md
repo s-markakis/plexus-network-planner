@@ -27,13 +27,41 @@ versioning follows [SemVer](https://semver.org/spec/v2.0.0.html).
 - **Multi-floor heatmap**: every other floor reaches through the slabs between,
   with one slab loss per level and the 3-D path length.
 
+### Security
+- Share links carry the design only: no credentials (at any depth), UniFi
+  controller URL/user/site, MACs, serials, asset tags or firmware.
+- Opening a project that loads images from other servers asks first; Cancel
+  opens it without them. Plain-http images are no longer allowed (CSP).
+- Without a passphrase, device passwords are kept out of the autosave, Save
+  asks once per session before writing them in plaintext, and the desktop app
+  writes project files owner-only (0600).
+- Desktop: only the main window's top frame can use native features; report
+  and print popups get no bridge and open sandboxed. A plain-http UniFi
+  controller needs an explicit yes before the password is sent.
+- Electron 42.11.18, electron-builder 26, electron-updater 6.8.11, vite 8,
+  vitest 5 (npm audit 34 → 6 moderate, build tooling only).
+- Release: tests and type-check gate every tag, actions pinned by commit,
+  downloaded fonts pinned by SHA-256.
+
 ### Changed
+- Building and testing need Node 22.22+ (the desktop app ships its own runtime).
+- strictNullChecks for `files/src`, enforced by `npm run typecheck`.
 - **New look**: system font, neutral greys with a green accent, a two-row
   translucent toolbar, floating drawing tools and floor tabs over the map, one
   line-icon set, and a sectioned settings dialog. Dark theme reworked.
 - The toolbar always says Plexus; the Company setting brands reports only.
 
 ### Fixed
+- Opening the app and not answering "Restore previous session?" (or quitting)
+  lost that session: the autosave wrote the empty startup plan over it.
+- A session with only cameras, walls or labels was not offered for restore.
+- A dialog opened over a pending question dropped the question's answer
+  handlers; it now comes back when the newer dialog closes.
+- Templates, labs and share links now apply the project's language (all
+  loaders share one code path).
+- SSH: IPv6 hosts and Windows key paths (C:\...) are accepted.
+- An AP without a position or radius produced NaN signal instead of no
+  coverage; the device-config dialog threw if its switch was deleted.
 - Scale could not go below 1 m / 100 px, so calibrating a high-resolution plan
   read back wrong; device ranges now keep their metres when the scale changes.
 - The ruler label is a constant, readable size on screen at any zoom.

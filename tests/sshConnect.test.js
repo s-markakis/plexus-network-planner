@@ -46,3 +46,12 @@ describe('sshVendor', () => {
     expect(sshVendor('U6 Pro')).toBe('generic');
   });
 });
+
+describe('IPv6 and Windows key paths (renderer mirror)', () => {
+  it('accepts what the desktop validator accepts', async () => {
+    const { sshTargetIsSafe } = await import('../files/src/sshConnect.js');
+    expect(sshTargetIsSafe({ host: 'fe80::1', user: 'a', port: 22, key: '' })).toBe(true);
+    expect(sshTargetIsSafe({ host: 'h', user: '', port: 22, key: 'C:\\k\\id' })).toBe(true);
+    expect(sshTargetIsSafe({ host: '::1;id', user: '', port: 22, key: '' })).toBe(false);
+  });
+});

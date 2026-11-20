@@ -86,6 +86,8 @@ import {mountPolicies} from './src/policyUI.js';
 import {mountLabs} from './src/labsUI.js';
 import {mountCircuits} from './src/circuitsUI.js';
 import {deviceIndex} from './src/circuits.js';
+import {projectForShare} from './src/shareLink.js';
+import {remoteImageHosts,stripRemoteImages} from './src/remoteImages.js';
 import {evaluatePolicies} from './src/policy.js';
 import {compileTopology} from './src/simCompile.js';
 import {reachabilityMatrix} from './src/simMatrix.js';
@@ -1300,16 +1302,9 @@ async function _gunzip(bytes){
 }
 async function shareLink(){
   try{
-    // Strip floor-plan images (size) and device credentials (privacy) so the
-    // shareable URL never carries logins.
-    const stripCreds=arr=>(arr||[]).map(d=>{if(!d.creds)return d;const o={...d};delete o.creds;return o;});
-    const floorsForLink=FLOORS.map(f=>{
-      const o={...f};delete o.img;delete o.imgId;
-      o.APS=stripCreds(f.APS);o.CAMS=stripCreds(f.CAMS);o.SWS=stripCreds(f.SWS);
-      return o;
-    });
-    const data={version:PROJECT_VERSION,settings:SETTINGS,floors:floorsForLink};
-    const json=JSON.stringify(data,_stripCacheReplacer);
+    // Design only — no credentials, controller login, hardware identifiers or
+    // floor images (see ./src/shareLink.js).
+    const json=JSON.stringify(projectForShare({version:PROJECT_VERSION,settings:SETTINGS,floors:FLOORS}));
     const bytes=await _gzip(json);
     const b64=await _b64urlFromBytes(bytes);
     const url=`${location.origin}${location.pathname}#p=${b64}`;
@@ -1319,7 +1314,7 @@ async function shareLink(){
     }
     try{
       await navigator.clipboard.writeText(url);
-      toast('Share link copied to clipboard (no floor-plan image)');
+      toast('Share link copied — design only: no images, credentials, MACs or serials');
     }catch{
       // Clipboard blocked (insecure context, perms). Show the URL in a modal.
       const wrap=document.createElement('div');
@@ -1349,20 +1344,12 @@ async function tryLoadFromHash(){
       history.replaceState(null,'',location.pathname+location.search);
       return false;
     }
-    _beginProjectSwitch();
-    FLOORS=data.floors;
-    SETTINGS={...DEFAULT_SETTINGS,...(data.settings||{})};
-    applyStoredCatalog();
-    PROJECT_REVISIONS=[];   // a link carries none; don't keep the previous project's
-    curFloor=0;selId=null;selType=null;
-    syncScaleFromFloor();syncNidFromFloors();
-    await _rehydrateImages();
-    applySettingsToBrand();
-    loadFloorImage();renderFloorTabs();render();renderList();renderRP();calcCoverage();
     // Strip the hash so a reload doesn't keep loading the same project.
     history.replaceState(null,'',location.pathname+location.search);
+    if(!await _confirmRemoteImages(data))return false;
+    data.revisions=[];   // a link carries none; don't keep the previous project's
+    await _applyProject(data);
     toast(warnings.length?warnings[0]:'Project loaded from link');
-    _endProjectSwitch();
     return true;
   }catch(err){
     toast('Could not decode shared link');
@@ -1686,6 +1673,11 @@ function showUnifiDialog(){
   // fingerprint before any credentials are sent.
   const callUnifi=async(fn,extra)=>{
     let res=await fn({...cfg(),...extra});
+    if(res&&res.needsPlaintextOk){
+      if(!confirm(`${res.host} is an http:// address — the controller password would cross the network unencrypted, readable by anyone on the path.\n\nUse https:// if the controller supports it. Send the password over plain http anyway?`))return {ok:false,error:'Plain-http login not accepted — nothing was sent'};
+      extra={...extra,allowPlaintext:true};
+      res=await fn({...cfg(),...extra});
+    }
     if(res&&res.needsTrust){
       const msg=res.changed
         ?`⚠ The certificate of ${res.host} has CHANGED.\n\nTrusted before:\n${res.pinned}\n\nPresented now:\n${res.fingerprint}\n\nThis happens after a controller reset or firmware reinstall — or when someone is intercepting the connection. Trust the new certificate?`
@@ -1731,6 +1723,11 @@ function showUnifiDialog(){
 // Strip per-item cache fields (`_coveragePath`, `_coverageFor`, etc.) so saved
 // JSON stays small and never round-trips stale geometry into a future load.
 function _stripCacheReplacer(k,v){return k.startsWith('_')?undefined:v;}
+function _autosaveNoPassReplacer(k,v){
+  if(k.startsWith('_'))return undefined;
+  if(k==='creds'&&v&&typeof v==='object'&&v.pass){const c={...v};delete c.pass;return c;}
+  return v;
+}
 // The file this project was opened from / last saved to (desktop app only), and
 // whether the plan changed since. Paths are only ever handed out by the main
 // process after a native dialog — see electron/projectFiles.cjs.
@@ -1754,7 +1751,15 @@ function _savedToast(){
 }
 // Desktop: write to the project's file (Save) or ask where (Save As / first
 // save). Web build: download, as before.
+let _plainCredsSaveAcked=false;
 async function saveProject(opts){
+  if(!CREDS.pass&&!_plainCredsSaveAcked&&_hasPlaintextCreds()){
+    const go=await new Promise(resolve=>showModalText('Unencrypted passwords',
+      'Some devices have a password stored, and no Credentials passphrase is set — the file will contain those passwords in plain text.\n\nPress OK to save anyway, or Cancel and set a passphrase in Settings → Credentials passphrase first.',
+      ()=>resolve(true),()=>resolve(false)));
+    if(!go)return;
+    _plainCredsSaveAcked=true;
+  }
   const text=await _buildProjectText();
   const native=typeof window!=='undefined'&&window.plexusNative;
   if(native&&native.projectSave){
@@ -1893,25 +1898,9 @@ async function _loadProjectText(text,file){
   try{
     const raw=JSON.parse(text);
     const [data,warnings]=migrateProject(raw);
-    _beginProjectSwitch();
-    FLOORS=data.floors;
-    SETTINGS={...DEFAULT_SETTINGS,...(data.settings||{})};
-    applyStoredCatalog();
-    PROJECT_REVISIONS=Array.isArray(data.revisions)?data.revisions:[];
-    // Apply the persisted UI language (i18n bundle) right away.
-    if(SETTINGS.language)setLang(SETTINGS.language);
-    curFloor=0;selId=null;selType=null;
-    syncScaleFromFloor();
-    syncNidFromFloors();
-    // Import any inline floor/device images into IDB (and warm the cache) so
-    // the project is portable across laptops; keeps autosaves tiny afterward.
-    await _rehydrateImages();
-    applySettingsToBrand();
-    loadFloorImage();renderFloorTabs();render();renderList();renderRP();calcCoverage();
-    if(warnings.length){toast(warnings[0]);}else{toast(file?'Opened '+file.name:'Project loaded');}
-    CREDS.lock(data.credsVault);   // before the autosave below, so a crash mid-prompt keeps it
-    _setProjectFile(file||null);
-    _endProjectSwitch();
+    if(!await _confirmRemoteImages(data))return;
+    await _applyProject(data,{file:file||null});
+    toast(warnings.length?warnings[0]:(file?'Opened '+file.name:'Project loaded'));
     await _unlockCreds(data);   // prompt for the passphrase if creds are encrypted
   }catch(err){toast('Error loading project: '+(err.message||'invalid file'));}
 }
@@ -1935,20 +1924,8 @@ async function openProjectNative(recentPath){
 async function loadSampleProject(){
   try{
     const [data,warnings]=migrateProject(buildSampleProject());
-    _beginProjectSwitch();
-    FLOORS=data.floors;
-    SETTINGS={...DEFAULT_SETTINGS,...(data.settings||{})};
-    applyStoredCatalog();
-    PROJECT_REVISIONS=Array.isArray(data.revisions)?data.revisions:[];
-    if(SETTINGS.language)setLang(SETTINGS.language);
-    curFloor=0;selId=null;selType=null;
-    syncScaleFromFloor();
-    syncNidFromFloors();
-    await _rehydrateImages();
-    applySettingsToBrand();
-    loadFloorImage();renderFloorTabs();render();renderList();renderRP();calcCoverage();
-    if(warnings.length){toast(warnings[0]);}else{toast('Sample project loaded — drag things around');}
-    _endProjectSwitch();
+    await _applyProject(data);
+    toast(warnings.length?warnings[0]:'Sample project loaded — drag things around');
   }catch(err){toast('Error loading sample: '+(err.message||'unknown'));}
 }
 // Update the top-bar brand label to whatever the current SETTINGS specify.
@@ -2191,6 +2168,45 @@ function _beginProjectSwitch(){
 // Call AFTER the new project is in place: persist it first so the autosave no
 // longer points at the old project's images, then drop those images.
 function _endProjectSwitch(){autosave(true);_sweepImages();}
+// A project from a file or link may point images at other servers; loading
+// them would tell those servers who opened the plan and when. Ask first —
+// "No" opens the project with those images blanked. Always resolves true
+// (the project itself still opens).
+function _confirmRemoteImages(data){
+  const hosts=remoteImageHosts(data);
+  if(!hosts.length)return Promise.resolve(true);
+  const list=hosts.slice(0,8).join('\n')+(hosts.length>8?`\n…and ${hosts.length-8} more`:'');
+  return new Promise(resolve=>{
+    showModalText('Images from other servers',
+      `This project loads images from:\n\n${list}\n\nShowing them tells those servers your IP address and when you opened the plan. Load them? (Cancel opens the project without them.)`,
+      ()=>resolve(true),
+      ()=>{stripRemoteImages(data);resolve(true);});
+  });
+}
+// The one path that replaces the open project with a migrated one. Every
+// loader (file, desktop open, link, sample, template/lab, session restore)
+// goes through here so none of them forgets a reset.
+async function _applyProject(data,{file=null}={}){
+  _restorePending=false;   // a loaded project supersedes an unanswered restore offer
+  _beginProjectSwitch();
+  FLOORS=data.floors;
+  SETTINGS={...DEFAULT_SETTINGS,...(data.settings||{})};
+  applyStoredCatalog();
+  PROJECT_REVISIONS=Array.isArray(data.revisions)?data.revisions:[];
+  if(SETTINGS.language)setLang(SETTINGS.language);
+  curFloor=0;selId=null;selType=null;
+  syncScaleFromFloor();
+  syncNidFromFloors();
+  // Import inline floor/device images into IDB (and warm the cache) so the
+  // project is portable across laptops; keeps autosaves tiny afterward.
+  await _rehydrateImages();
+  applySettingsToBrand();
+  loadFloorImage();renderFloorTabs();render();renderList();renderRP();calcCoverage();
+  if(_simPanel)_simPanel.refresh();
+  CREDS.lock(data.credsVault);   // before the autosave below, so a crash mid-prompt keeps it
+  _setProjectFile(file);
+  _endProjectSwitch();
+}
 function snapshotSoon(){HISTORY.snapshotSoon();}
 // Force commit immediately — call from blur handlers so leaving a field
 // finalizes its snapshot without waiting for the timer.
@@ -2349,20 +2365,8 @@ function showLabs(){
 async function _loadProjectObject(obj,okMsg){
   try{
     const [data,warnings]=migrateProject(obj);
-    _beginProjectSwitch();
-    FLOORS=data.floors;
-    SETTINGS={...DEFAULT_SETTINGS,...(data.settings||{})};
-    applyStoredCatalog();
-    PROJECT_REVISIONS=Array.isArray(data.revisions)?data.revisions:[];
-    curFloor=0;selId=null;selType=null;
-    syncScaleFromFloor();
-    syncNidFromFloors();
-    await _rehydrateImages();
-    applySettingsToBrand();
-    loadFloorImage();renderFloorTabs();render();renderList();renderRP();calcCoverage();
-    if(_simPanel)_simPanel.refresh();
+    await _applyProject(data);
     toast(warnings.length?warnings[0]:okMsg);
-    _endProjectSwitch();
   }catch(err){toast('Could not load: '+(err.message||'unknown error'));}
 }
 // "New from template": a new project pre-loaded with a site kind's VLAN plan,
@@ -5832,7 +5836,19 @@ let modalCancelCB=null;
 let _modalReturnFocus=null;
 // Internal: install a body element + buttons + callbacks. `bodyEl` must be a
 // DOM node; callers wanting to pass plain text should use showModalText.
+// Questions parked under a newer dialog (see _showModalEl).
+const _modalStack=[];
 function _showModalEl(title,bodyEl,okCB,cancelCB){
+  // One dialog slot: opening another used to drop the open one's callbacks,
+  // leaving a prompt's promise hung forever (or an unanswered "Restore
+  // session?" with no answer). A dialog still waiting for an answer — it has
+  // a cancel callback — is parked and comes back when the new one closes.
+  // Plain info dialogs are still simply replaced.
+  if(document.getElementById('mbg').classList.contains('vis')&&modalCancelCB){
+    _modalStack.push({title:document.getElementById('mdl-title').textContent,nodes:[...document.getElementById('mdl-body').childNodes],
+      ok:modalCB,cancel:modalCancelCB,cls:document.getElementById('mdl').className,ret:_modalReturnFocus});
+    modalCB=null;modalCancelCB=null;
+  }
   _modalReturnFocus=document.activeElement;
   document.getElementById('mdl-title').textContent=title;
   const body=document.getElementById('mdl-body');
@@ -5898,14 +5914,26 @@ function closeModal(){
   document.getElementById('mbg').classList.remove('vis');
   pendDel=null;
   _restoreModalFocus();
-  if(modalCancelCB){const cb=modalCancelCB;modalCancelCB=null;modalCB=null;cb();return;}
-  modalCB=null;
+  const cb=modalCancelCB;modalCancelCB=null;modalCB=null;
+  if(cb)cb();
+  _resumeParkedModal();
 }
 function modalOK(){
   const cb=modalCB;modalCB=null;modalCancelCB=null;
   document.getElementById('mbg').classList.remove('vis');pendDel=null;
   _restoreModalFocus();
   if(cb)cb();
+  _resumeParkedModal();
+}
+// Bring back the most recently parked question, unless the callback that just
+// ran opened a dialog of its own (then it resumes when that one closes).
+function _resumeParkedModal(){
+  if(!_modalStack.length||document.getElementById('mbg').classList.contains('vis'))return;
+  const m=_modalStack.pop();
+  const frag=document.createDocumentFragment();frag.append(...m.nodes);
+  _showModalEl(m.title,frag,m.ok,m.cancel);
+  document.getElementById('mdl').className=m.cls;
+  _modalReturnFocus=m.ret;
 }
 
 // ═══ CONTEXT MENU ═════════════════════════════════
@@ -6353,6 +6381,13 @@ function _adoptLegacyKey(key,legacy){
 const AUTOSAVE_KEY=_adoptLegacyKey('plexus_autosave','noctis_wifi_autosave');
 const AUTOSAVE_INTERVAL_MS=10000;
 let lastAutosaveBody='';
+// True while "Restore Previous Session?" is unanswered. The plan on screen is
+// still the empty startup one, so saving it would overwrite the very session
+// being offered (lost for good if the app closes before the user answers).
+let _restorePending=false;
+// True if the plan held unencrypted device passwords when this autosave was
+// written (they are left out of it — see _autosaveNoPassReplacer).
+function _autosaveHadPlainPass(data){return !!(data&&data.plainPassOmitted);}
 
 let _autosaveQuotaWarned=false;
 function autosave(force){
@@ -6360,21 +6395,26 @@ function autosave(force){
   // running the JSON.stringify on every tick in a backgrounded tab is wasteful.
   // Images live in IndexedDB now (referenced by imgId), so the autosave payload
   // is a few KB even with multi-floor projects.
+  if(_restorePending)return;
   if(force!==true&&typeof document!=='undefined'&&document.hidden)return;
   try{
     // When a credentials passphrase is set, never write plaintext creds to
     // localStorage — they are stripped from the devices and stored only as the
     // encrypted vault, so a restored session can still unlock them.
+    // Without a passphrase, device passwords are left out of the autosave:
+    // browser storage is no place for plaintext secrets. Everything else about
+    // the creds (protocol, host, user, key path) is kept.
     const replacer=CREDS.pass
       ? stripCredsReplacer
-      : _stripCacheReplacer;
+      : _autosaveNoPassReplacer;
     const vault=CREDS.autosaveVault();
     // Compared without the timestamp — with it the "nothing changed" check
     // never matched and every tick rewrote localStorage.
     const body=JSON.stringify({version:PROJECT_VERSION,settings:SETTINGS,floors:FLOORS,revisions:PROJECT_REVISIONS},replacer);
     const key=body+(vault?JSON.stringify(vault):'');
     if(key===lastAutosaveBody)return;  // nothing changed
-    const extra=(vault?',"credsVault":'+JSON.stringify(vault):'')+',"savedAt":'+JSON.stringify(new Date().toISOString());
+    const omitted=!CREDS.pass&&_hasPlaintextCreds();
+    const extra=(vault?',"credsVault":'+JSON.stringify(vault):'')+(omitted?',"plainPassOmitted":true':'')+',"savedAt":'+JSON.stringify(new Date().toISOString());
     localStorage.setItem(AUTOSAVE_KEY,body.slice(0,-1)+extra+'}');
     lastAutosaveBody=key;
     _autosaveQuotaWarned=false;
@@ -6394,32 +6434,21 @@ function tryRestoreAutosave(){
     if(!raw)return false;
     const data=JSON.parse(raw);
     // Only offer to restore if there's actually content
-    const hasContent=(data.floors||[]).some(f=>(f.APS&&f.APS.length)||(f.DZS&&f.DZS.length)||(f.SWS&&f.SWS.length)||f.img||f.imgId);
+    const hasContent=(data.floors||[]).some(f=>f&&(['APS','DZS','SWS','CAMS','WALLS','CLIENTS','ANNOS'].some(k=>Array.isArray(f[k])&&f[k].length)||f.img||f.imgId));
     if(!hasContent){localStorage.removeItem(AUTOSAVE_KEY);return false;}
     const when=data.savedAt?new Date(data.savedAt).toLocaleString():'previous session';
     showModalText('Restore Previous Session?',`A saved session from ${when} was found.\n\nRestore it, or start fresh?`,
       async ()=>{
+        _restorePending=false;
         const [migrated]=migrateProject(data);
-        _beginProjectSwitch();
-        FLOORS=migrated.floors;
-        SETTINGS={...DEFAULT_SETTINGS,...(migrated.settings||{})};
-        applyStoredCatalog();
-        PROJECT_REVISIONS=Array.isArray(migrated.revisions)?migrated.revisions:[];
-        if(SETTINGS.language)setLang(SETTINGS.language);
-        curFloor=0;selId=null;selType=null;
-        syncScaleFromFloor();
-        syncNidFromFloors();
-        // Import any inline images (legacy autosave / device uploads) into IDB
-        // and warm the cache.
-        await _rehydrateImages();
-        applySettingsToBrand();
-        loadFloorImage();renderFloorTabs();render();renderList();renderRP();calcCoverage();
-        toast('Session restored');
+        await _applyProject(migrated);
+        toast(migrated.credsVault||!_autosaveHadPlainPass(data)?'Session restored':'Session restored — device passwords are not kept in the autosave; reopen the project file for them');
         // The autosave holds credentials only as an encrypted vault.
         await _unlockCreds(migrated);
       },
-      ()=>{localStorage.removeItem(AUTOSAVE_KEY);}
+      ()=>{_restorePending=false;localStorage.removeItem(AUTOSAVE_KEY);lastAutosaveBody='';}
     );
+    _restorePending=true;
     return true;
   }catch(err){
     localStorage.removeItem(AUTOSAVE_KEY);
