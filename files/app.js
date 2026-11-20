@@ -6220,6 +6220,7 @@ function showSettings(){
   hint.textContent='Saved with the project. Used in HTML/PDF exports, the heatmap pipeline, the top-bar brand label, and channel/Tx planning. Routing factor scales straight-line cable runs; VLAN subnets feed the “suggest IP” buttons.';
   wrap.appendChild(hint);
 
+  const archScaleAtOpen=SETTINGS.archScale||'';
   const apply=()=>{
     let changed=false;
     // Strings
@@ -6249,8 +6250,10 @@ function showSettings(){
     const opacity=parseInt(opacityIn.value,10)||100;
     if(SETTINGS.coverageOpacity!==opacity){SETTINGS.coverageOpacity=opacity;changed=true;}
     if(SETTINGS.language)setLang(SETTINGS.language);
-    // Apply architect scale: convert to m/100px and propagate to current floor.
-    if(SETTINGS.archScale){
+    // Apply an architect scale preset to the current floor only when it was
+    // picked in this dialog. It used to be re-applied on every OK, wiping a
+    // floor's ruler-calibrated scale whenever any other setting was edited.
+    if(SETTINGS.archScale&&SETTINGS.archScale!==archScaleAtOpen){
       const preset=ARCH_SCALE_PRESETS.find(p=>p.label===SETTINGS.archScale);
       if(preset){
         setScaleM(preset.m100px);
