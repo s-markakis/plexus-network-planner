@@ -91,6 +91,7 @@ import {bomCsv,cableScheduleCsv,ipPlanCsv,portMapCsv,inventoryCsv} from './src/c
 import {diffRevisions as _diffRevisions} from './src/revisionDiff.js';
 import {planChannels,planTxPower} from './src/rfPlanning.js';
 import {validatePlan} from './src/validation.js';
+import {parseChannel,apChansOverlap,bandMatches,heatApShape} from './src/channels.js';
 import {remoteImageHosts,stripRemoteImages} from './src/remoteImages.js';
 import {evaluatePolicies} from './src/policy.js';
 import {compileTopology} from './src/simCompile.js';
@@ -311,7 +312,6 @@ const CAMS=()=>F().CAMS||(F().CAMS=[]);
 const CLIENTS=()=>F().CLIENTS||(F().CLIENTS=[]);
 const ANNOS=()=>F().ANNOS||(F().ANNOS=[]);
 const SAMPLES=()=>F().SAMPLES||(F().SAMPLES=[]);
-const REVS=()=>(typeof window!=='undefined'&&Array.isArray(PROJECT_REVISIONS)?PROJECT_REVISIONS:[]);
 
 // v3 state
 let annoStart=null;        // {x,y} while drawing an arrow/dim annotation
@@ -1551,7 +1551,7 @@ function _applyUnifiDevices(devices){
 function _unifiChannelPlan(){
   const changes=[];
   for(const f of FLOORS)for(const ap of (f.APS||[])){
-    const ch=_parseChannel(ap.channel);
+    const ch=parseChannel(ap.channel);
     if(ch==null)continue;
     changes.push({
       mac:ap.mac||'',name:ap.name||'',
@@ -2040,7 +2040,6 @@ viewport.addEventListener('touchmove',e=>{
 function vpToImg(cx,cy){const va=viewport.getBoundingClientRect();return{x:(cx-va.left-panX)/scale,y:(cy-va.top-panY)/scale};}
 function snapPt(x,y){if(!showGrid)return{x,y};return{x:Math.round(x/GRID_SZ)*GRID_SZ,y:Math.round(y/GRID_SZ)*GRID_SZ};}
 function imgToFrac(x,y){const w=mapImg.naturalWidth||1,h=mapImg.naturalHeight||1;return{fx:x/w,fy:y/h};}
-function fracToImg(fx,fy){return{x:fx*(mapImg.naturalWidth||1),y:fy*(mapImg.naturalHeight||1)};}
 
 // ═══ UNDO / REDO ══════════════════════════════════
 // Snapshot the entire FLOORS array + curFloor + scaleM, not just the current
@@ -2561,16 +2560,6 @@ viewport.addEventListener('click',e=>{
 });
 
 // ═══ ITEM GEOMETRY HELPERS ════════════════════════
-function getItemCenter(type,id){
-  const w=mapImg.naturalWidth||1,h=mapImg.naturalHeight||1;
-  if(type==='ap'){const ap=APS().find(a=>a.id===id);return ap?{x:ap.fx*w,y:ap.fy*h}:null;}
-  if(type==='sw'){const sw=SWS().find(a=>a.id===id);return sw?{x:sw.fx*w,y:sw.fy*h}:null;}
-  if(type==='cam'){const c=CAMS().find(a=>a.id===id);return c?{x:c.fx*w,y:c.fy*h}:null;}
-  if(type==='client'){const c=CLIENTS().find(a=>a.id===id);return c?{x:c.fx*w,y:c.fy*h}:null;}
-  if(type==='dz'){const dz=DZS().find(a=>a.id===id);return dz?{x:dz.fx*w,y:dz.fy*h}:null;}
-  if(type==='wall'){const wl=WALLS().find(a=>a.id===id);if(!wl)return null;const p=_wallPx(wl);return {x:(p.x1+p.x2)/2,y:(p.y1+p.y2)/2};}
-  return null;
-}
 // Returns {x,y,w,h} in image coords describing the item's bounding box —
 // used by zoomToSelected to pick an appropriate target scale.
 function getItemBounds(type,id){
@@ -3364,33 +3353,8 @@ function renderSWs(){
 }
 
 // ═══ CHANNEL OVERLAP ══════════════════════════════
-// Visually flag APs that share or overlap their RF channels AND whose
-// coverage circles touch. Two channels overlap if:
-//   - They're the same number on any band
-//   - Both are 2.4 GHz channels within 4 of each other (22 MHz wide,
-//     5 MHz apart — so 1&5 are the boundary case)
-// Channels parsed loosely: "6", "ch6", "auto" → numeric or "auto".
-function _parseChannel(c){
-  if(!c||c==='auto')return null;
-  const m=String(c).match(/(\d+)/);
-  return m?parseInt(m[1],10):null;
-}
-function _is24Channel(n){return Number.isInteger(n)&&n>=1&&n<=14;}
-function chanOverlap(a,b){
-  const ai=_parseChannel(a),bi=_parseChannel(b);
-  if(ai==null||bi==null)return false;
-  if(ai===bi)return true;
-  if(_is24Channel(ai)&&_is24Channel(bi)&&Math.abs(ai-bi)<5)return true;
-  return false;
-}
-// Width- and band-aware overlap between two APs: do their occupied frequency
-// ranges intersect? Falls back to the legacy channel-number heuristic when
-// either channel is 'auto'/unparsable.
-function apChansOverlap(a,b){
-  const ai=_parseChannel(a.channel),bi=_parseChannel(b.channel);
-  if(ai==null||bi==null)return false;
-  return channelsOverlapMhz(bandKey(a.freq),ai,a.chanWidth||20,bandKey(b.freq),bi,b.chanWidth||20);
-}
+// Visually flag APs whose occupied channels overlap (band- and width-aware,
+// see ./src/channels.js) AND whose coverage circles touch.
 function renderChannelOverlap(){
   chOverlapLayer.innerHTML='';
   const w=mapImg.naturalWidth,h=mapImg.naturalHeight;
@@ -3447,12 +3411,6 @@ function _heatColor(dbm){
   for(const s of HEATMAP_STOPS){if(dbm>=s.dbm)return s.color;}
   return null;
 }
-function _heatColorFor(mode,value){
-  if(value===null||value===undefined||!Number.isFinite(value))return null;
-  const stops=(HEATMAP_MODES[mode]||HEATMAP_MODES.rssi).stops;
-  for(const s of stops){if(value>=s.v)return s.color;}
-  return null;
-}
 function cycleHeatmapMode(){
   const keys=HEATMAP_MODE_KEYS;
   const cur=SETTINGS.heatmapMode||'rssi';
@@ -3474,28 +3432,6 @@ function cycleHeatmapBand(){
   render();autosave();
   toast('Heatmap band: '+SETTINGS.heatmapBand);
 }
-function _bandMatches(ap,bandFilter){
-  if(bandFilter==='all'||!bandFilter)return true;
-  const f=ap.freq||'';
-  if(bandFilter==='2.4')return f.indexOf('2.4')>=0;
-  if(bandFilter==='5')  return f==='5 GHz only'||f==='2.4 / 5 GHz';
-  if(bandFilter==='6')  return f.indexOf('6 GHz')>=0;
-  return true;
-}
-// Serialize an AP into the plain shape the heatmap job needs (structured-
-// cloneable for the worker; no DOM objects, no cache fields).
-function _heatApShape(ap){
-  const pat=AP_PATTERNS[ap.pattern]||AP_PATTERNS.omni;
-  return {
-    fx:ap.fx,fy:ap.fy,r:ap.r,freq:ap.freq,
-    band:bandKey(ap.freq),
-    channel:_parseChannel(ap.channel),
-    widthMhz:CHANNEL_WIDTHS.includes(ap.chanWidth)?ap.chanWidth:20,
-    arcDeg:pat.arc,headingDeg:ap.heading||0,
-    eirpDbm:effectiveEirp(ap),
-    bandFactor:bandLossMultiplier(ap.freq),
-  };
-}
 // Build the current floor's heatmap job, or null when there's nothing to paint.
 function _heatJob(){
   const w=mapImg.naturalWidth||0,h=mapImg.naturalHeight||0;
@@ -3504,7 +3440,7 @@ function _heatJob(){
   const modeDef=HEATMAP_MODES[mode]||HEATMAP_MODES.rssi;
   const bandFilter=SETTINGS.heatmapBand||'all';
   // WiFi routers radiate too (./src/routerWifi.js).
-  const aps=rfAps(F()).filter(ap=>_bandMatches(ap,bandFilter)).map(_heatApShape);
+  const aps=rfAps(F()).filter(ap=>bandMatches(ap,bandFilter)).map(heatApShape);
   // APs on the other floors, reaching this one through the slabs between.
   // Floors are stacked in tab order; plans are assumed to cover the same
   // footprint (positions carry over as fractions). Each AP's radius is
@@ -3519,8 +3455,8 @@ function _heatJob(){
       const slabs=Math.abs(i-curFloor);
       const k=((f.scaleM||100)/100)/mppHere;
       for(const ap of rfAps(f)){
-        if(!_bandMatches(ap,bandFilter))continue;
-        neighbour.push({..._heatApShape(ap),r:ap.r*k,slabs,verticalM:slabs*floorH});
+        if(!bandMatches(ap,bandFilter))continue;
+        neighbour.push({...heatApShape(ap),r:ap.r*k,slabs,verticalM:slabs*floorH});
       }
     });
   }

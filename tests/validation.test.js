@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { validatePlan } from '../files/src/validation.js';
 
 const okAnalysis = (sw) => ({ overBudget: false, budget: 100, headroom: 50, draw: 20, overPorts: false, used: 1, ports: 24, classFails: [], swCls: 'at', clients: [] });
+/** @returns {any} */
 const base = (over = {}) => {
   const f1 = { name: 'G', APS: [{ id: 'a', name: 'AP-1', swId: 's', ip: '10.0.0.5', vlan: '10', capacityClients: 0 }], CAMS: [], SWS: [{ id: 's', name: 'SW-1', ip: '10.0.0.2' }] };
   return {
