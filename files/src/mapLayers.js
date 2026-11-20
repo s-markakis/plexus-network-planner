@@ -420,7 +420,9 @@ export function renderSampleLayer(layer, ctx){
     const x=(s.fx||0)*w, y=(s.fy||0)*h;
     // Predicted: max dBm across local APs.
     let predicted=-Infinity;
-    for(const ap of ctx.aps){
+    // Every AP that radiates — WiFi routers included, as in the heatmap; they
+    // were missing, so a sample near a router read as far off the prediction.
+    for(const ap of ctx.rfAps){
       const pat=AP_PATTERNS[ap.pattern]||AP_PATTERNS.omni;
       const d=dbmAt(ap,x,y,w,h,walls,{
         bandFactor:bandLossMultiplier(ap.freq),
@@ -460,7 +462,7 @@ export function renderRoamingLayer(layer, ctx){
   if(!ctx.settings.showRoamingOverlap)return;
   const w=ctx.w||0,h=ctx.h||0;
   if(!w||!h)return;
-  const aps=ctx.aps;
+  const aps=ctx.rfAps;   // WiFi routers radiate too (as in the heatmap)
   if(aps.length<2)return;
   const walls=ctx.walls;
   const propModel=ctx.settings.propagationModel||'logd';

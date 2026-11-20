@@ -26,3 +26,19 @@ describe('camera layer', () => {
     expect(c.onItemPointerDown).toHaveBeenCalledWith('cam', c.cams[0], expect.anything());
   });
 });
+
+describe('RF layers see WiFi routers', async () => {
+  const { renderSampleLayer, renderRoamingLayer } = await import('../files/src/mapLayers.js');
+  const router = { fx: 0.5, fy: 0.5, r: 300, freq: '2.4 / 5 GHz', pattern: 'omni' };
+  const base = (over) => ({ doc: document, w: 400, h: 400, aps: [], rfAps: [router], walls: [], samples: [{ fx: 0.5, fy: 0.52, rssi: -45 }], settings: { showRoamingOverlap: true }, scaleM: 100, ...over });
+  it('a survey sample next to a router is compared with the router', () => {
+    const l = layer();
+    renderSampleLayer(l, base());
+    expect(l.querySelector('circle title')).not.toBeNull();   // has a prediction
+  });
+  it('roaming overlap counts a router as one of the two APs', () => {
+    const l = layer();
+    renderRoamingLayer(l, base({ rfAps: [router, { ...router, fx: 0.55 }] }));
+    expect(l.querySelector('path.roaming-fill')).not.toBeNull();
+  });
+});

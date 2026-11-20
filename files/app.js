@@ -337,7 +337,7 @@ const chOverlapLayer=document.getElementById('ch-overlap-layer');
 const _layerCtx={
   doc:document,
   get w(){return mapImg.naturalWidth;},get h(){return mapImg.naturalHeight;},
-  get aps(){return APS();},get sws(){return SWS();},get cams(){return CAMS();},get dzs(){return DZS();},get walls(){return WALLS();},
+  get aps(){return APS();},get rfAps(){return rfAps(F());},get sws(){return SWS();},get cams(){return CAMS();},get dzs(){return DZS();},get walls(){return WALLS();},
   get settings(){return SETTINGS;},
   get scaleM(){return scaleM;},get mPerPx(){return scaleM/100;},get floorScaleM(){return F().scaleM;},
   get zoom(){return scale;},get routingFactor(){return routingFactor();},
