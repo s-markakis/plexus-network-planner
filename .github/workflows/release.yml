@@ -62,9 +62,15 @@ jobs:
       - name: Build installers
         run: npm run app:build
         env:
-          # Unsigned builds — don't let electron-builder hunt for certificates.
+          # No certificates — don't let electron-builder hunt for them. macOS is
+          # ad-hoc signed instead (package.json build.mac.identity "-"): without
+          # it the bundle's signature is broken and Gatekeeper reports the app
+          # as "damaged" with no Open Anyway. hardenedRuntime is off because an
+          # ad-hoc build gains nothing from it (no notarization) and its library
+          # validation can stop the app launching.
           # To sign later, add the signing env vars HERE (and the matching repo
-          # secrets), then drop CSC_IDENTITY_AUTO_DISCOVERY:
+          # secrets), drop CSC_IDENTITY_AUTO_DISCOVERY and the "-" identity, and
+          # turn hardenedRuntime back on for notarization:
           #   macOS:   CSC_LINK, CSC_KEY_PASSWORD, APPLE_ID, APPLE_APP_SPECIFIC_PASSWORD, APPLE_TEAM_ID
           #   Windows: CSC_LINK (.pfx, base64), CSC_KEY_PASSWORD
           # NOTE: don't pass empty CSC_LINK — electron-builder treats "" as a
