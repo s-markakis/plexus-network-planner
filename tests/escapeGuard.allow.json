@@ -234,6 +234,26 @@
     "W",
     "H"
    ]
+  },
+  "networkDialogs.js": {
+   "fields": [
+    "a.budget",
+    "a.draw.toFixed(0)",
+    "a.draw.toFixed(1)",
+    "a.headroom",
+    "a.overBudget ? '#c0382b' : '#1e7d3c'",
+    "a.overPorts ? ' ⚠' : ''",
+    "a.ports",
+    "a.used",
+    "c.cls",
+    "c.model",
+    "c.name",
+    "c.type === 'AP' ? '●' : '◉'",
+    "c.w",
+    "noPort.length",
+    "totalDraw.toFixed(1)"
+   ],
+   "attrs": []
   }
  }
 }
