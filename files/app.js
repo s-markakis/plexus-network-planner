@@ -97,6 +97,7 @@ import * as _pm from './src/planModel.js';
 import {esc,safeColor} from './src/html.js';
 import {portGridHtml,poeSummaryEl,topologyEl} from './src/networkDialogs.js';
 import {inventoryEl} from './src/inventoryUI.js';
+import {applyUnifiDevices,unifiChannelPlan} from './src/unifiSync.js';
 import {remoteImageHosts,stripRemoteImages} from './src/remoteImages.js';
 import {evaluatePolicies} from './src/policy.js';
 import {compileTopology} from './src/simCompile.js';
@@ -1324,39 +1325,12 @@ async function doExportEsx(){
 // runs in the Electron main process (self-signed controller certs).
 let _unifiPass='';   // session-only, never saved to SETTINGS or project files
 function _applyUnifiDevices(devices){
-  const norm=m=>String(m||'').toLowerCase().replace(/[^0-9a-f]/g,'');
-  const all=[];
-  for(const f of FLOORS)for(const list of [f.APS,f.SWS,f.CAMS])for(const d of (list||[]))all.push(d);
-  let matched=0;
   snapshot();
-  for(const dev of devices){
-    const dm=norm(dev.mac);
-    let target=(dm&&all.find(x=>norm(x.mac)===dm))||null;
-    if(!target&&dev.name)target=all.find(x=>(x.name||'').toLowerCase()===dev.name.toLowerCase())||null;
-    if(!target)continue;
-    matched++;
-    if(dev.ip)target.ip=dev.ip;
-    if(dev.mac&&!target.mac)target.mac=dev.mac;
-    if(dev.version)target.firmware=dev.version;
-    if(dev.serial&&!target.serial)target.serial=dev.serial;
-    if(dev.state===1)target.status='live';
-  }
+  const matched=applyUnifiDevices(FLOORS,devices);
   render();renderList();renderRP();autosave();
   return matched;
 }
-function _unifiChannelPlan(){
-  const changes=[];
-  for(const f of FLOORS)for(const ap of (f.APS||[])){
-    const ch=parseChannel(ap.channel);
-    if(ch==null)continue;
-    changes.push({
-      mac:ap.mac||'',name:ap.name||'',
-      band:bandKey(ap.freq),channel:ch,width:ap.chanWidth||20,
-      txPowerDbm:Number.isFinite(ap.txPowerDbm)?ap.txPowerDbm:undefined,
-    });
-  }
-  return changes;
-}
+const _unifiChannelPlan=()=>unifiChannelPlan(FLOORS);
 function showUnifiDialog(){
   if(!(window.plexusNative&&window.plexusNative.unifiPull)){
     toast('UniFi sync needs the desktop app');return;
