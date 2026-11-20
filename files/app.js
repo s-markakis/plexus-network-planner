@@ -93,6 +93,7 @@ import {planChannels,planTxPower} from './src/rfPlanning.js';
 import {validatePlan} from './src/validation.js';
 import {parseChannel,apChansOverlap,bandMatches,heatApShape} from './src/channels.js';
 import {planApPlacement} from './src/apPlacement.js';
+import * as _pm from './src/planModel.js';
 import {remoteImageHosts,stripRemoteImages} from './src/remoteImages.js';
 import {evaluatePolicies} from './src/policy.js';
 import {compileTopology} from './src/simCompile.js';
@@ -633,6 +634,15 @@ async function _measureFloorImages(){
     }catch(_){/* unreadable image: floorDims falls back to the plan on screen */}
   }));
 }
+// Plan views live in ./src/planModel.js; these bind them to the open plan.
+const findSwitchAnywhere=id=>_pm.findSwitchAnywhere(FLOORS,id);
+const cableTotals=()=>_pm.cableTotals(FLOORS,cableRunM);
+const topologyModel=()=>_pm.topologyModel(FLOORS);
+const analyzeSwitch=(sw,floor)=>_pm.analyzeSwitch(sw,floor||F());
+const allDevices=()=>_pm.allDevices(FLOORS);
+const deviceStatusCounts=()=>_pm.deviceStatusCounts(FLOORS);
+const totalClientCapacity=()=>_pm.totalClientCapacity(FLOORS);
+const totalStorageGb=()=>_pm.totalStorageGb(FLOORS,SETTINGS);
 // VLAN registry helpers.
 function vlanList(){return Array.isArray(SETTINGS.vlans)?SETTINGS.vlans:[];}
 function vlanById(id){id=(id==null?'':String(id)).trim();if(!id)return null;return vlanList().find(v=>String(v.id)===id)||null;}
@@ -643,45 +653,10 @@ function vlanDatalist(){
   return `<datalist id="vlan-list">${vlanList().map(v=>`<option value="${esc(v.id)}">${esc(v.name||'')}</option>`).join('')}</datalist>`;
 }
 // Find a switch by id across ALL floors (for inter-floor uplinks).
-function findSwitchAnywhere(id){
-  if(!id)return null;
-  for(let i=0;i<FLOORS.length;i++){
-    const sw=(FLOORS[i].SWS||[]).find(s=>s.id===id);
-    if(sw)return {sw,floor:FLOORS[i],floorIdx:i};
-  }
-  return null;
-}
 // Sum every device→switch run across all floors. totalM includes 10% slack per
 // run. Pixel→metre conversion uses the current map resolution (as the cable
 // schedule export does).
-function cableTotals(){
-  let runs=0,totalM=0;
-  for(const f of FLOORS){
-    const sws=f.SWS||[];
-    const add=(dev)=>{
-      if(!dev.swId)return;
-      const sw=sws.find(s=>s.id===dev.swId);if(!sw)return;
-      const m=cableRunM(dev,sw,f);
-      runs++;totalM+=m+Math.max(1,m*0.1);
-    };
-    (f.APS||[]).forEach(add);(f.CAMS||[]).forEach(add);
-  }
-  return {runs,totalM:Math.round(totalM)};
-}
 // Building-wide switch uplink graph (roots + children), spanning floors.
-function topologyModel(){
-  const all=[];
-  FLOORS.forEach((f,i)=>(f.SWS||[]).forEach(sw=>all.push({sw,floor:f,floorIdx:i})));
-  const byId=new Map(all.map(e=>[e.sw.id,e]));
-  const children=new Map(all.map(e=>[e.sw.id,[]]));
-  const roots=[];
-  for(const e of all){
-    const up=e.sw.uplinkId;
-    if(up && byId.has(up) && up!==e.sw.id)children.get(up).push(e);
-    else roots.push(e);
-  }
-  return {all,byId,children,roots};
-}
 // A switch's port grid as HTML (filled cells = device on that port number).
 function portGridHtml(a,border){
   border=border||'var(--ink-04)';
@@ -753,11 +728,6 @@ function _airtimeLabel(ap){
   return pct+'%'+flag+` @ ${parseFloat(SETTINGS.perClientMbps)||5} Mbps/client`;
 }
 
-function totalClientCapacity(){
-  let n=0;
-  for(const f of FLOORS)for(const ap of (f.APS||[]))n+=(ap.capacityClients||25);
-  return n;
-}
 // Building-wide network section for the HTML/PDF report: uplink tree, per-switch
 // port grids, cabling totals and the VLAN plan. '' when there's nothing to show.
 function reportNetworkHtml(){
@@ -793,22 +763,7 @@ function reportNetworkHtml(){
     ${vlanHtml}</section>`;
 }
 // APs + cameras assigned to a switch, each with PoE draw and required class.
-function switchClients(sw,floor){
-  const f=floor||F();
-  const out=[];
-  (f.APS||[]).forEach(ap=>{if(ap.swId===sw.id){const w=AP_POE_W[ap.model]||10;out.push({dev:ap,type:'AP',name:ap.name,model:ap.model,w,cls:poeClassForWatts(w),port:ap.port,ip:ap.ip});}});
-  (f.CAMS||[]).forEach(c=>{if(c.swId===sw.id){const w=(CAM_SPECS[c.model]||{}).poeW||0;out.push({dev:c,type:'CAM',name:c.name,model:c.model,w,cls:poeClassForWatts(w),port:c.port,ip:c.ip});}});
-  return out;
-}
 // Full PoE / port / class picture for one switch.
-function analyzeSwitch(sw,floor){
-  const clients=switchClients(sw,floor||F());
-  const budget=sw.poeBudget||0;
-  const ports=sw.ports||swPortCount(sw.model);   // null = unknown → skip check
-  const swCls=swPoeClass(sw.model,budget);
-  // Pure PoE/port/class verdict lives in ./src/network.js (analyzeLoad).
-  return {sw,clients,budget,ports,swCls,...analyzeLoad(clients,{budget,ports,swCls})};
-}
 // <option>s for a numbered port picker. Preserves a legacy/custom value (e.g.
 // "SW1 Port 4") that isn't a plain 1..N so old projects don't lose data.
 function portOptions(ports,cur){
@@ -881,22 +836,8 @@ function updSwPort(el){
 // ── Organization helpers ──────────────────────────────────────────────────
 // Every networked device in the building, flattened with its floor context.
 // Type tags match the naming convention's {type} token.
-function allDevices(){
-  const out=[];
-  FLOORS.forEach((f,floorIdx)=>{
-    (f.APS||[]).forEach(dev=>out.push({dev,type:'AP',floor:f,floorIdx}));
-    (f.CAMS||[]).forEach(dev=>out.push({dev,type:'CAM',floor:f,floorIdx}));
-    (f.SWS||[]).forEach(dev=>out.push({dev,type:'SW',floor:f,floorIdx}));
-  });
-  return out;
-}
 function statusMeta(dev){return DEVICE_STATUS_META[dev.status]||DEVICE_STATUS_META.planned;}
 function statusDimmed(dev){return !!statusFilter&&(dev.status||'planned')!==statusFilter;}
-function deviceStatusCounts(){
-  const counts=Object.fromEntries(DEVICE_STATUSES.map(s=>[s,0]));
-  for(const {dev} of allDevices())counts[dev.status||'planned']++;
-  return counts;
-}
 function namingCtx(type,floorIdx){
   return {site:(SETTINGS.siteCode||'').trim(),floor:floorIdx+1,type};
 }
@@ -4824,13 +4765,6 @@ function _camStorageLabel(c){
   return `${br} Mbps → ${gb>=1000?(gb/1000).toFixed(2)+' TB':Math.round(gb)+' GB'} / ${days} d`;
 }
 // Building-wide recording storage at the current retention/codec settings.
-function totalStorageGb(){
-  const days=parseInt(SETTINGS.retentionDays,10)||30;
-  let gb=0;
-  for(const f of FLOORS)for(const c of (f.CAMS||[]))
-    gb+=storageGb(cameraBitrateMbps(c.resolution||'4K',SETTINGS.storageCodec,c.bitrateMbps),days);
-  return gb;
-}
 function renderCAMPanel(){
   const c=CAMS().find(x=>x.id===selId);if(!c)return;
   document.getElementById('rp-head').textContent='Edit Camera';
