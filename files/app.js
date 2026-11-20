@@ -650,8 +650,33 @@ function routingFactor(){const f=parseFloat(SETTINGS.cableRoutingFactor);return 
 // Real-world cable-run length (m) between a device and its switch on a floor,
 // including the routing factor.
 function cableRunM(dev,sw,floor){
-  const w=mapImg.naturalWidth||1,h=mapImg.naturalHeight||1;
-  return runLengthM(dev.fx,dev.fy,sw.fx,sw.fy,w,h,((floor||F()).scaleM)||100,routingFactor());
+  const f=floor||F();
+  const {w,h}=floorDims(f);
+  return runLengthM(dev.fx,dev.fy,sw.fx,sw.fy,w,h,(f.scaleM)||100,routingFactor());
+}
+// Natural pixel size of each floor's plan image, keyed by image. Positions are
+// fractions and scaleM is metres per 100 px *of that floor's own image*, so a
+// length or coverage figure for another floor must use that floor's size, not
+// the one on screen (plans of different resolution gave wrong metres).
+const _floorDims=new Map();
+const _floorDimKey=f=>(f&&(f.imgId||f.img))||'';
+function floorDims(f){
+  if(f===F()&&mapImg.naturalWidth>0)return {w:mapImg.naturalWidth,h:mapImg.naturalHeight};
+  return _floorDims.get(_floorDimKey(f))||{w:mapImg.naturalWidth||1,h:mapImg.naturalHeight||1};
+}
+// Measure every floor's image once (after a project load); the floor on
+// screen is recorded by the map image's load handler.
+async function _measureFloorImages(){
+  await Promise.all(FLOORS.map(async f=>{
+    const key=_floorDimKey(f);
+    if(!key||_floorDims.has(key))return;
+    try{
+      const src=f.imgId?await resolveFloorImage(f):f.img;
+      if(!src)return;
+      const d=await new Promise((res,rej)=>{const im=new Image();im.onload=()=>res({w:im.naturalWidth,h:im.naturalHeight});im.onerror=rej;im.src=src;});
+      if(d.w>0)_floorDims.set(key,d);
+    }catch(_){/* unreadable image: floorDims falls back to the plan on screen */}
+  }));
 }
 // VLAN registry helpers.
 function vlanList(){return Array.isArray(SETTINGS.vlans)?SETTINGS.vlans:[];}
@@ -738,7 +763,7 @@ function nextFreeIp(dev){
 // drags everyone down — a peak-rate figure would hide that.
 function apAvgCellMbps(ap,floor){
   const f=floor||F();
-  const w=mapImg.naturalWidth||1,h=mapImg.naturalHeight||1;
+  const {w,h}=floorDims(f);
   const walls=f.WALLS||[];
   const pat=AP_PATTERNS[ap.pattern]||AP_PATTERNS.omni;
   const opts={
@@ -2200,6 +2225,7 @@ async function _applyProject(data,{file=null}={}){
   // Import inline floor/device images into IDB (and warm the cache) so the
   // project is portable across laptops; keeps autosaves tiny afterward.
   await _rehydrateImages();
+  await _measureFloorImages();
   applySettingsToBrand();
   loadFloorImage();renderFloorTabs();render();renderList();renderRP();calcCoverage();
   if(_simPanel)_simPanel.refresh();
@@ -4127,7 +4153,7 @@ function doBomCsv(){
 function _cableCsvString(){
   const rows=[['Floor','Device','Type','Switch','Port','Length (m)','Slack (m)','Status']];
   for(const f of FLOORS){
-    const w=mapImg.naturalWidth||1,h=mapImg.naturalHeight||1;
+    const {w,h}=floorDims(f);
     const sws=f.SWS||[];
     const computeLen=(item)=>{
       const sw=sws.find(s=>s.id===item.swId);
@@ -4858,7 +4884,7 @@ function doResize(cx){
 // ═══ COVERAGE CALC ════════════════════════════════
 // Defers to the pure sampler in geometry.js so logic stays in one place.
 function sampleFloorCoverage(floor){
-  const w=mapImg.naturalWidth||1,h=mapImg.naturalHeight||1;
+  const {w,h}=floorDims(floor);
   return _sampleFloorCoverage(rfFloor(floor),w,h,_COV_OPTS);
 }
 // Wall-aware sampling is heavier than the old circle check, so coalesce calls
@@ -7064,6 +7090,8 @@ function showHelp(){
 // initImage()'s start-up poll ever re-rendered.
 if(typeof mapImg!=='undefined'&&mapImg)mapImg.addEventListener('load',()=>{
   if(!mapImg.naturalWidth)return;
+  const key=_floorDimKey(F());
+  if(key)_floorDims.set(key,{w:mapImg.naturalWidth,h:mapImg.naturalHeight});
   fitZoom();render();renderMM();updateScaleBar();calcCoverage();updateEmptyState();
   // Lengths and ranges in the list and the inspector are measured on the plan
   // image too: refresh them, or walls read "0.0 m" until the next edit.
