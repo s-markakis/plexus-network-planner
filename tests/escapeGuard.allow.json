@@ -254,6 +254,13 @@
     "totalDraw.toFixed(1)"
    ],
    "attrs": []
+  },
+  "inventoryUI.js": {
+   "fields": [
+    "m.color",
+    "m.label"
+   ],
+   "attrs": []
   }
  }
 }
