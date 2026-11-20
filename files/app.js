@@ -87,6 +87,7 @@ import {mountLabs} from './src/labsUI.js';
 import {mountCircuits} from './src/circuitsUI.js';
 import {deviceIndex} from './src/circuits.js';
 import {projectForShare} from './src/shareLink.js';
+import {bomCsv,cableScheduleCsv,ipPlanCsv,portMapCsv,inventoryCsv} from './src/csvExports.js';
 import {remoteImageHosts,stripRemoteImages} from './src/remoteImages.js';
 import {evaluatePolicies} from './src/policy.js';
 import {compileTopology} from './src/simCompile.js';
@@ -4080,11 +4081,6 @@ function autoTxPower(){
 }
 
 // ═══ BOM + CABLE-SCHEDULE CSV EXPORTS ═════════════
-function _csvEscape(v){
-  const s=String(v??'');
-  if(/[",\n]/.test(s))return '"'+s.replace(/"/g,'""')+'"';
-  return s;
-}
 // The print popups are written by this page, so they inherit its CSP — which
 // forbids inline handlers. Attach the click from here instead.
 function _wirePrintButton(w){
@@ -4101,83 +4097,16 @@ function _downloadFile(filename,content,mime){
 }
 // Each _*CsvString builder returns the CSV text ('' when there is nothing to
 // export) so the single-file downloads and the handover pack share one source.
-function _bomCsvString(){
-  const tally=new Map(); // model → {kind, model, qty, poeWatts}
-  for(const f of FLOORS){
-    for(const ap of (f.APS||[])){
-      const k='AP|'+(ap.model||'');
-      const e=tally.get(k)||{kind:'AP',model:ap.model||'Custom/Other',qty:0,poeW:0};
-      e.qty++;e.poeW+=(AP_POE_W[ap.model]||0);
-      tally.set(k,e);
-    }
-    for(const c of (f.CAMS||[])){
-      const k='CAM|'+(c.model||'');
-      const e=tally.get(k)||{kind:'Camera',model:c.model||'Custom/Other',qty:0,poeW:0};
-      e.qty++;e.poeW+=((CAM_SPECS[c.model]||{}).poeW||0);
-      tally.set(k,e);
-    }
-    for(const sw of (f.SWS||[])){
-      const k='SW|'+(sw.model||'');
-      const e=tally.get(k)||{kind:'Switch',model:sw.model||'Custom/Other',qty:0,poeW:0};
-      e.qty++;
-      tally.set(k,e);
-    }
-  }
-  const rows=[['Kind','Model','Qty','Total PoE draw (W)']];
-  for(const e of tally.values())rows.push([e.kind,e.model,e.qty,e.poeW||'']);
-  // Cabling rollup: sum every device→switch run (with routing factor + slack)
-  // across all floors, then estimate boxes of cable needed.
-  const cable=cableTotals();
-  if(cable.runs>0){
-    rows.push([]);
-    rows.push(['Cabling','Ethernet runs',cable.runs,'']);
-    rows.push(['Cabling','Cable length incl. slack (m)',cable.totalM,'']);
-    const boxM=parseFloat(SETTINGS.cableBoxM)||305;
-    rows.push(['Cabling',`Cable boxes (${boxM} m)`,Math.ceil(cable.totalM/boxM),'']);
-  }
-  // NVR storage rollup for the camera fleet at the configured retention/codec.
-  const storGb=totalStorageGb();
-  if(storGb>0){
-    const days=parseInt(SETTINGS.retentionDays,10)||30;
-    const codec=SETTINGS.storageCodec==='h264'?'H.264':'H.265';
-    rows.push([]);
-    rows.push(['Storage',`NVR capacity for ${days} d retention (${codec})`,
-      storGb>=1000?(storGb/1000).toFixed(2)+' TB':Math.round(storGb)+' GB','']);
-  }
-  return rows.map(r=>r.map(_csvEscape).join(',')).join('\n');
-}
+// Builders live in ./src/csvExports.js; these supply the live measurements.
+const _bomCsvString=()=>bomCsv({floors:FLOORS,cable:cableTotals(),cableBoxM:SETTINGS.cableBoxM,
+  storageGb:totalStorageGb(),retentionDays:SETTINGS.retentionDays,storageCodec:SETTINGS.storageCodec});
+const _cableCsvString=()=>cableScheduleCsv({floors:FLOORS,runM:cableRunM});
+const _ipPlanCsvString=()=>ipPlanCsv({devices:allDevices(),vlanById});
+const _portMapCsvString=()=>portMapCsv(topologyModel().all.map(e=>({sw:e.sw,floor:e.floor,analysis:analyzeSwitch(e.sw,e.floor)})));
+const _inventoryCsvString=()=>inventoryCsv({devices:allDevices(),statusLabel:d=>statusMeta(d).label});
 function doBomCsv(){
   _downloadFile('bom.csv',_bomCsvString(),'text/csv');
   toast(t('toast.bom_exported'));
-}
-function _cableCsvString(){
-  const rows=[['Floor','Device','Type','Switch','Port','Length (m)','Slack (m)','Status']];
-  for(const f of FLOORS){
-    const {w,h}=floorDims(f);
-    const sws=f.SWS||[];
-    const computeLen=(item)=>{
-      const sw=sws.find(s=>s.id===item.swId);
-      if(!sw)return null;
-      const dx=(item.fx-sw.fx)*w, dy=(item.fy-sw.fy)*h;
-      const px=Math.hypot(dx,dy);
-      const m=Math.round(px*(f.scaleM||100)/100*routingFactor()*10)/10;
-      const slack=Math.max(1,Math.round(m*0.1*10)/10);
-      const status=m>100?'OVER 100m':m>90?'Near limit':'OK';
-      return {m,slack,swName:sw.name||sw.id,status};
-    };
-    for(const ap of (f.APS||[])){
-      const c=computeLen(ap);
-      if(!c)continue;
-      rows.push([f.name||'',ap.name||ap.id,'AP',c.swName,ap.port||'',c.m,c.slack,c.status]);
-    }
-    for(const cam of (f.CAMS||[])){
-      const c=computeLen(cam);
-      if(!c)continue;
-      rows.push([f.name||'',cam.name||cam.id,'Camera',c.swName,cam.port||'',c.m,c.slack,c.status]);
-    }
-  }
-  if(rows.length<=1)return '';
-  return rows.map(r=>r.map(_csvEscape).join(',')).join('\n');
 }
 function doCableCsv(){
   const csv=_cableCsvString();
@@ -4187,19 +4116,6 @@ function doCableCsv(){
 }
 
 // IP plan: one row per device with any network identity, across all floors.
-function _ipPlanCsvString(){
-  const rows=[['Floor','Device','Type','Model','IP','VLAN','VLAN name','Subnet','In subnet','Switch','Port','MAC']];
-  for(const {dev,type,floor} of allDevices()){
-    if(!(dev.ip||dev.vlan||dev.mac))continue;
-    const v=vlanById(dev.vlan);
-    const sw=(floor.SWS||[]).find(s=>s.id===dev.swId);
-    const inSubnet=dev.ip&&v&&v.subnet?(ipInCidr(dev.ip,v.subnet)?'yes':'NO'):'';
-    rows.push([floor.name||'',dev.name||dev.id,type,dev.model||'',dev.ip||'',dev.vlan||'',
-      v?(v.name||''):'',v?(v.subnet||''):'',inSubnet,sw?(sw.name||sw.id):'',dev.port||'',dev.mac||'']);
-  }
-  if(rows.length<=1)return '';
-  return rows.map(r=>r.map(_csvEscape).join(',')).join('\n');
-}
 function doIpPlanCsv(){
   const csv=_ipPlanCsvString();
   if(!csv){toast('No device has an IP, VLAN or MAC yet');return;}
@@ -4209,32 +4125,6 @@ function doIpPlanCsv(){
 
 // Port map: one row per switch port (free ports included), plus clients
 // without a parseable port number.
-function _portMapCsvString(){
-  const rows=[['Switch','Floor','Switch model','Port','Device','Type','Device model','IP','VLAN','PoE (W)']];
-  const {all}=topologyModel();
-  for(const e of all){
-    const a=analyzeSwitch(e.sw,e.floor);
-    const swName=e.sw.name||e.sw.id, swFloor=e.floor.name||'', swModel=e.sw.model||'';
-    const byPort=new Map();
-    const noPort=[];
-    for(const c of a.clients){
-      const p=parseInt(c.port,10);
-      if(p>=1&&(a.ports==null||p<=a.ports))byPort.set(p,c);
-      else noPort.push(c);
-    }
-    const maxPort=a.ports!=null?a.ports:Math.max(0,...byPort.keys());
-    for(let p=1;p<=maxPort;p++){
-      const c=byPort.get(p);
-      rows.push(c
-        ?[swName,swFloor,swModel,p,c.name,c.type==='AP'?'AP':'Camera',c.model||'',c.ip||'',c.dev.vlan||'',c.w||'']
-        :[swName,swFloor,swModel,p,'— free —','','','','','']);
-    }
-    for(const c of noPort)
-      rows.push([swName,swFloor,swModel,c.port||'?',c.name,c.type==='AP'?'AP':'Camera',c.model||'',c.ip||'',c.dev.vlan||'',c.w||'']);
-  }
-  if(rows.length<=1)return '';
-  return rows.map(r=>r.map(_csvEscape).join(',')).join('\n');
-}
 function doPortMapCsv(){
   const csv=_portMapCsvString();
   if(!csv){toast('No switches placed yet');return;}
@@ -4244,17 +4134,6 @@ function doPortMapCsv(){
 
 // Inventory: the as-built record — identity, status and install fields for
 // every device in the building.
-function _inventoryCsvString(){
-  const rows=[['Floor','Type','Name','Model','Status','Serial','Asset tag','Firmware','MAC','IP','VLAN','Switch','Port','Notes']];
-  for(const {dev,type,floor} of allDevices()){
-    const sw=(floor.SWS||[]).find(s=>s.id===dev.swId);
-    rows.push([floor.name||'',type,dev.name||dev.id,dev.model||'',statusMeta(dev).label,
-      dev.serial||'',dev.assetTag||'',dev.firmware||'',dev.mac||'',dev.ip||'',dev.vlan||'',
-      sw?(sw.name||sw.id):'',dev.port||'',dev.comment||dev.notes||'']);
-  }
-  if(rows.length<=1)return '';
-  return rows.map(r=>r.map(_csvEscape).join(',')).join('\n');
-}
 function doInventoryCsv(){
   const csv=_inventoryCsvString();
   if(!csv){toast('Nothing placed yet');return;}
