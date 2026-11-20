@@ -72,6 +72,7 @@ export function mountPolicies(opts) {
   function evaluate() {
     const policies = getPolicies();
     list.innerHTML = '';
+    checkBtn.disabled = !policies.length;
     if (!policies.length) { summary.textContent = 'No policies yet.'; summary.className = 'pol-summary'; return { results: [] }; }
     let out;
     try { out = evaluatePolicies(getProject(), policies); } catch (e) { summary.textContent = `Could not simulate the plan: ${(e && e.message) || e}`; summary.className = 'pol-summary bad'; return { results: [] }; }
@@ -119,6 +120,10 @@ export function mountPolicies(opts) {
 
   fillSelector(fromSel, false);
   fillSelector(toSel, true);
+  // Start the target on something other than the source: "VLAN 1 must not
+  // reach VLAN 1" is a valid policy (client isolation) but a poor default.
+  const other = [...toSel.options].find((o) => o.value !== fromSel.value);
+  if (other) toSel.value = other.value;
   portInp.disabled = true;
   evaluate();
   return { el: root, evaluate };

@@ -1795,3 +1795,41 @@ button.ckt-hop{cursor:pointer}button.ckt-hop:hover{border-color:var(--ink-45)}
 .ckt-port{width:100%}
 .ckt-notes{resize:vertical}
 @media (max-width:640px){.ckt-hoprow{grid-template-columns:1fr 1fr}.ckt-from{flex-direction:column;align-items:stretch}}
+
+/* An empty map <img> (no plan yet) must not show the broken-image glyph + alt. */
+#mi:not([src]),#mi[src=""]{visibility:hidden}
+
+/* Packet-simulation button rows wrap instead of clipping off the panel edge. */
+.sim-row.sim-actions,.sim-stepbar{flex-wrap:wrap}
+
+/* Disabled form fields read as disabled. */
+.ep-in:disabled,.ep-sel:disabled{opacity:.45;cursor:not-allowed}
+
+/* Settings card rows are label | control; a slider row is label | slider | value. */
+.settings-card > .ep-slider-row{grid-template-columns:minmax(120px,38%) 1fr auto}
+
+/* Policies: Re-check is an ordinary button beside the summary, not full width. */
+.pol-root .ep-btn-row{align-items:center;gap:10px}
+.pol-root .ep-btn-row .btn{flex:0 0 auto}
+.pol-root .ep-btn-row .pol-summary{flex:1}
+
+/* Narrower windows. The top-bar counts duplicate the side panel's, so they go
+   first; then secondary buttons turn icon-only — the tool row below 1440 px
+   (where its labels stop fitting), the top row at ≤1366 px (incl. 1280
+   laptops). The label stays in the DOM (accessible name) and every one of these
+   buttons carries a title; position:relative keeps the hidden label inside it. */
+@media (max-width:1560px){.topbar-meta .status,.topbar-meta .status + .tsep{display:none}}
+@media (max-width:1439px){
+  .topbar-tools .btn{position:relative}
+  .topbar-tools .btn:is([data-action="auto-place"],[data-action="auto-channel"],[data-action="auto-power"],[data-action="show-poe"],
+    [data-action="auto-assign-sw"],[data-action="show-topology"],[data-action="show-validation"],[data-action="calibrate-scale"]) > span{
+    position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+}
+@media (max-width:1366px){
+  .topbar-meta .btn{position:relative}
+  .topbar-meta .btn:is([data-action="open-upload"],[data-arg="import-menu"],[data-action="toggle-present"],[data-arg="export-menu"],
+    [data-action="show-policies"],[data-action="show-circuits"],[data-action="show-labs"]) > span{
+    position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+  .topbar{gap:4px}
+  .brand{max-width:130px}
+}
