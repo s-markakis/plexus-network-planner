@@ -186,5 +186,54 @@
   "sz*2",
   "urlPh",
   "urlVal"
- ]
+ ],
+ "modules": {
+  "cliUI.js": {
+   "fields": [
+    "dev.name || dev.id"
+   ],
+   "attrs": []
+  },
+  "clientReport.js": {
+   "fields": [
+    "Number(o.cw) || 1000",
+    "Number(o.ch) || 700",
+    "o.innerSVG",
+    "m.site ? ' — ' + esc(m.site) : ''",
+    "m.contact ? ' · ' + esc(m.contact) : ''"
+   ],
+   "attrs": []
+  },
+  "sampleProject.js": {
+   "fields": [
+    "r.x",
+    "r.y",
+    "r.w",
+    "r.h",
+    "r.fill",
+    "r.lx",
+    "r.ly",
+    "r.label.toUpperCase()",
+    "wl.x1",
+    "wl.y1",
+    "wl.x2",
+    "wl.y2",
+    "s.stroke",
+    "s.width"
+   ],
+   "attrs": [
+    "r.x",
+    "r.y",
+    "r.w",
+    "r.h",
+    "r.fill",
+    "r.lx",
+    "r.ly",
+    "s.stroke",
+    "s.width",
+    "W",
+    "H"
+   ]
+  }
+ }
 }
