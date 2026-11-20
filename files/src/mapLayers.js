@@ -8,6 +8,8 @@ import { routerAsAp } from './routerWifi.js';
 import { AP_PATTERNS, ROAMING_OVERLAP_DBM, HEATMAP_STOPS } from './constants.js';
 import { dbmAt, bandLossMultiplier, effectiveEirp } from './geometry.js';
 import { apChansOverlap } from './channels.js';
+import { WALL_MATERIALS } from './geometry.js';
+import { bestAp } from './wireless.js';
 
 /** Wedge (or full-circle → null) path for a camera's view area. */
 export function _camWedgePath(cx,cy,r,heading,fov){
@@ -548,4 +550,99 @@ export function renderGridLayer(layer, ctx){
   for(let x=0;x<=w;x+=ctx.gridSize){const l=mk('line');l.setAttribute('x1',x);l.setAttribute('y1',0);l.setAttribute('x2',x);l.setAttribute('y2',h);g.appendChild(l);}
   for(let y=0;y<=h;y+=ctx.gridSize){const l=mk('line');l.setAttribute('x1',0);l.setAttribute('y1',y);l.setAttribute('x2',w);l.setAttribute('y2',y);g.appendChild(l);}
   layer.appendChild(g);
+}
+
+export function renderWallLayer(layer, ctx){
+  const mk=(tag)=>ctx.doc.createElementNS('http://www.w3.org/2000/svg',tag);
+  layer.innerHTML='';
+  ctx.walls.forEach(w=>{
+    const mat=WALL_MATERIALS[w.material]||WALL_MATERIALS.drywall;
+    const isSel=(ctx.selType==='wall'&&ctx.selId===w.id);
+    const px=ctx.wallPx(w);
+    // Thin highlight underlay when selected
+    if(isSel){
+      const hl=mk('line');
+      hl.setAttribute('x1',px.x1);hl.setAttribute('y1',px.y1);
+      hl.setAttribute('x2',px.x2);hl.setAttribute('y2',px.y2);
+      hl.setAttribute('class','wall-sel-hl');
+      layer.appendChild(hl);
+    }
+    const ln=mk('line');
+    ln.setAttribute('x1',px.x1);ln.setAttribute('y1',px.y1);
+    ln.setAttribute('x2',px.x2);ln.setAttribute('y2',px.y2);
+    ln.setAttribute('class','wall-line');
+    ln.setAttribute('stroke-width',mat.strokeWidth);
+    if(mat.dash)ln.setAttribute('stroke-dasharray',mat.dash);
+    ln.dataset.id=w.id;
+    ln.style.pointerEvents='stroke';
+    ln.style.cursor='pointer';
+    ln.addEventListener('pointerdown',e=>ctx.onWallPointerDown(w,e));
+    layer.appendChild(ln);
+    // Draw a small material pill near the midpoint when selected
+    if(isSel){
+      const mx=(px.x1+px.x2)/2,my=(px.y1+px.y2)/2;
+      const bg=mk('rect');
+      bg.setAttribute('x',mx-22);bg.setAttribute('y',my-9);
+      bg.setAttribute('width',44);bg.setAttribute('height',18);
+      bg.setAttribute('rx',9);bg.setAttribute('class','wall-lbl-bg');
+      layer.appendChild(bg);
+      const lbl=mk('text');
+      lbl.setAttribute('x',mx);lbl.setAttribute('y',my);
+      lbl.setAttribute('class','wall-lbl');
+      lbl.textContent=mat.label;
+      layer.appendChild(lbl);
+
+      // Vertex handles — drag to reshape the wall endpoints in place.
+      // Stored fractional coords mean we can update fx1/fy1 directly.
+      const mkVert=(ex,ey,endpoint)=>{
+        const v=mk('circle');
+        v.setAttribute('cx',ex);v.setAttribute('cy',ey);v.setAttribute('r',6);
+        v.setAttribute('class','wall-vert');
+        v.dataset.wallId=w.id;v.dataset.endpoint=endpoint;
+        v.style.pointerEvents='all';
+        v.addEventListener('pointerdown',e=>ctx.onWallVertexDown(w,endpoint,e));
+        layer.appendChild(v);
+      };
+      mkVert(px.x1,px.y1,'a');
+      mkVert(px.x2,px.y2,'b');
+    }
+  });
+  // Auto-detected wall candidates awaiting the user's accept/discard choice.
+  if(ctx.detectedWallPreview){
+    const w=ctx.w||1,h=ctx.h||1;
+    for(const s of ctx.detectedWallPreview){
+      const ln=mk('line');
+      ln.setAttribute('x1',s.fx1*w);ln.setAttribute('y1',s.fy1*h);
+      ln.setAttribute('x2',s.fx2*w);ln.setAttribute('y2',s.fy2*h);
+      ln.setAttribute('class','wall-line');
+      ln.setAttribute('stroke','#1565c0');
+      ln.setAttribute('stroke-width','2.5');
+      ln.setAttribute('stroke-dasharray','6 4');
+      ln.setAttribute('opacity','.85');
+      layer.appendChild(ln);
+    }
+  }
+}
+
+export function renderClientLayer(layer, ctx){
+  const mk=(tag)=>ctx.doc.createElementNS('http://www.w3.org/2000/svg',tag);
+  if(!layer)return;
+  layer.innerHTML='';
+  const w=ctx.w,h=ctx.h;if(!w||!h)return;
+  const aps=ctx.rfAps,walls=ctx.walls;   // APs and WiFi routers
+  ctx.clients.forEach(cl=>{
+    if(!Number.isFinite(cl.fx)||!Number.isFinite(cl.fy))return;
+    const cx=cl.fx*w,cy=cl.fy*h;
+    const assoc=bestAp(cl,aps,walls,w,h,{model:ctx.settings.propagationModel,metersPerPx:(ctx.scaleM||100)/100});
+    const g=mk('g');g.setAttribute('class','client-grp');g.dataset.id=cl.id;g.style.pointerEvents='all';
+    if(assoc&&Number.isFinite(assoc.ap.fx)){
+      const ln=mk('line');ln.setAttribute('x1',cx);ln.setAttribute('y1',cy);ln.setAttribute('x2',assoc.ap.fx*w);ln.setAttribute('y2',assoc.ap.fy*h);ln.setAttribute('class','client-link');g.appendChild(ln);
+    }
+    const isSel=ctx.isSelected(cl.id,'client');
+    const dot=mk('circle');dot.setAttribute('cx',cx);dot.setAttribute('cy',cy);dot.setAttribute('r',8);dot.setAttribute('class','client-dot'+(isSel?' sel':''));g.appendChild(dot);
+    const lbl=mk('text');lbl.setAttribute('x',cx);lbl.setAttribute('y',cy-12);lbl.setAttribute('class','client-lbl');lbl.setAttribute('text-anchor','middle');
+    lbl.textContent=cl.name+(assoc?` · ${Math.round(assoc.dbm)} dBm`:' · no AP');g.appendChild(lbl);
+    g.addEventListener('pointerdown',e=>ctx.onItemPointerDown('client',cl,e));
+    layer.appendChild(g);
+  });
 }

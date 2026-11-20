@@ -102,7 +102,7 @@ import {settingsForm,SETTINGS_STRING_KEYS,SETTINGS_NUMBER_KEYS,SETTINGS_BOOL_KEY
 import {revisionsEl} from './src/revisionsUI.js';
 import * as _pb from './src/panelBlocks.js';
 import {apPanelHtml,swPanelHtml,camPanelHtml,wallPanelHtml,dzPanelHtml} from './src/panels.js';
-import {renderAPLayer,renderDZLayer,renderCableLayer,renderCAMLayer,renderSWLayer,renderAnnoLayer,renderSampleLayer,renderRoamingLayer,renderChannelOverlapLayer,renderOverlapZoneLayer,renderGridLayer} from './src/mapLayers.js';
+import {renderAPLayer,renderDZLayer,renderCableLayer,renderCAMLayer,renderSWLayer,renderAnnoLayer,renderSampleLayer,renderWallLayer,renderClientLayer,renderRoamingLayer,renderChannelOverlapLayer,renderOverlapZoneLayer,renderGridLayer} from './src/mapLayers.js';
 const {credsBlock,inventoryBlock,portOptions,portControl,statusOptions,buildGroupedOptions,CRED_PROTOS}=_pb;
 import {remoteImageHosts,stripRemoteImages} from './src/remoteImages.js';
 import {evaluatePolicies} from './src/policy.js';
@@ -344,6 +344,12 @@ const _layerCtx={
   get showCables(){return showCables;},get showCoverage(){return showCoverage;},
   get annos(){return ANNOS();},get samples(){return SAMPLES();},
   get showOL(){return showOL;},get showGrid(){return showGrid;},gridSize:GRID_SZ,
+  get clients(){return CLIENTS();},get selType(){return selType;},get selId(){return selId;},
+  get detectedWallPreview(){return _detectedWallPreview;},wallPx:w=>_wallPx(w),
+  // A wall line takes a press only in select mode.
+  onWallPointerDown(w,e){if(mode==='sel'){e.stopPropagation();sel(w.id,'wall');}},
+  // An end handle of the selected wall: reshape by dragging (undoable).
+  onWallVertexDown(w,endpoint,e){e.stopPropagation();wallVertDrag={wallId:w.id,endpoint};snapshot();},
   isSelected:(id,type)=>isSelected(id,type),statusDimmed:d=>statusDimmed(d),vlanColor:v=>vlanColor(v),
   hexToRgba:(c,a)=>hexToRgba(c,a),tInk:a=>tInk(a),tBg:a=>tBg(a),
   getCoveragePath:ap=>getCoveragePath(ap),getInnerCoveragePath:ap=>getInnerCoveragePath(ap),
@@ -2414,83 +2420,7 @@ function clearRuler(){
 // map image swaps. We resolve to absolute pixels at render time. Drawn as
 // straight line segments between two points, with per-material stroke width.
 function _wallPx(w){return wallToPx(w,mapImg.naturalWidth||1,mapImg.naturalHeight||1);}
-function renderWalls(){
-  wallLayer.innerHTML='';
-  WALLS().forEach(w=>{
-    const mat=WALL_MATERIALS[w.material]||WALL_MATERIALS.drywall;
-    const isSel=(selType==='wall'&&selId===w.id);
-    const px=_wallPx(w);
-    // Thin highlight underlay when selected
-    if(isSel){
-      const hl=mk('line');
-      hl.setAttribute('x1',px.x1);hl.setAttribute('y1',px.y1);
-      hl.setAttribute('x2',px.x2);hl.setAttribute('y2',px.y2);
-      hl.setAttribute('class','wall-sel-hl');
-      wallLayer.appendChild(hl);
-    }
-    const ln=mk('line');
-    ln.setAttribute('x1',px.x1);ln.setAttribute('y1',px.y1);
-    ln.setAttribute('x2',px.x2);ln.setAttribute('y2',px.y2);
-    ln.setAttribute('class','wall-line');
-    ln.setAttribute('stroke-width',mat.strokeWidth);
-    if(mat.dash)ln.setAttribute('stroke-dasharray',mat.dash);
-    ln.dataset.id=w.id;
-    ln.style.pointerEvents='stroke';
-    ln.style.cursor='pointer';
-    ln.addEventListener('pointerdown',e=>{
-      if(mode==='sel'){e.stopPropagation();sel(w.id,'wall');}
-    });
-    wallLayer.appendChild(ln);
-    // Draw a small material pill near the midpoint when selected
-    if(isSel){
-      const mx=(px.x1+px.x2)/2,my=(px.y1+px.y2)/2;
-      const bg=mk('rect');
-      bg.setAttribute('x',mx-22);bg.setAttribute('y',my-9);
-      bg.setAttribute('width',44);bg.setAttribute('height',18);
-      bg.setAttribute('rx',9);bg.setAttribute('class','wall-lbl-bg');
-      wallLayer.appendChild(bg);
-      const lbl=mk('text');
-      lbl.setAttribute('x',mx);lbl.setAttribute('y',my);
-      lbl.setAttribute('class','wall-lbl');
-      lbl.textContent=mat.label;
-      wallLayer.appendChild(lbl);
-
-      // Vertex handles — drag to reshape the wall endpoints in place.
-      // Stored fractional coords mean we can update fx1/fy1 directly.
-      const mkVert=(ex,ey,endpoint)=>{
-        const v=mk('circle');
-        v.setAttribute('cx',ex);v.setAttribute('cy',ey);v.setAttribute('r',6);
-        v.setAttribute('class','wall-vert');
-        v.dataset.wallId=w.id;v.dataset.endpoint=endpoint;
-        v.style.pointerEvents='all';
-        v.addEventListener('pointerdown',e=>{
-          e.stopPropagation();
-          wallVertDrag={wallId:w.id,endpoint};
-          snapshot();
-        });
-        wallLayer.appendChild(v);
-      };
-      mkVert(px.x1,px.y1,'a');
-      mkVert(px.x2,px.y2,'b');
-    }
-  });
-  // Auto-detected wall candidates awaiting the user's accept/discard choice.
-  if(_detectedWallPreview){
-    const w=mapImg.naturalWidth||1,h=mapImg.naturalHeight||1;
-    for(const s of _detectedWallPreview){
-      const ln=mk('line');
-      ln.setAttribute('x1',s.fx1*w);ln.setAttribute('y1',s.fy1*h);
-      ln.setAttribute('x2',s.fx2*w);ln.setAttribute('y2',s.fy2*h);
-      ln.setAttribute('class','wall-line');
-      ln.setAttribute('stroke','#1565c0');
-      ln.setAttribute('stroke-width','2.5');
-      ln.setAttribute('stroke-dasharray','6 4');
-      ln.setAttribute('opacity','.85');
-      wallLayer.appendChild(ln);
-    }
-  }
-  renderWallPreview();
-}
+function renderWalls(){renderWallLayer(wallLayer,_layerCtx);renderWallPreview();}
 
 // ── Automatic wall detection ──────────────────────────────────────────────
 // Rasterize the floor plan (downscaled), run the Hough-based detector, and
@@ -3450,27 +3380,7 @@ function render(){_resetThemeCache();renderGrid();renderHeat();renderRoaming();r
 // Wireless clients: a dot per client with a dashed line to the AP it associates
 // to (strongest wall-aware signal), labelled with the RSSI — the RF→sim bridge
 // made visible. Clients are selectable; placement/edit/delete follow the usual flow.
-function renderClients(){
-  const layer=document.getElementById('client-layer');if(!layer)return;
-  layer.innerHTML='';
-  const w=mapImg.naturalWidth,h=mapImg.naturalHeight;if(!w||!h)return;
-  const aps=rfAps(F()),walls=WALLS();   // APs and WiFi routers
-  CLIENTS().forEach(cl=>{
-    if(!Number.isFinite(cl.fx)||!Number.isFinite(cl.fy))return;
-    const cx=cl.fx*w,cy=cl.fy*h;
-    const assoc=bestAp(cl,aps,walls,w,h,{model:SETTINGS.propagationModel,metersPerPx:(scaleM||100)/100});
-    const g=mk('g');g.setAttribute('class','client-grp');g.dataset.id=cl.id;g.style.pointerEvents='all';
-    if(assoc&&Number.isFinite(assoc.ap.fx)){
-      const ln=mk('line');ln.setAttribute('x1',cx);ln.setAttribute('y1',cy);ln.setAttribute('x2',assoc.ap.fx*w);ln.setAttribute('y2',assoc.ap.fy*h);ln.setAttribute('class','client-link');g.appendChild(ln);
-    }
-    const isSel=isSelected(cl.id,'client');
-    const dot=mk('circle');dot.setAttribute('cx',cx);dot.setAttribute('cy',cy);dot.setAttribute('r',8);dot.setAttribute('class','client-dot'+(isSel?' sel':''));g.appendChild(dot);
-    const lbl=mk('text');lbl.setAttribute('x',cx);lbl.setAttribute('y',cy-12);lbl.setAttribute('class','client-lbl');lbl.setAttribute('text-anchor','middle');
-    lbl.textContent=cl.name+(assoc?` · ${Math.round(assoc.dbm)} dBm`:' · no AP');g.appendChild(lbl);
-    g.addEventListener('pointerdown',e=>{e.stopPropagation();if(e.shiftKey&&mode==='sel'){toggleSelection(cl.id,'client');return;}sel(cl.id,'client');if(!cl.locked){const img=vpToImg(e.clientX,e.clientY);dragOffX=cl.fx*w-img.x;dragOffY=cl.fy*h-img.y;dragId=cl.id;dragType='client';}});
-    layer.appendChild(g);
-  });
-}
+function renderClients(){renderClientLayer(document.getElementById('client-layer'),_layerCtx);}
 function renderClientPanel(){
   const cl=CLIENTS().find(a=>a.id===selId);if(!cl)return;
   document.getElementById('rp-head').textContent='Edit Wireless Client';
