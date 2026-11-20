@@ -330,6 +330,10 @@ async function wifiSampleMac() {
     const sn = String(cur.spairport_signal_noise || '');
     const m = /(-?\d+)\s*dBm\s*\/\s*(-?\d+)\s*dBm/.exec(sn);
     if (!m) continue;
+    // macOS reports "0 dBm" when it has no current reading (seen
+    // intermittently on a connected Mac). That is not a sample: recording it
+    // would put an impossibly strong 0 dBm point into the survey.
+    if (!(parseInt(m[1], 10) < 0)) throw new Error('No signal reading from macOS right now — try again');
     const chM = /(\d+)/.exec(String(cur.spairport_network_channel || ''));
     return {
       ok: true,
@@ -364,6 +368,7 @@ async function wifiSampleLinux() {
   const out = await run('iw', ['dev', dev, 'link']);
   const m = /signal:\s*(-?\d+)\s*dBm/.exec(out);
   if (!m) throw new Error('Not connected to WiFi');
+  if (!(parseInt(m[1], 10) < 0)) throw new Error('No signal reading right now — try again');
   const ssid = (/SSID:\s*(.+)/.exec(out) || [])[1] || '';
   const bssid = (/Connected to\s+([0-9a-f:]+)/i.exec(out) || [])[1] || '';
   const freq = parseInt((/freq:\s*(\d+)/.exec(out) || [])[1], 10);
