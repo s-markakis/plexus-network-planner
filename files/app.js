@@ -84,6 +84,8 @@ import {mountCliConsole} from './src/cliUI.js';
 import {mountDeviceConfig} from './src/deviceConfigUI.js';
 import {mountPolicies} from './src/policyUI.js';
 import {mountLabs} from './src/labsUI.js';
+import {mountCircuits} from './src/circuitsUI.js';
+import {deviceIndex} from './src/circuits.js';
 import {evaluatePolicies} from './src/policy.js';
 import {compileTopology} from './src/simCompile.js';
 import {reachabilityMatrix} from './src/simMatrix.js';
@@ -2301,6 +2303,30 @@ function showPolicies(){
     setPolicies:p=>{SETTINGS.policies=p;autosave();},
   });
   showModalNode('Policies',wrap,null);
+}
+// Circuits: the recorded path of each connection, searchable by any hop.
+// Opened with a device selected, it starts filtered to circuits through it.
+function showCircuits(){
+  const wrap=document.createElement('div');
+  const selDev=(selType==='ap'||selType==='cam'||selType==='sw')&&selId?selId:'';
+  mountCircuits({
+    root:wrap,
+    getProject:simProject,
+    getCircuits:()=>Array.isArray(SETTINGS.circuits)?SETTINGS.circuits:[],
+    // Always a fresh array: a new project's SETTINGS may alias DEFAULT_SETTINGS.
+    setCircuits:c=>{SETTINGS.circuits=c.slice();autosave();},
+    deviceId:selDev,
+    getTech:()=>{try{return localStorage.getItem('plexus.circuitTech')||'';}catch{return '';}},
+    setTech:t=>{try{localStorage.setItem('plexus.circuitTech',t);}catch{}},
+    onFocus:id=>{
+      const d=deviceIndex({floors:FLOORS}).get(id);
+      if(!d)return;
+      closeModal();
+      if(d.floor!==curFloor)switchFloor(d.floor);
+      sel(id,d.type,{zoom:true});
+    },
+  });
+  showModalNode('Circuits',wrap,null);
 }
 // Labs: guided scenarios graded by the simulator. Starting one replaces the
 // current plan, so it asks first; the active lab id is session-only.
@@ -6472,6 +6498,7 @@ const CLICK_ACTIONS={
   'device-config': ()=>showDeviceConfig(),
   'show-policies': ()=>showPolicies(),
   'show-labs':     ()=>showLabs(),
+  'show-circuits': ()=>showCircuits(),
   'handover-pack': ()=>doHandoverPack(),
   'export-ip-plan':()=>doIpPlanCsv(),
   'export-port-map':()=>doPortMapCsv(),

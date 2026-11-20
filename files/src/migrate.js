@@ -4,6 +4,7 @@
 import {WALL_MATERIALS} from './geometry.js';
 import {AP_ANTENNA_GAIN_DBI,DEVICE_STATUSES} from './constants.js';
 import {sanitizeProject} from './validate.js';
+import {normalizeCircuits} from './circuits.js';
 
 export const PROJECT_VERSION=11;
 
@@ -39,6 +40,7 @@ export const DEFAULT_SETTINGS={
   colorByVlan:      false,            // tint devices on the map by their VLAN colour
   vlans:            [],               // [{id,name,color,subnet}] VLAN registry
   policies:         [],               // reachability intent, see src/policy.js
+  circuits:         [],               // documented device paths, see src/circuits.js
   customCatalog:    '',               // JSON string of merged custom vendor models
   // v9 (schema) additions — organization features
   siteCode:         '',               // short site tag for the naming convention, e.g. "HQ"
@@ -118,6 +120,7 @@ export function migrateProject(data){
   // Clone the VLAN registry so it never aliases the shared DEFAULT_SETTINGS array.
   // v11: carry an optional gateway IP (SVI) per VLAN for inter-VLAN routing sim.
   data.settings.vlans=Array.isArray(data.settings.vlans)?data.settings.vlans.map(v=>({...v,gateway:typeof v.gateway==='string'?v.gateway:''})):[];
+  data.settings.circuits=normalizeCircuits(data.settings.circuits);
   if(!Array.isArray(data.revisions))data.revisions=[];
   data.revisions.forEach(r=>{if(typeof r.baseline!=='boolean')r.baseline=false;});
   // v8→v9: install status + inventory fields on every networked device.
