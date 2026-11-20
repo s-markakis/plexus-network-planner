@@ -89,7 +89,10 @@ function lensArea(a, b, d) {
 /**
  * Per AP, the Tx power (5…23 dBm) whose cell overlaps same-band neighbours by
  * closest to 30 % of its own area — enough for roaming without blanketing the
- * floor. Neighbours are taken at their stored radius.
+ * floor. Neighbours are taken at their stored radius. An AP that overlaps
+ * no neighbour at any power keeps its current power (the reference 20 dBm if
+ * unset): there is no overlap to tune, and the bare 30 % target used to
+ * drop such APs — single-AP sites, isolated rooms — to the 5 dBm minimum.
  * @param {any[]} aps
  * @param {{w:number, h:number}} opts
  * @returns {Map<any,number>} AP → dBm
@@ -98,7 +101,7 @@ export function planTxPower(aps, { w, h }) {
   /** @type {Map<any,number>} */
   const plan = new Map();
   for (const ap of aps) {
-    let bestTx = TX_POWER_REF_DBM, bestDelta = Infinity;
+    let bestTx = TX_POWER_REF_DBM, bestDelta = Infinity, anyOverlap = false;
     for (const tx of [5, 8, 11, 14, 17, 20, 23]) {
       const a = radiusAtTx(ap.r, tx);
       let overlap = 0;
@@ -106,11 +109,12 @@ export function planTxPower(aps, { w, h }) {
         if (other === ap || bandForAp(other) !== bandForAp(ap)) continue;
         overlap += lensArea(a, other.r, Math.hypot(ap.fx * w - other.fx * w, ap.fy * h - other.fy * h));
       }
+      if (overlap > 0) anyOverlap = true;
       const own = Math.PI * a * a;
       const delta = Math.abs((own ? overlap / own : 0) - 0.3);
       if (delta < bestDelta) { bestDelta = delta; bestTx = tx; }
     }
-    plan.set(ap, bestTx);
+    plan.set(ap, anyOverlap ? bestTx : (Number.isFinite(ap.txPowerDbm) ? ap.txPowerDbm : TX_POWER_REF_DBM));
   }
   return plan;
 }

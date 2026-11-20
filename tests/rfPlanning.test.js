@@ -31,7 +31,7 @@ function refAutoChannel(aps, w, h, regionKey) {
 }
 function refAutoTx(aps, w, h) {
   for (const ap of aps) {
-    let bestTx = 20, bestDelta = Infinity; const ax = ap.fx * w, ay = ap.fy * h;
+    let bestTx = 20, bestDelta = Infinity, any = false; const ax = ap.fx * w, ay = ap.fy * h;
     for (const tx of [5, 8, 11, 14, 17, 20, 23]) {
       const a = ap.r * Math.pow(10, (tx - 20) / 30); let overlap = 0; const own = Math.PI * a * a;
       for (const other of aps) {
@@ -46,10 +46,12 @@ function refAutoTx(aps, w, h) {
           overlap += Math.max(0, a2 + b2 - tri);
         }
       }
+      if (overlap > 0) any = true;
       const delta = Math.abs((own ? overlap / own : 0) - 0.3);
       if (delta < bestDelta) { bestDelta = delta; bestTx = tx; }
     }
-    ap.txPowerDbm = bestTx;
+    // Fix on top of the original: no neighbour to overlap → keep the power.
+    ap.txPowerDbm = any ? bestTx : (Number.isFinite(ap.txPowerDbm) ? ap.txPowerDbm : 20);
   }
 }
 
@@ -97,9 +99,10 @@ describe('rfPlanning basics', () => {
     expect(dfs.includes(c1) || dfs.includes(c2)).toBe(false);
     expect(regionChannels('FCC-US', '2.4')).toContain(11);
   });
-  it('radius scales ~2x per +9 dB; isolated APs drop to 5 dBm (current behaviour)', () => {
+  it('radius scales ~2x per +9 dB; APs with no neighbour to overlap keep their power', () => {
     expect(radiusAtTx(100, 29)).toBeCloseTo(199.5, 0);
-    const lone = [{ fx: 0.1, fy: 0.1, r: 50 }, { fx: 0.9, fy: 0.9, r: 50 }];
-    expect([...planTxPower(lone, { w: 1000, h: 1000 }).values()]).toEqual([5, 5]);
+    const lone = [{ fx: 0.1, fy: 0.1, r: 50 }, { fx: 0.9, fy: 0.9, r: 50, txPowerDbm: 17 }];
+    expect([...planTxPower(lone, { w: 1000, h: 1000 }).values()]).toEqual([20, 17]);
+    expect([...planTxPower([{ fx: 0.5, fy: 0.5, r: 200 }], { w: 1000, h: 1000 }).values()]).toEqual([20]);
   });
 });
