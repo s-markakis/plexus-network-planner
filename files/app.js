@@ -570,8 +570,12 @@ function autoPlaceAPs(){
   invalidateCoverageCache();
   render();renderList();renderRP();calcCoverage();
   if(placedNow.length){
-    const pct=Math.round(coveredFrac*100);
-    toast(`Placed ${placedNow.length} ${model} AP${placedNow.length===1?'':'s'} — ${pct}% coverage`);
+    // Report the same figure as the coverage readout (the planner's own
+    // estimate uses a simplified model), and in one toast: a second toast
+    // replaced the first, so a capacity warning hid the placement result.
+    const cov=sampleFloorCoverage(F());
+    const pct=cov.total?Math.round(cov.covered/cov.total*100):Math.round(coveredFrac*100);
+    let msg=`Placed ${placedNow.length} ${model} AP${placedNow.length===1?'':'s'} — ${pct}% coverage`;
     // Capacity sanity check vs this floor's switches (ports + PoE budget).
     if(SWS().length){
       let ports=0,portsKnown=true,budget=0;
@@ -581,8 +585,9 @@ function autoPlaceAPs(){
       const issues=[];
       if(portsKnown && devCount>ports)issues.push(`${devCount} devices vs ${ports} ports`);
       if(budget>0 && draw>budget)issues.push(`${draw.toFixed(0)} W vs ${budget} W PoE`);
-      if(issues.length)toast('⚠ Switch capacity: '+issues.join(' · ')+' — add/upgrade switches');
+      if(issues.length)msg+=` · ⚠ switch capacity: ${issues.join(', ')} — add/upgrade switches`;
     }
+    toast(msg);
   }else{
     toast('Already at target coverage — nothing to place');
   }
