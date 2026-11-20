@@ -40,7 +40,13 @@ export function revisionsEl(doc, { revisions, locale, diffVsNow, diffLastTwo, on
       const r = doc.createElement('button'); r.className = 'btn'; r.textContent = 'Restore';
       r.addEventListener('click', () => onRestore(rev));
       const x = doc.createElement('button'); x.className = 'btn danger'; x.textContent = '×'; x.title = 'Delete';
-      x.addEventListener('click', () => onDelete(rev));
+      // Deleting a revision can't be undone: ask on the button itself (a
+      // second click within 3 s) rather than deleting on the first.
+      x.addEventListener('click', () => {
+        if (x.dataset.armed) { onDelete(rev); return; }
+        x.dataset.armed = '1'; x.textContent = 'Delete?';
+        setTimeout(() => { if (x.isConnected) { delete x.dataset.armed; x.textContent = '×'; } }, 3000);
+      });
       row.appendChild(name); row.appendChild(when); row.appendChild(b); row.appendChild(d); row.appendChild(r); row.appendChild(x);
       list.appendChild(row);
     }
@@ -48,11 +54,11 @@ export function revisionsEl(doc, { revisions, locale, diffVsNow, diffLastTwo, on
     if (revisions.length >= 2) {
       const diffBtn = doc.createElement('button'); diffBtn.className = 'btn'; diffBtn.textContent = 'Diff last two revisions';
       diffBtn.style.marginTop = '12px';
+      // One diff on screen at a time, labelled (each click used to stack
+      // another unlabelled result below the dialog).
       diffBtn.addEventListener('click', () => {
-        const lines = diffLastTwo();
-        const out = doc.createElement('pre'); out.className = 'rev-diff';
-        out.textContent = lines.length ? lines.join('\n') : '(no differences detected)';
-        wrap.appendChild(out);
+        const [a, b] = revisions.slice(-2);
+        showDiff(diffLastTwo(), `${a.name} → ${b.name}`);
       });
       wrap.appendChild(diffBtn);
     }
