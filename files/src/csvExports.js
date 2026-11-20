@@ -5,7 +5,7 @@
 // always has its header). The single-file downloads and the handover pack use
 // the same builders.
 
-import { AP_POE_W, CAM_SPECS } from './constants.js';
+import { apPoeW, camPoeW } from './planModel.js';
 import { ipInCidr } from './network.js';
 
 /** RFC 4180 field: quoted when it holds a quote, comma or newline. */
@@ -31,8 +31,9 @@ export function bomCsv({ floors, cable, cableBoxM, storageGb, retentionDays, sto
     tally.set(key, e);
   };
   for (const f of floors) {
-    for (const ap of f.APS || []) count('AP|' + (ap.model || ''), 'AP', ap.model, AP_POE_W[ap.model] || 0);
-    for (const c of f.CAMS || []) count('CAM|' + (c.model || ''), 'Camera', c.model, (CAM_SPECS[c.model] || {}).poeW || 0);
+    // Same per-model draw as the PoE budget checks (unknown APs: 10 W).
+    for (const ap of f.APS || []) count('AP|' + (ap.model || ''), 'AP', ap.model, apPoeW(ap.model));
+    for (const c of f.CAMS || []) count('CAM|' + (c.model || ''), 'Camera', c.model, camPoeW(c.model));
     for (const sw of f.SWS || []) count('SW|' + (sw.model || ''), 'Switch', sw.model, 0);
   }
   /** @type {Array<Array<any>>} */

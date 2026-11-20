@@ -582,7 +582,7 @@ function autoPlaceAPs(){
       let ports=0,portsKnown=true,budget=0;
       for(const sw of SWS()){const p=sw.ports||swPortCount(sw.model);if(p==null)portsKnown=false;else ports+=p;budget+=sw.poeBudget||0;}
       const devCount=APS().length+CAMS().length;
-      const draw=APS().reduce((n,a)=>n+(AP_POE_W[a.model]||10),0)+CAMS().reduce((n,c)=>n+((CAM_SPECS[c.model]||{}).poeW||0),0);
+      const draw=APS().reduce((n,a)=>n+_pm.apPoeW(a.model),0)+CAMS().reduce((n,c)=>n+_pm.camPoeW(c.model),0);
       const issues=[];
       if(portsKnown && devCount>ports)issues.push(`${devCount} devices vs ${ports} ports`);
       if(budget>0 && draw>budget)issues.push(`${draw.toFixed(0)} W vs ${budget} W PoE`);
@@ -947,8 +947,8 @@ function autoAssignSwitches(){
     const a=analyzeSwitch(sw);
     return [sw.id,{sw,draw:0,used:0,budget:a.budget,ports:a.ports,swCls:a.swCls}];
   }));
-  const devices=[...APS().map(d=>({d,type:'AP',w:AP_POE_W[d.model]||10})),
-                 ...CAMS().map(d=>({d,type:'CAM',w:(CAM_SPECS[d.model]||{}).poeW||0}))];
+  const devices=[...APS().map(d=>({d,type:'AP',w:_pm.apPoeW(d.model)})),
+                 ...CAMS().map(d=>({d,type:'CAM',w:_pm.camPoeW(d.model)}))];
   snapshot();   // capture pre-assignment state so Undo reverts the whole pass
   let assigned=0;
   for(const {d,w:watt} of devices){

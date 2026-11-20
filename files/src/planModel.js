@@ -6,8 +6,9 @@ import { AP_POE_W, CAM_SPECS, DEVICE_STATUSES, swPortCount, swPoeClass, poeClass
 import { analyzeLoad } from './network.js';
 import { storageGb, cameraBitrateMbps } from './cameras.js';
 
-/** PoE draw of an AP model; unknown models are assumed to draw 10 W. */
-export const apPoeW = (model) => AP_POE_W[model] || 10;
+/** PoE draw of an AP model; unknown models are assumed to draw 10 W (an
+ * explicit 0 from a custom catalog — a mains-powered unit — is kept). */
+export const apPoeW = (model) => AP_POE_W[model] ?? 10;
 /** PoE draw of a camera model; 0 when unknown. */
 export const camPoeW = (model) => (CAM_SPECS[model] || {}).poeW || 0;
 
@@ -73,10 +74,10 @@ export function deviceStatusCounts(floors) {
   return counts;
 }
 
-/** Sum of the APs' client capacity (25 when unset). */
+/** Sum of the APs' client capacity (25 when unset; 0 is a real 0). */
 export function totalClientCapacity(floors) {
   let n = 0;
-  for (const f of floors) for (const ap of f.APS || []) n += ap.capacityClients || 25;
+  for (const f of floors) for (const ap of f.APS || []) n += Number.isFinite(ap.capacityClients) ? ap.capacityClients : 25;
   return n;
 }
 

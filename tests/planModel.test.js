@@ -29,3 +29,22 @@ describe('planModel', () => {
     expect(pm.totalStorageGb(floors, { retentionDays: 1 })).toBeGreaterThan(0);
   });
 });
+
+describe('planModel — one PoE source, real zero capacity', async () => {
+  const { AP_POE_W } = await import('../files/src/constants.js');
+  const { bomCsv } = await import('../files/src/csvExports.js');
+  it('an explicit 0 W (custom catalog) is kept; unknown models assume 10 W', () => {
+    AP_POE_W['Mains-AP'] = 0;
+    try {
+      expect(pm.apPoeW('Mains-AP')).toBe(0);
+      expect(pm.apPoeW('Unknown-AP')).toBe(10);
+    } finally { delete AP_POE_W['Mains-AP']; }
+  });
+  it('the BoM PoE column uses the same draw as the budget checks', () => {
+    const csv = bomCsv({ floors: [{ APS: [{ model: 'Mystery' }, { model: 'Mystery' }], CAMS: [], SWS: [] }], cable: { runs: 0, totalM: 0 }, storageGb: 0 });
+    expect(csv.split('\n')[1]).toBe('AP,Mystery,2,20');
+  });
+  it('capacityClients 0 counts as 0', () => {
+    expect(pm.totalClientCapacity([{ APS: [{ capacityClients: 0 }, {}] }])).toBe(25);
+  });
+});
