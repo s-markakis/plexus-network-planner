@@ -128,7 +128,7 @@ npm run dev          # browser dev server → http://localhost:5173
 npm run app:dev      # OR launch the desktop app
 ```
 
-Requires **Node 18+** (LTS recommended).
+Requires **Node 22.22+** to build and test (the desktop app ships its own runtime).
 
 ---
 

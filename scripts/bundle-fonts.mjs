@@ -3,19 +3,30 @@
 // app renders its real typography fully offline with no separate font files and
 // no path/bundling issues. Re-run only to refresh the fonts.
 //
-//   node scripts/bundle-fonts.mjs
+//   node scripts/bundle-fonts.mjs            verify against scripts/fonts.lock.json
+//   node scripts/bundle-fonts.mjs --update   accept new font files, rewrite the lock
+//
+// The font binaries are fetched at build time (CI runs this before packaging),
+// so each one is pinned by SHA-256: a changed file from the network fails the
+// build instead of being shipped. Review a change, then re-run with --update.
 
-import {writeFile} from 'node:fs/promises';
+import {writeFile,readFile} from 'node:fs/promises';
+import {createHash} from 'node:crypto';
 import {fileURLToPath} from 'node:url';
 import {dirname, join} from 'node:path';
 
 const __dirname=dirname(fileURLToPath(import.meta.url));
 const OUT=join(__dirname,'..','files','fonts.css');
+const LOCK=join(__dirname,'fonts.lock.json');
+const UPDATE=process.argv.includes('--update');
 const CSS_API='https://fonts.googleapis.com/css2?family=Rajdhani:wght@400;500;600;700&family=Share+Tech+Mono&display=swap';
 // A modern-browser UA makes the API return compact woff2 sources.
 const UA='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36';
 
 const run=async()=>{
+  let lock={};
+  try{lock=JSON.parse(await readFile(LOCK,'utf8'));}catch{if(!UPDATE)throw new Error(`missing ${LOCK} — run with --update once to create it`);}
+  const seen={};
   const css=await (await fetch(CSS_API,{headers:{'user-agent':UA}})).text();
   // Each @font-face block carries font-family, font-weight and a woff2 src URL.
   const blocks=css.split('@font-face').slice(1);
@@ -31,7 +42,13 @@ const run=async()=>{
     // Keep only the basic-latin subset (U+0000–00FF); skip latin-ext, devanagari,
     // vietnamese, etc. — the UI is English-only and they triple the size.
     if(range&&!/U\+0000/.test(range[1]))continue;
-    const bin=Buffer.from(await (await fetch(url[1])).arrayBuffer());
+    const res=await fetch(url[1]);
+    if(!res.ok)throw new Error(`font download failed: HTTP ${res.status}`);
+    const bin=Buffer.from(await res.arrayBuffer());
+    const key=`${fam[1]} ${wght?wght[1]:400}`;
+    const sha=createHash('sha256').update(bin).digest('hex');
+    if(!UPDATE&&lock[key]!==sha)throw new Error(`${key}: SHA-256 ${sha} does not match the lock (${lock[key]||'missing'}) — review, then --update`);
+    seen[key]=sha;
     const data=`data:font/woff2;base64,${bin.toString('base64')}`;
     out.push(`@font-face{`,
       `  font-family:'${fam[1]}';font-style:normal;font-weight:${wght?wght[1]:400};font-display:swap;`,
@@ -41,7 +58,9 @@ const run=async()=>{
     console.log(`  ✓ ${fam[1]} ${wght?wght[1]:400} — ${(bin.length/1024).toFixed(0)} KB`);
   }
   if(!n)throw new Error('no @font-face blocks parsed');
+  if(!UPDATE){const missing=Object.keys(lock).filter(k=>!(k in seen));if(missing.length)throw new Error(`fonts in the lock not served any more: ${missing.join(', ')}`);}
+  else await writeFile(LOCK,JSON.stringify(seen,null,2)+'\n');
   await writeFile(OUT,out.join('\n')+'\n');
   console.log(`\nWrote ${n} faces → ${OUT}`);
 };
-run();
+run().catch(err=>{console.error('bundle-fonts:',err.message);process.exit(1);});

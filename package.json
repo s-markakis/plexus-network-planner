@@ -48,7 +48,7 @@
     "vanilla-js"
   ],
   "engines": {
-    "node": ">=18"
+    "node": ">=22.22"
   },
   "scripts": {
     "dev": "vite --port 5173",
