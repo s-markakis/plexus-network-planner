@@ -41,6 +41,16 @@ function paneSettings(doc,form){
   form.classList.add('paned');
 }
 
+// A language's own name ("English", "Ελληνικά"), falling back to the code
+// where Intl.DisplayNames is unavailable or doesn't know it.
+/** @param {string} code */
+function languageName(code) {
+  try {
+    const n = new Intl.DisplayNames([code], { type: 'language' }).of(code);
+    return n && n !== code ? n.charAt(0).toLocaleUpperCase(code) + n.slice(1) : code;
+  } catch { return code; }
+}
+
 /**
  * @param {Document} doc
  * @param {{settings:any, vlans:any[], credsPass:string, langs:string[], onOpacityPreview:(v:number)=>void}} p
@@ -104,7 +114,7 @@ export function settingsForm(doc, { settings, vlans, credsPass, langs, onOpacity
   addText('footerLine','Footer line','optional, shown in HTML/PDF report footer');
   addText('logoDataUrl','Brand logo (data URL)','data:image/png;base64,...');
   addText('locale','Date locale','en-GB');
-  addSelect('language','UI language',langs.map(c=>({value:c,label:c})));
+  addSelect('language','UI language',langs.map(c=>({value:c,label:languageName(c)})));
 
   // ── Coverage display ──
   addHeading('Coverage display');

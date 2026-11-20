@@ -6,6 +6,25 @@ versioning follows [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+- Selecting a device in the list no longer zooms out (an AP's coverage radius
+  was fitted, often larger than the room); it keeps the zoom and only pans.
+- Escape closes an open menu before it deselects, and a right-click closes an
+  open menu, so a dropdown and the context menu are never open together.
+- The plan re-fits when the window or map area resizes (or keeps its centre if
+  you had zoomed in), and is no longer drawn under the floating tool palette.
+- Packet-simulation buttons wrap instead of being cut off at the panel edge.
+- Toolbars stay on one row from 1024 px up: the top-bar counts hide below
+  1560 px and secondary buttons go icon-only (names kept for screen readers,
+  tooltips on all).
+- The heatmap has smooth edges instead of an 8 px staircase.
+- Keyboard help: Shift+click adds to / removes from the selection (it never
+  duplicated); Ctrl+D and Ctrl+L are listed.
+- An empty map no longer shows a broken-image icon.
+- Policies: the form starts with two different groups, the port field looks
+  disabled for "any traffic", and Re-check is disabled until a policy exists.
+- Settings: the opacity value sits beside its slider; languages show by name.
+
 ## [3.8.1] — 2026-11-20
 
 ### Fixed

@@ -281,6 +281,10 @@ function _syncUndoButtons(){
 const HISTORY=createHistory({serialize:()=>_serializeState(),restore:st=>_restoreState(st),onChange:()=>{_syncUndoButtons();_markDirty();}});
 // Zoom/pan
 let scale=1,panX=0,panY=0;
+// The view was fitted and the user hasn't zoomed or panned since: a resize
+// re-fits instead of leaving the plan where the old size put it. _vp is the
+// viewport size applyT() last laid the plan out for.
+let _viewFitted=false,_vp=null;
 let panning=false,panStartX=0,panStartY=0,panPrevX=0,panPrevY=0;
 // Drag
 let dragId=null,dragType=null,dragOffX=0,dragOffY=0;
@@ -1678,12 +1682,15 @@ function applyT(){
   //  - Image smaller than viewport on an axis → center it on that axis
   //  - Image larger than viewport → allow pan but keep at least an edge visible
   const va=viewport.getBoundingClientRect();
+  _vp={w:va.width,h:va.height};
   const iw=(mapImg.naturalWidth||0)*scale;
   const ih=(mapImg.naturalHeight||0)*scale;
   if(iw>0&&ih>0){
     if(iw<=va.width){
-      // Image fits horizontally — center it
-      panX=(va.width-iw)/2;
+      // Image fits horizontally — center it in the room right of the floating
+      // tool palette (as much of that room as the image leaves free).
+      const L=Math.min(_leftInset(va),va.width-iw);
+      panX=L+(va.width-L-iw)/2;
     }else{
       // Image wider than viewport — allow pan, but keep a margin visible
       const margin=Math.min(va.width*.5,iw*.3);
@@ -1712,14 +1719,25 @@ function smoothZoom(delta){
   clearTimeout(smoothTimeout);
   smoothTimeout=setTimeout(()=>canvas.classList.remove('smooth-zoom'),200);
 }
+// Width of the floating tool palette over the map's left edge, so a fitted or
+// centred plan isn't drawn underneath it. 0 when the palette is hidden.
+function _leftInset(va){
+  const p=document.getElementById('tool-palette');
+  if(!p||!p.offsetParent)return 0;
+  const r=p.getBoundingClientRect();
+  return r.width?Math.max(0,r.right-va.left+8):0;
+}
 function fitZoom(){
   if(!mapImg.naturalWidth)return;
   const va=viewport.getBoundingClientRect();
-  scale=Math.min(va.width/mapImg.naturalWidth,va.height/mapImg.naturalHeight)*.96;
-  panX=(va.width-mapImg.naturalWidth*scale)/2;panY=(va.height-mapImg.naturalHeight*scale)/2;applyT();
+  const inset=_leftInset(va);
+  scale=Math.min((va.width-inset)/mapImg.naturalWidth,va.height/mapImg.naturalHeight)*.96;
+  panX=inset+(va.width-inset-mapImg.naturalWidth*scale)/2;panY=(va.height-mapImg.naturalHeight*scale)/2;
+  _viewFitted=true;applyT();
 }
 function doZoom(delta,cx,cy){
   const va=viewport.getBoundingClientRect();cx=cx??va.width/2;cy=cy??va.height/2;
+  _viewFitted=false;
   const prev=scale;
   // Multiplicative zoom: each step changes scale by the same *percentage* so
   // zooming feels consistent at any level. `delta` is now a factor-per-step
@@ -1784,7 +1802,7 @@ viewport.addEventListener('contextmenu',e=>{
   }
 });
 document.addEventListener('pointermove',e=>{
-  if(panning){panX=panPrevX+(e.clientX-panStartX);panY=panPrevY+(e.clientY-panStartY);applyT();return;}
+  if(panning){_viewFitted=false;panX=panPrevX+(e.clientX-panStartX);panY=panPrevY+(e.clientY-panStartY);applyT();return;}
   if(wallVertDrag){updateWallVertex(e.clientX,e.clientY);return;}
   if(marqueeDrag){updateMarquee(e.clientX,e.clientY);return;}
   if(dragId)doDrag(e.clientX,e.clientY);
@@ -1999,13 +2017,17 @@ function toggleMenu(id){
   const m=document.getElementById(id);if(!m)return;
   const open=m.classList.contains('open');
   document.querySelectorAll('.dropdown-menu.open').forEach(x=>x.classList.remove('open'));
+  closeContextMenu();   // one popup at a time
   if(!open)m.classList.add('open');
 }
 if(typeof document!=='undefined'){
-  // Close any open menu on an outside click.
-  document.addEventListener('click',e=>{
+  // Close any open menu on an outside click — a right-click counts too, or the
+  // context menu opens on top of a dropdown that is still showing.
+  const closeOutside=e=>{
     if(!e.target.closest('.dropdown'))document.querySelectorAll('.dropdown-menu.open').forEach(x=>x.classList.remove('open'));
-  });
+  };
+  document.addEventListener('click',closeOutside);
+  document.addEventListener('contextmenu',closeOutside);
 }
 
 // ═══ PACKET SIMULATION PANEL ══════════════════════
@@ -2648,7 +2670,11 @@ function zoomToItem(type,id){
   const padding=0.4;
   const sx=va.width/(bounds.w/padding);
   const sy=va.height/(bounds.h/padding);
-  const targetScale=Math.max(0.4, Math.min(4, Math.min(sx,sy)));
+  // Focusing reveals an item; it never zooms out. AP/camera bounds are the
+  // nominal coverage radius, often larger than the room, so the fitted scale
+  // can sit below the current one — keep the current zoom then and only pan.
+  const targetScale=Math.max(scale, Math.max(0.4, Math.min(4, Math.min(sx,sy))));
+  if(targetScale!==scale)_viewFitted=false;
   // Target pan: put the item's center at the viewport center at the new scale.
   const centerX=bounds.x+bounds.w/2;
   const centerY=bounds.y+bounds.h/2;
@@ -2797,17 +2823,35 @@ function _getHeatWorker(){
   }
   return _heatWorker;
 }
+// One pixel per grid cell on a small offscreen canvas, then scaled up with
+// smoothing: cell edges blend instead of showing a step-px staircase. Cell
+// (gx,gy) still lands on [gx*step,(gx+1)*step) as before.
+let _heatSmall=null;
 function _paintHeatGrid(grid,cols,rows,step,colors){
   const ctx=heatCanvas.getContext('2d');
   ctx.clearRect(0,0,heatCanvas.width,heatCanvas.height);
+  if(!_heatSmall)_heatSmall=document.createElement('canvas');
+  if(_heatSmall.width!==cols)_heatSmall.width=cols;
+  if(_heatSmall.height!==rows)_heatSmall.height=rows;
+  const sctx=_heatSmall.getContext('2d');
+  sctx.clearRect(0,0,cols,rows);
   for(let gy=0;gy<rows;gy++){
     for(let gx=0;gx<cols;gx++){
       const idx=grid[gy*cols+gx];
       if(idx<0)continue;
-      ctx.fillStyle=colors[idx];
-      ctx.fillRect(gx*step,gy*step,step,step);
+      sctx.fillStyle=colors[idx];
+      sctx.fillRect(gx,gy,1,1);
     }
   }
+  ctx.imageSmoothingEnabled=true;
+  ctx.imageSmoothingQuality='high';
+  // Bilinear alone softens each step but keeps the staircase outline; a blur
+  // of ~0.6 cell rounds it. The grid is only cell-accurate to begin with, so
+  // this moves no boundary by more than a cell. (No canvas filter → plain
+  // bilinear, which is still correct.)
+  ctx.filter=`blur(${Math.max(1,Math.round(step*.6))}px)`;
+  ctx.drawImage(_heatSmall,0,0,cols*step,rows*step);
+  ctx.filter='none';
 }
 function _paintHeatResult(msg){
   if(msg.jobId!==_heatJobId)return;   // stale — a newer job superseded it
@@ -4729,6 +4773,19 @@ ${SETTINGS.footerLine?`<div class="footer-line">${esc(SETTINGS.footerLine)}</div
 
 // ═══ INIT ═════════════════════════════════════════
 window.addEventListener('resize',()=>{render();renderMM();updateScaleBar();});
+// Keep the plan in place when the map area changes size (window resize, the
+// toolbar wrapping onto another row, presentation mode): re-fit a fitted view,
+// otherwise keep the same point at the centre.
+if(typeof ResizeObserver!=='undefined'){
+  new ResizeObserver(()=>{
+    if(!mapImg.naturalWidth)return;
+    const va=viewport.getBoundingClientRect();
+    if(_viewFitted){fitZoom();return;}
+    if(_vp&&(_vp.w!==va.width||_vp.h!==va.height)){
+      panX+=(va.width-_vp.w)/2;panY+=(va.height-_vp.h)/2;applyT();
+    }
+  }).observe(viewport);
+}
 
 // ── Autosave to localStorage ──────────────────────
 // Silent save every 10s; full state is captured so a refresh doesn't lose work.
@@ -5062,6 +5119,8 @@ document.addEventListener('keydown',e=>{
   // Escape = deselect / close modal
   if(e.key==='Escape'){
     if(document.getElementById('ctx-menu').classList.contains('vis')){closeContextMenu();return;}
+    const openMenus=document.querySelectorAll('.dropdown-menu.open');
+    if(openMenus.length){openMenus.forEach(x=>x.classList.remove('open'));return;}
     if(document.getElementById('mbg').classList.contains('vis')){closeModal();return;}
     if(pres){togglePresent();return;}
     if(rulerStart){clearRuler();return;}
@@ -5212,8 +5271,10 @@ function showHelp(){
     [{kbd:'Ctrl'},{text:'+'},{kbd:'Z'},{desc:'Undo'}],
     [{kbd:'Ctrl'},{text:'+'},{kbd:'Y'},{desc:'Redo'}],
     [{kbd:'Del'},{desc:'Delete selected'}],
-    [{kbd:'Esc'},{desc:'Deselect / close modal'}],
-    [{kbd:'Shift'},{text:'+click AP'},{desc:'Duplicate'}],
+    [{kbd:'Ctrl'},{text:'+'},{kbd:'D'},{desc:'Duplicate selected AP'}],
+    [{kbd:'Ctrl'},{text:'+'},{kbd:'L'},{desc:'Lock / unlock'}],
+    [{kbd:'Esc'},{desc:'Close menu or dialog · deselect'}],
+    [{kbd:'Shift'},{text:'+click'},{desc:'Add or remove from selection'}],
   ]);
   _helpSection(grid,'Floors',[
     [{text:'Click '},{kbd:'+'},{desc:'Add floor'}],
