@@ -83,3 +83,14 @@ test('the device menu offers Connect via SSH, and the bridge refuses hostile tar
   expect(fs.existsSync('/tmp/pwned')).toBe(false);
   expect(errors, errors.join('\n')).toEqual([]);
 });
+
+test('report/print popups get no native bridge', async () => {
+  const [popup] = await Promise.all([
+    app.waitForEvent('window'),
+    page.evaluate(() => { const w = window.open('', '_blank'); w.document.write('<p>report</p>'); }),
+  ]);
+  await popup.waitForLoadState();
+  expect(await popup.evaluate(() => typeof /** @type {any} */(window).plexusNative)).toBe('undefined');
+  // The app window itself still has it.
+  expect(await page.evaluate(() => typeof /** @type {any} */(window).plexusNative)).toBe('object');
+});
