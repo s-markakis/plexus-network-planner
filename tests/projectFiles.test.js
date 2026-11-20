@@ -91,3 +91,15 @@ describe('project files gate', () => {
     expect(pf.save(path.join(dir, 'never-chosen.json'), 'x').ok).toBe(false);
   });
 });
+
+describe('saved file permissions', () => {
+  it.skipIf(process.platform === 'win32')('writes projects owner-only (they can hold credentials)', () => {
+    const pf = make();
+    const target = path.join(dir, 'site.json');
+    expect(pf.saveAsPicked(target, '{"floors":[]}').ok).toBe(true);
+    expect(fs.statSync(target).mode & 0o777).toBe(0o600);
+    fs.chmodSync(target, 0o644);
+    expect(pf.save(target, '{"floors":[1]}').ok).toBe(true);
+    expect(fs.statSync(target).mode & 0o777).toBe(0o600);
+  });
+});

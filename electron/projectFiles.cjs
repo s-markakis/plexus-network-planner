@@ -36,7 +36,9 @@ function saveRecents(file, list) {
 function writeAtomic(file, text) {
   const tmp = path.join(path.dirname(file), `.${path.basename(file)}.${process.pid}.tmp`);
   try {
-    fs.writeFileSync(tmp, text, 'utf8');
+    // Owner-only: a project can hold device credentials (plaintext if the
+    // user set no passphrase).
+    fs.writeFileSync(tmp, text, { encoding: 'utf8', mode: 0o600 });
     fs.renameSync(tmp, file);
   } catch (err) {
     try { fs.rmSync(tmp, { force: true }); } catch { /* nothing to clean */ }
