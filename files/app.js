@@ -100,6 +100,8 @@ import {inventoryEl} from './src/inventoryUI.js';
 import {applyUnifiDevices,unifiChannelPlan} from './src/unifiSync.js';
 import {settingsForm,SETTINGS_STRING_KEYS,SETTINGS_NUMBER_KEYS,SETTINGS_BOOL_KEYS} from './src/settingsUI.js';
 import {revisionsEl} from './src/revisionsUI.js';
+import * as _pb from './src/panelBlocks.js';
+const {credsBlock,inventoryBlock,portOptions,portControl,statusOptions,buildGroupedOptions,CRED_PROTOS}=_pb;
 import {remoteImageHosts,stripRemoteImages} from './src/remoteImages.js';
 import {evaluatePolicies} from './src/policy.js';
 import {compileTopology} from './src/simCompile.js';
@@ -204,17 +206,6 @@ function tBg(){
 // Build an <optgroup>-structured <option> list for a grouped dropdown.
 // If `selected` isn't in any group's list, the "Custom/Other" option (if present) gets selected
 // and the panel will show a free-text override input.
-function buildGroupedOptions(groups,selected){
-  const flat=groups.flatMap(g=>g.models);
-  const known=flat.includes(selected);
-  return groups.map(g=>{
-    const opts=g.models.map(m=>{
-      const isSel=(m===selected)||(!known&&m==='Custom/Other');
-      return `<option${isSel?' selected':''}>${esc(m)}</option>`;
-    }).join('');
-    return `<optgroup label="${esc(g.label)}">${opts}</optgroup>`;
-  }).join('');
-}
 const HINTS={
   add: 'Click map to place an AP',
   sel: 'Click an item to select · Shift+click to add to selection · drag to move',
@@ -637,6 +628,7 @@ async function _measureFloorImages(){
     }catch(_){/* unreadable image: floorDims falls back to the plan on screen */}
   }));
 }
+const vlanDatalist=()=>_pb.vlanDatalist(vlanList());
 // Plan views live in ./src/planModel.js; these bind them to the open plan.
 const findSwitchAnywhere=id=>_pm.findSwitchAnywhere(FLOORS,id);
 const cableTotals=()=>_pm.cableTotals(FLOORS,cableRunM);
@@ -651,10 +643,6 @@ function vlanList(){return Array.isArray(SETTINGS.vlans)?SETTINGS.vlans:[];}
 function vlanById(id){id=(id==null?'':String(id)).trim();if(!id)return null;return vlanList().find(v=>String(v.id)===id)||null;}
 function vlanColor(id){const v=vlanById(id);return v&&v.color?v.color:'';}
 // <datalist> of registered VLAN ids for the device VLAN inputs.
-function vlanDatalist(){
-  if(!vlanList().length)return '';
-  return `<datalist id="vlan-list">${vlanList().map(v=>`<option value="${esc(v.id)}">${esc(v.name||'')}</option>`).join('')}</datalist>`;
-}
 // Find a switch by id across ALL floors (for inter-floor uplinks).
 // Sum every device→switch run across all floors. totalM includes 10% slack per
 // run. Pixel→metre conversion uses the current map resolution (as the cable
@@ -754,38 +742,11 @@ function reportNetworkHtml(){
 // Full PoE / port / class picture for one switch.
 // <option>s for a numbered port picker. Preserves a legacy/custom value (e.g.
 // "SW1 Port 4") that isn't a plain 1..N so old projects don't lose data.
-function portOptions(ports,cur){
-  cur=(cur==null?'':String(cur)).trim();
-  const curNum=/^\d+$/.test(cur)?parseInt(cur,10):null;
-  let html=`<option value=""${cur===''?' selected':''}>— unassigned —</option>`;
-  if(cur!=='' && (curNum===null || (ports!=null && (curNum<1||curNum>ports))))
-    html+=`<option value="${esc(cur)}" selected>${esc(cur)} (custom)</option>`;
-  if(ports!=null)for(let i=1;i<=ports;i++)
-    html+=`<option value="${i}"${curNum===i?' selected':''}>Port ${i}</option>`;
-  return html;
-}
 // A port picker: numbered <select> when the switch's port count is known, else
 // a free number input. `attrs` are extra attributes (id / data-* the caller needs).
-function portControl(ports,cur,attrs){
-  cur=cur==null?'':String(cur);
-  return ports!=null
-    ? `<select class="ep-sel" ${attrs}>${portOptions(ports,cur)}</select>`
-    : `<input class="ep-in" type="number" min="1" value="${esc(cur)}" placeholder="Port #" ${attrs}/>`;
-}
 // <option>s for the install-status picker.
-function statusOptions(cur){
-  cur=DEVICE_STATUSES.includes(cur)?cur:'planned';
-  return DEVICE_STATUSES.map(s=>`<option value="${s}"${s===cur?' selected':''}>${DEVICE_STATUS_META[s].label}</option>`).join('');
-}
 // Shared "Status & Inventory" panel section. `p` is the element-id prefix
 // (ep / cam / sw) and `act` the panel's data-input-action.
-function inventoryBlock(dev,p,act){
-  return `<div class="ep-section">Status &amp; Inventory</div>
-    <div class="ep-row"><label class="ep-lbl">Status</label><select class="ep-sel" id="${p}-status" data-input-action="${act}">${statusOptions(dev.status)}</select></div>
-    <div class="ep-row"><label class="ep-lbl">Serial #</label><input class="ep-in ep-mono" id="${p}-serial" value="${esc(dev.serial||'')}" data-input-action="${act}" placeholder="from the unit label"/></div>
-    <div class="ep-row"><label class="ep-lbl">Asset Tag</label><input class="ep-in ep-mono" id="${p}-asset" value="${esc(dev.assetTag||'')}" data-input-action="${act}" placeholder="ASSET-0001"/></div>
-    <div class="ep-row"><label class="ep-lbl">Firmware</label><input class="ep-in ep-mono" id="${p}-firmware" value="${esc(dev.firmware||'')}" data-input-action="${act}" placeholder="e.g. 6.5.28"/></div>`;
-}
 // Read the shared section back into the device. Safe when the section isn't
 // in the current panel (elements missing → no-op).
 function readInventoryBlock(dev,p){
@@ -4210,22 +4171,6 @@ function _selectedDevice(){
 // Login/management details for a router/switch/AP/camera. Stored in the
 // project file only — stripped from Share links (see shareLink) and never
 // printed in reports. Shared markup so every device panel looks the same.
-const CRED_PROTOS=['https','http','ssh','telnet'];
-function credsBlock(dev){
-  const c=dev.creds||{};
-  const proto=c.proto||'https';
-  const protoOpts=CRED_PROTOS.map(p=>`<option value="${p}"${proto===p?' selected':''}>${p.toUpperCase()}</option>`).join('');
-  return `
-    <div class="ep-section">Credentials</div>
-    <div class="ep-row"><label class="ep-lbl">Protocol</label><select class="ep-sel" id="cred-proto" data-input-action="upd-creds">${protoOpts}</select></div>
-    <div class="ep-row"><label class="ep-lbl">Host / URL</label><input class="ep-in ep-mono" id="cred-host" value="${esc(c.host||'')}" data-input-action="upd-creds" placeholder="defaults to IP (${esc(dev.ip||'—')})"/></div>
-    <div class="ep-row"><label class="ep-lbl">Port</label><input class="ep-in ep-mono" id="cred-port" value="${esc(c.port||'')}" data-input-action="upd-creds" placeholder="443"/></div>
-    <div class="ep-row"><label class="ep-lbl">Username</label><input class="ep-in" id="cred-user" value="${esc(c.user||'')}" data-input-action="upd-creds" autocomplete="off"/></div>
-    <div class="ep-row"><label class="ep-lbl">Password</label><input class="ep-in ep-mono" id="cred-pass" type="password" value="${esc(c.pass||'')}" data-input-action="upd-creds" autocomplete="new-password"/><button class="btn" style="flex:0 0 auto;padding:4px 8px" data-action="toggle-pass" title="Show / hide password">👁</button></div>
-    <div class="ep-row"><label class="ep-lbl">SSH key</label><input class="ep-in ep-mono" id="cred-key" value="${esc(c.key||'')}" data-input-action="upd-creds" placeholder="~/.ssh/id_ed25519 (optional)"/></div>
-    <div class="ep-row"><a href="#" data-action="open-mgmt" style="font-size:11px">↗ Open management UI</a></div>
-    <div class="ep-row" style="font-size:10px;opacity:.55">Saved in the project file only — excluded from Share links and PDF/HTML reports.</div>`;
-}
 function updCreds(){
   const d=_selectedDevice();if(!d)return;
   snapshotSoon();

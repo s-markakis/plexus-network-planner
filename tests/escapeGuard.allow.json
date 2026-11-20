@@ -261,6 +261,18 @@
     "m.label"
    ],
    "attrs": []
+  },
+  "panelBlocks.js": {
+   "fields": [
+    "p.toUpperCase()",
+    "statusOptions(dev.status)"
+   ],
+   "attrs": [
+    "act",
+    "i",
+    "p",
+    "s"
+   ]
   }
  }
 }
