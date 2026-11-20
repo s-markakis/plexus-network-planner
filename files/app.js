@@ -102,6 +102,7 @@ import {settingsForm,SETTINGS_STRING_KEYS,SETTINGS_NUMBER_KEYS,SETTINGS_BOOL_KEY
 import {revisionsEl} from './src/revisionsUI.js';
 import * as _pb from './src/panelBlocks.js';
 import {apPanelHtml,swPanelHtml,camPanelHtml,wallPanelHtml,dzPanelHtml} from './src/panels.js';
+import {renderAPLayer,renderDZLayer,renderCableLayer,renderCAMLayer,renderSWLayer} from './src/mapLayers.js';
 const {credsBlock,inventoryBlock,portOptions,portControl,statusOptions,buildGroupedOptions,CRED_PROTOS}=_pb;
 import {remoteImageHosts,stripRemoteImages} from './src/remoteImages.js';
 import {evaluatePolicies} from './src/policy.js';
@@ -331,6 +332,39 @@ const rulerLayer=document.getElementById('ruler-layer');
 const wallLayer=document.getElementById('wall-layer');
 const cableLayer=document.getElementById('cable-layer');
 const chOverlapLayer=document.getElementById('ch-overlap-layer');
+// Live values and input hooks for the map layers in ./src/mapLayers.js. The
+// layers draw; selection and dragging stay here.
+const _layerCtx={
+  doc:document,
+  get w(){return mapImg.naturalWidth;},get h(){return mapImg.naturalHeight;},
+  get aps(){return APS();},get sws(){return SWS();},get cams(){return CAMS();},get dzs(){return DZS();},get walls(){return WALLS();},
+  get settings(){return SETTINGS;},
+  get scaleM(){return scaleM;},get mPerPx(){return scaleM/100;},get floorScaleM(){return F().scaleM;},
+  get zoom(){return scale;},get routingFactor(){return routingFactor();},
+  get showCables(){return showCables;},get showCoverage(){return showCoverage;},
+  isSelected:(id,type)=>isSelected(id,type),statusDimmed:d=>statusDimmed(d),vlanColor:v=>vlanColor(v),
+  hexToRgba:(c,a)=>hexToRgba(c,a),tInk:a=>tInk(a),tBg:a=>tBg(a),
+  getCoveragePath:ap=>getCoveragePath(ap),getInnerCoveragePath:ap=>getInnerCoveragePath(ap),
+  findSwitchAnywhere:id=>findSwitchAnywhere(id),
+  // Press on a placed item: select it (shift: toggle in select mode) and,
+  // unless locked, start dragging it.
+  onItemPointerDown(kind,item,e){
+    if(kind==='ap'&&e.target.dataset.resize)return;
+    e.stopPropagation();
+    if(e.shiftKey&&mode==='sel'){toggleSelection(item.id,kind);return;}
+    sel(item.id,kind);
+    if(!item.locked){
+      const w=mapImg.naturalWidth,h=mapImg.naturalHeight;
+      const img=vpToImg(e.clientX,e.clientY);
+      dragOffX=item.fx*w-img.x;dragOffY=item.fy*h-img.y;
+      dragId=item.id;dragType=kind;
+      _dragInitialFx=item.fx;_dragInitialFy=item.fy;
+      if(kind==='ap')startApStick(item.id);
+    }
+  },
+  // The selected dead zone's radius handle.
+  onDzResizeDown(dz,e){e.stopPropagation();resId=dz.id;resizeStartX=e.clientX;resizeStartR=dz.r;},
+};
 const marqueeLayer=document.getElementById('marquee-layer');
 // Minimap was removed. These references are kept as nulls so the rest of the
 // codebase doesn't need changes; renderMM is a no-op below, and mmImg.src
@@ -2718,373 +2752,23 @@ function toggleLock(){
 // ═══ RENDER ═══════════════════════════════════════
 function mk(tag){return document.createElementNS('http://www.w3.org/2000/svg',tag);}
 
-function renderAPs(){
-  apLayer.innerHTML='';
-  const w=mapImg.naturalWidth,h=mapImg.naturalHeight;
-  // If no image loaded yet, don't render APs at all — they'd land at (0,0)
-  // as a phantom cluster.
-  if(!w||!h)return;
-  APS().forEach(ap=>{
-    // Skip APs with invalid data rather than render a bogus circle at origin.
-    if(!Number.isFinite(ap.fx)||!Number.isFinite(ap.fy)||!Number.isFinite(ap.r)||ap.r<=0){
-      console.warn('Skipping AP with invalid coords:',ap);
-      return;
-    }
-    const cx=ap.fx*w,cy=ap.fy*h,r=ap.r,isSel=isSelected(ap.id,'ap');
-    const ls=Math.max(8,Math.min(14,r*.17));
-    const g=mk('g');g.setAttribute('class','ap-grp');g.dataset.id=ap.id;g.style.pointerEvents='all';
-    if(ap.locked)g.style.opacity='.7';
-    if(statusDimmed(ap))g.style.opacity='.15';
+function renderAPs(){renderAPLayer(apLayer,_layerCtx);}
 
-    const hasWalls=WALLS().length>0;
-    // Per-AP color (empty string = use default ink — no override). When "colour
-    // by VLAN" is on, an unstyled AP inherits its VLAN's colour.
-    const apColor=ap.color||(SETTINGS.colorByVlan?vlanColor(ap.vlan):'')||'';
-    // User-controlled coverage opacity (Settings → Coverage opacity).
-    // 100 = full strength; values below 100 fade the ring fill+stroke.
-    const covOp=Math.max(0,Math.min(1,(SETTINGS.coverageOpacity??100)/100));
-    // Outer coverage: wall-clipped path if walls exist, else simple circle
-    let ro;
-    if(hasWalls){
-      ro=mk('path');
-      ro.setAttribute('d',getCoveragePath(ap));
-    }else{
-      ro=mk('circle');ro.setAttribute('cx',cx);ro.setAttribute('cy',cy);ro.setAttribute('r',r);
-    }
-    ro.setAttribute('class',isSel?'ap-sel-outer':ap.sig==='medium'?'ap-outer-m':ap.sig==='weak'?'ap-outer-w':'ap-outer');
-    if(apColor){
-      // Override the ink-black defaults with the AP's color. We keep the fill
-      // transparent-ish (8% alpha) so overlapping coverage areas still mix visually.
-      ro.style.stroke=apColor;
-      ro.style.fill=hexToRgba(apColor,.08);
-    }
-    if(covOp<1)ro.setAttribute('opacity',covOp);
-    // Only animate the spin when we're showing a plain circle — spinning a
-    // polygon looks wrong because its shape is directional.
-    if(!hasWalls){ro.style.transformOrigin=`${cx}px ${cy}px`;ro.style.animation='spin 20s linear infinite';}
-
-    // Inner ring: same trick but at 54% radius. Compute a second path with
-    // a temporarily smaller r so we reuse computeCoveragePath.
-    let ri;
-    if(hasWalls){
-      ri=mk('path');
-      ri.setAttribute('d',getInnerCoveragePath(ap));
-    }else{
-      ri=mk('circle');ri.setAttribute('cx',cx);ri.setAttribute('cy',cy);ri.setAttribute('r',r*.54);
-    }
-    ri.setAttribute('class',isSel?'ap-sel-inner':ap.sig==='medium'?'ap-inner-m':ap.sig==='weak'?'ap-inner-w':'ap-inner');
-    if(apColor){
-      ri.style.stroke=apColor;
-      ri.style.fill=hexToRgba(apColor,.12);
-    }
-    if(covOp<1)ri.setAttribute('opacity',covOp);
-
-    const dot=mk('circle');dot.setAttribute('cx',cx);dot.setAttribute('cy',cy);dot.setAttribute('r',7);
-    dot.setAttribute('class',isSel?'ap-sel-dot':'ap-dot');dot.setAttribute('filter','url(#gf)');
-    dot.style.animation='pulse 2.2s ease-in-out infinite';
-    if(apColor)dot.style.fill=apColor;
-
-    // On-map label: just the AP name. Model + all other technical details are
-    // visible in the right-side properties panel when an AP is selected.
-    // Below the dot (7 px radius), so the name never sits on top of the marker.
-    const lbl=mk('text');lbl.setAttribute('x',cx);lbl.setAttribute('y',cy+9+ls*.75);
-    lbl.setAttribute('class',isSel?'ap-lbl-sel':'ap-lbl');lbl.setAttribute('font-size',ls);lbl.textContent=ap.name;
-    if(apColor)lbl.style.fill=apColor;
-
-    // Notes dot
-    if(ap.notes&&ap.notes.trim()){
-      const nd=mk('circle');nd.setAttribute('cx',cx+r*.22);nd.setAttribute('cy',cy-r*.22);
-      nd.setAttribute('r',Math.max(3,ls*.38));nd.setAttribute('fill',isSel?tInk():tInk(.55));nd.setAttribute('opacity','.85');
-      g.appendChild(nd);
-    }
-    // Locked APs are indicated in the left sidebar list (🔒 next to name) and
-    // in the properties panel — no on-map icon, since it clutters the map.
-
-    // Range is edited via the properties panel slider only — no on-map handle.
-
-    // The coverage rings (outer + inner, including the selection-highlighted
-    // versions) are part of the coverage visualization — they hide when the
-    // user toggles coverage off. The center dot stays because it's the AP
-    // marker itself, not a coverage indicator.
-    const parts=[dot,lbl];
-    if(showCoverage){parts.unshift(ro,ri);}
-    parts.forEach(el=>g.appendChild(el));
-    g.addEventListener('pointerdown',e=>{
-      if(e.target.dataset.resize)return;
-      e.stopPropagation();
-      if(e.shiftKey&&mode==='sel'){toggleSelection(ap.id,'ap');return;}
-      sel(ap.id,'ap');
-      if(!ap.locked){const img=vpToImg(e.clientX,e.clientY);dragOffX=ap.fx*w-img.x;dragOffY=ap.fy*h-img.y;dragId=ap.id;dragType='ap';_dragInitialFx=ap.fx;_dragInitialFy=ap.fy;startApStick(ap.id);}
-    });
-    apLayer.appendChild(g);
-  });
-}
-
-function renderDZs(){
-  dzLayer.innerHTML='';
-  const w=mapImg.naturalWidth,h=mapImg.naturalHeight;
-  if(!w||!h)return;
-  DZS().forEach(dz=>{
-    if(!Number.isFinite(dz.fx)||!Number.isFinite(dz.fy)||!Number.isFinite(dz.r)||dz.r<=0)return;
-    const cx=dz.fx*w,cy=dz.fy*h,isSel=isSelected(dz.id,'dz');
-    const g=mk('g');g.setAttribute('class','dz-grp');g.dataset.id=dz.id;g.style.pointerEvents='all';
-    const pulse=mk('circle');pulse.setAttribute('cx',cx);pulse.setAttribute('cy',cy);pulse.setAttribute('r',dz.r);
-    pulse.setAttribute('class','dz-pulse');pulse.style.transformOrigin=`${cx}px ${cy}px`;pulse.style.animation='dzs 8s linear infinite';
-    if(isSel){pulse.style.stroke=tInk();pulse.style.strokeWidth='2.5';pulse.style.fill=tInk(.1);}
-    const icon=mk('text');icon.setAttribute('x',cx);icon.setAttribute('y',cy);icon.setAttribute('text-anchor','middle');icon.setAttribute('dominant-baseline','central');icon.setAttribute('font-size','18');icon.setAttribute('fill',tInk());icon.textContent='⚠';
-    const lbl=mk('text');lbl.setAttribute('x',cx);lbl.setAttribute('y',cy+dz.r+11);lbl.setAttribute('text-anchor','middle');lbl.setAttribute('font-size','10');lbl.setAttribute('font-family','-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica Neue,Arial,sans-serif');lbl.setAttribute('font-weight','700');lbl.setAttribute('letter-spacing','.1em');lbl.setAttribute('fill',tInk());lbl.setAttribute('paint-order','stroke');lbl.setAttribute('stroke',tBg());lbl.setAttribute('stroke-width','3');lbl.textContent=(dz.label||'').toUpperCase();
-    if(isSel&&!dz.locked){const rh=mk('circle');rh.setAttribute('cx',cx+dz.r);rh.setAttribute('cy',cy);rh.setAttribute('r',8);rh.setAttribute('class','rh-sel');rh.dataset.resizeDz=dz.id;rh.style.pointerEvents='all';rh.addEventListener('pointerdown',e=>{e.stopPropagation();resId=dz.id;resizeStartX=e.clientX;resizeStartR=dz.r;});g.appendChild(rh);}
-    [pulse,icon,lbl].forEach(el=>g.appendChild(el));
-    g.addEventListener('pointerdown',e=>{e.stopPropagation();if(e.shiftKey&&mode==='sel'){toggleSelection(dz.id,'dz');return;}sel(dz.id,'dz');if(!dz.locked){const img=vpToImg(e.clientX,e.clientY);dragOffX=dz.fx*w-img.x;dragOffY=dz.fy*h-img.y;dragId=dz.id;dragType='dz';_dragInitialFx=dz.fx;_dragInitialFy=dz.fy;}});
-    dzLayer.appendChild(g);
-  });
-}
+function renderDZs(){renderDZLayer(dzLayer,_layerCtx);}
 
 // Cable runs: a thin line from each AP/camera to its assigned switch.
 // Visualizes PoE wiring and helps spot long runs at a glance. See the PoE
 // panel (Show PoE button) for budget summaries per switch.
 let showCables=false;
-function renderCables(){
-  cableLayer.innerHTML='';
-  if(!showCables)return;
-  const w=mapImg.naturalWidth,h=mapImg.naturalHeight;
-  if(!w||!h)return;
-  const drawCable=(dev,sw)=>{
-    const dx=dev.fx*w,dy=dev.fy*h,sx=sw.fx*w,sy=sw.fy*h;
-    const ln=mk('line');
-    ln.setAttribute('x1',dx);ln.setAttribute('y1',dy);
-    ln.setAttribute('x2',sx);ln.setAttribute('y2',sy);
-    ln.setAttribute('class','cable-line');
-    cableLayer.appendChild(ln);
-    // Length label at midpoint (includes the routing factor for a realistic run)
-    const lenPx=Math.hypot(sx-dx,sy-dy);
-    const lenM=(lenPx*(scaleM/100)*routingFactor()).toFixed(1);
-    if(lenPx*scale>40){
-      const mx=(dx+sx)/2,my=(dy+sy)/2;
-      const txt=mk('text');
-      txt.setAttribute('x',mx);txt.setAttribute('y',my-3);
-      txt.setAttribute('class','cable-lbl');
-      txt.textContent=lenM+' m';
-      const lm=parseFloat(lenM);
-      if(lm>100)txt.classList.add('cable-lbl-warn');        // over Ethernet limit
-      else if(lm>90)txt.classList.add('cable-lbl-near');    // approaching limit
-      cableLayer.appendChild(txt);
-    }
-  };
-  APS().forEach(ap=>{
-    if(!ap.swId)return;
-    const sw=SWS().find(s=>s.id===ap.swId);
-    if(sw)drawCable(ap,sw);
-  });
-  CAMS().forEach(c=>{
-    if(!c.swId)return;
-    const sw=SWS().find(s=>s.id===c.swId);
-    if(sw)drawCable(c,sw);
-  });
-  // Switch → uplink backbone links — thicker/solid so they read as trunks
-  // distinct from the dashed device runs.
-  SWS().forEach(sw=>{
-    if(!sw.uplinkId||sw.uplinkId===sw.id)return;
-    const up=SWS().find(s=>s.id===sw.uplinkId);
-    const x=sw.fx*w,y=sw.fy*h;
-    if(up){
-      const ln=mk('line');
-      ln.setAttribute('x1',x);ln.setAttribute('y1',y);
-      ln.setAttribute('x2',up.fx*w);ln.setAttribute('y2',up.fy*h);
-      ln.setAttribute('class','uplink-line');
-      cableLayer.appendChild(ln);
-    }else{
-      // Uplink is on another floor — draw a short riser stub + label.
-      const tgt=findSwitchAnywhere(sw.uplinkId);
-      if(!tgt)return;
-      const ln=mk('line');
-      ln.setAttribute('x1',x);ln.setAttribute('y1',y);
-      ln.setAttribute('x2',x);ln.setAttribute('y2',y-26);
-      ln.setAttribute('class','uplink-line');ln.setAttribute('stroke-dasharray','3 3');
-      cableLayer.appendChild(ln);
-      const txt=mk('text');
-      txt.setAttribute('x',x);txt.setAttribute('y',y-30);
-      txt.setAttribute('class','cable-lbl');txt.style.fill='#6a1b9a';
-      txt.textContent='↑ '+(tgt.sw.name||'')+' · '+(tgt.floor.name||('Floor '+(tgt.floorIdx+1)));
-      cableLayer.appendChild(txt);
-    }
-  });
-}
+function renderCables(){renderCableLayer(cableLayer,_layerCtx);}
 
 // Cameras render as a triangular "field-of-view" cone (the visible area the
 // camera can see) plus a small lens marker at the position. Heading rotates
 // the cone around the position. 360° fisheye cameras get a ring instead.
 // Wedge (or full-circle) path for a camera's view area.
-function _camWedgePath(cx,cy,r,heading,fov){
-  if(fov>=350)return null;   // caller draws a <circle> instead
-  const half=fov/2;
-  const a1=(heading-half)*Math.PI/180;
-  const a2=(heading+half)*Math.PI/180;
-  const x1=cx+Math.cos(a1)*r, y1=cy+Math.sin(a1)*r;
-  const x2=cx+Math.cos(a2)*r, y2=cy+Math.sin(a2)*r;
-  const largeArc=fov>180?1:0;
-  return `M${cx},${cy} L${x1.toFixed(1)},${y1.toFixed(1)} A${r},${r} 0 ${largeArc} 1 ${x2.toFixed(1)},${y2.toFixed(1)} Z`;
-}
-function renderCAMs(){
-  camLayer.innerHTML='';
-  const w=mapImg.naturalWidth,h=mapImg.naturalHeight;
-  if(!w||!h)return;
-  CAMS().forEach(c=>{
-    if(!Number.isFinite(c.fx)||!Number.isFinite(c.fy))return;
-    const cx=c.fx*w,cy=c.fy*h;
-    const isSel=isSelected(c.id,'cam');
-    const range=c.range||80;
-    const fov=Math.max(10,Math.min(360,c.fov||80));
-    const heading=c.heading||0;
-    const color=c.color||(SETTINGS.colorByVlan&&vlanColor(c.vlan))||tInk();
-    const fillRgba=c.color?hexToRgba(c.color,.08):tInk(.08);
-    const g=mk('g');g.setAttribute('class','cam-grp');g.dataset.id=c.id;g.style.pointerEvents='all';
-    if(c.locked)g.style.opacity='.7';
-    if(statusDimmed(c))g.style.opacity='.15';
+function renderCAMs(){renderCAMLayer(camLayer,_layerCtx);}
 
-    // Cone path (or full circle for fisheye / 360°).
-    let cone;
-    if(fov>=350){
-      cone=mk('circle');
-      cone.setAttribute('cx',cx);cone.setAttribute('cy',cy);cone.setAttribute('r',range);
-    }else{
-      const half=fov/2;
-      const a1=(heading-half)*Math.PI/180;
-      const a2=(heading+half)*Math.PI/180;
-      const x1=cx+Math.cos(a1)*range, y1=cy+Math.sin(a1)*range;
-      const x2=cx+Math.cos(a2)*range, y2=cy+Math.sin(a2)*range;
-      const largeArc=fov>180?1:0;
-      cone=mk('path');
-      cone.setAttribute('d',`M${cx},${cy} L${x1.toFixed(1)},${y1.toFixed(1)} A${range},${range} 0 ${largeArc} 1 ${x2.toFixed(1)},${y2.toFixed(1)} Z`);
-    }
-    cone.setAttribute('class','cam-cone'+(isSel?' cam-cone-sel':''));
-    cone.style.fill=fillRgba;
-    cone.style.stroke=color;
-    if(statusDimmed(c))cone.setAttribute('opacity','.15');
-    camLayer.appendChild(cone);
-
-    // DORI pixel-density bands (IEC 62676-4). Stacked translucent wedges,
-    // strongest tier innermost — the compounded tint reads as a gradient of
-    // "how much detail you actually get" inside the raw view cone.
-    if(SETTINGS.showDori!==false && Number.isFinite(scaleM) && scaleM>0 && !statusDimmed(c)){
-      const mpp=scaleM/100;
-      const bands=doriDistancesM(c.resolution||'4K',fov);
-      for(const b of bands){
-        const rPx=b.m/mpp;
-        if(!(rPx>0)||rPx>=range)continue;   // tier reaches past the cone — no ring to draw
-        let el;
-        if(fov>=350){
-          el=mk('circle');
-          el.setAttribute('cx',cx);el.setAttribute('cy',cy);el.setAttribute('r',rPx);
-        }else{
-          el=mk('path');
-          el.setAttribute('d',_camWedgePath(cx,cy,rPx,heading,fov));
-        }
-        el.setAttribute('fill',b.color);
-        el.setAttribute('fill-opacity','.10');
-        el.setAttribute('stroke',b.color);
-        el.setAttribute('stroke-opacity','.55');
-        el.setAttribute('stroke-width','1');
-        el.style.pointerEvents='none';
-        camLayer.appendChild(el);
-      }
-    }
-
-    // Lens marker at position.
-    const lens=mk('circle');
-    lens.setAttribute('cx',cx);lens.setAttribute('cy',cy);lens.setAttribute('r',5);
-    lens.setAttribute('class','cam-lens'+(isSel?' cam-lens-sel':''));
-    lens.style.fill='#000';
-    camLayer.appendChild(lens);
-    const inner=mk('circle');
-    inner.setAttribute('cx',cx);inner.setAttribute('cy',cy);inner.setAttribute('r',2);
-    inner.style.fill=tBg();
-    inner.style.pointerEvents='none';
-    camLayer.appendChild(inner);
-
-    // Heading nub — small marker on the cone's centre line so the camera's
-    // forward direction is unambiguous even when the FoV is wide.
-    if(fov<350){
-      const a=heading*Math.PI/180;
-      const tipX=cx+Math.cos(a)*Math.min(range,18);
-      const tipY=cy+Math.sin(a)*Math.min(range,18);
-      const tip=mk('line');
-      tip.setAttribute('x1',cx);tip.setAttribute('y1',cy);
-      tip.setAttribute('x2',tipX);tip.setAttribute('y2',tipY);
-      tip.setAttribute('class','cam-heading');
-      tip.style.stroke=color;
-      camLayer.appendChild(tip);
-    }
-
-    // Label below the lens.
-    const lbl=mk('text');
-    lbl.setAttribute('x',cx);lbl.setAttribute('y',cy+14);
-    lbl.setAttribute('class','cam-lbl');
-    lbl.style.fill=color;
-    lbl.textContent=(c.name||'').toUpperCase();
-    camLayer.appendChild(lbl);
-
-
-    // Invisible hit area reuses the existing selection and drag handler.
-    const hit=mk('circle');
-    hit.setAttribute('cx',cx);hit.setAttribute('cy',cy);hit.setAttribute('r',14);
-    hit.setAttribute('class','cam-grp');hit.dataset.id=c.id;
-    hit.style.fill='transparent';hit.style.pointerEvents='all';
-    camLayer.appendChild(hit);
-    hit.style.cursor='pointer';
-    hit.addEventListener('pointerdown',e=>{
-      e.stopPropagation();
-      if(e.shiftKey&&mode==='sel'){toggleSelection(c.id,'cam');return;}
-      sel(c.id,'cam');
-      if(!c.locked){
-        const img=vpToImg(e.clientX,e.clientY);
-        dragOffX=c.fx*w-img.x;dragOffY=c.fy*h-img.y;
-        dragId=c.id;dragType='cam';
-        _dragInitialFx=c.fx;_dragInitialFy=c.fy;
-      }
-    });
-  });
-}
-
-function renderSWs(){
-  swLayer.innerHTML='';
-  const w=mapImg.naturalWidth,h=mapImg.naturalHeight;
-  if(!w||!h)return;
-  SWS().forEach(sw=>{
-    if(!Number.isFinite(sw.fx)||!Number.isFinite(sw.fy))return;
-    const cx=sw.fx*w,cy=sw.fy*h,isSel=isSelected(sw.id,'sw');
-    const g=mk('g');g.setAttribute('class','sw-grp');g.dataset.id=sw.id;g.style.pointerEvents='all';
-    if(statusDimmed(sw))g.style.opacity='.15';
-    const sz=sw.size||22;
-    // Box and icon sizes scale with sz so a bigger switch reads as a bigger icon, not just a bigger empty box.
-    const iconFs=Math.max(8,sz*.65);
-    const lblFs=Math.max(7,sz*.42);
-    const box=mk('rect');box.setAttribute('x',cx-sz);box.setAttribute('y',cy-sz*.6);
-    box.setAttribute('width',sz*2);box.setAttribute('height',sz*1.2);box.setAttribute('rx',2);
-    box.setAttribute('fill',isSel?tInk(.1):tInk(.04));
-    box.setAttribute('stroke',tInk());box.setAttribute('stroke-width',isSel?'2':'1.2');
-    const icon=mk('text');icon.setAttribute('x',cx);icon.setAttribute('y',cy);icon.setAttribute('text-anchor','middle');icon.setAttribute('dominant-baseline','central');icon.setAttribute('font-size',iconFs);icon.setAttribute('fill',tInk());icon.textContent='⊞';
-    const lbl=mk('text');lbl.setAttribute('x',cx);lbl.setAttribute('y',cy+sz*.9);lbl.setAttribute('text-anchor','middle');lbl.setAttribute('font-size',lblFs);lbl.setAttribute('font-family','-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica Neue,Arial,sans-serif');lbl.setAttribute('font-weight','700');lbl.setAttribute('letter-spacing','.08em');lbl.setAttribute('fill',tInk());lbl.setAttribute('paint-order','stroke');lbl.setAttribute('stroke',tBg());lbl.setAttribute('stroke-width','2.5');lbl.textContent=(sw.name||'').toUpperCase();
-    // A router with a built-in radio covers the floor like an AP: draw its
-    // ring (clipped by walls) under the device box.
-    const wifiAp=showCoverage?routerAsAp(sw,F().scaleM):null;
-    if(wifiAp){
-      const ring=mk('path');ring.setAttribute('d',getCoveragePath(wifiAp));
-      ring.setAttribute('class',isSel?'ap-sel-outer':'ap-outer');ring.style.pointerEvents='none';
-      const covOp=Math.max(0,Math.min(1,(SETTINGS.coverageOpacity??100)/100));
-      if(covOp<1)ring.setAttribute('opacity',covOp);
-      g.appendChild(ring);
-    }
-    [box,icon,lbl].forEach(el=>g.appendChild(el));
-    g.addEventListener('pointerdown',e=>{
-      e.stopPropagation();
-      if(e.shiftKey&&mode==='sel'){toggleSelection(sw.id,'sw');return;}
-      sel(sw.id,'sw');
-      if(!sw.locked){const img=vpToImg(e.clientX,e.clientY);dragOffX=sw.fx*w-img.x;dragOffY=sw.fy*h-img.y;dragId=sw.id;dragType='sw';_dragInitialFx=sw.fx;_dragInitialFy=sw.fy;}
-    });
-    swLayer.appendChild(g);
-  });
-}
+function renderSWs(){renderSWLayer(swLayer,_layerCtx);}
 
 // ═══ CHANNEL OVERLAP ══════════════════════════════
 // Visually flag APs whose occupied channels overlap (band- and width-aware,
