@@ -98,6 +98,7 @@ import {esc,safeColor} from './src/html.js';
 import {portGridHtml,poeSummaryEl,topologyEl} from './src/networkDialogs.js';
 import {inventoryEl} from './src/inventoryUI.js';
 import {applyUnifiDevices,unifiChannelPlan} from './src/unifiSync.js';
+import {settingsForm,SETTINGS_STRING_KEYS,SETTINGS_NUMBER_KEYS,SETTINGS_BOOL_KEYS} from './src/settingsUI.js';
 import {remoteImageHosts,stripRemoteImages} from './src/remoteImages.js';
 import {evaluatePolicies} from './src/policy.js';
 import {compileTopology} from './src/simCompile.js';
@@ -6019,235 +6020,38 @@ document.addEventListener('keydown',e=>{
 });
 
 // ═══ SETTINGS PANEL ═══════════════════════════════
-// Per-project branding/locale shown in HTML & PDF exports. Built as DOM nodes
-// (no innerHTML) so user-supplied strings are inert.
-// Lay the flat settings form out like System Settings: section list on the
-// left, one grouped card per section on the right. All sections stay in the
-// page (the list scrolls to them) so nothing is hidden from find/keyboard.
-function _paneSettings(form){
-  const groups=[];let cur=null;
-  for(const k of [...form.children]){
-    if(k.classList.contains('settings-heading')){cur={title:k.textContent,nodes:[]};groups.push(cur);}
-    else{if(!cur){cur={title:'General',nodes:[]};groups.push(cur);}cur.nodes.push(k);}
-  }
-  if(groups.length<2)return;
-  const nav=document.createElement('div');nav.className='settings-nav';
-  const panes=document.createElement('div');panes.className='settings-panes';
-  const items=[];
-  groups.forEach((g,i)=>{
-    const pane=document.createElement('section');pane.className='settings-pane';
-    const h=document.createElement('div');h.className='settings-pane-title';h.textContent=g.title;
-    const card=document.createElement('div');card.className='settings-card';
-    card.append(...g.nodes);
-    pane.append(h,card);panes.appendChild(pane);
-    const b=document.createElement('button');b.type='button';b.className='settings-nav-item'+(i===0?' active':'');b.textContent=g.title;
-    b.addEventListener('click',()=>{
-      items.forEach(x=>x.classList.toggle('active',x===b));
-      pane.scrollIntoView({block:'start',behavior:'smooth'});
-    });
-    items.push(b);nav.appendChild(b);
-  });
-  form.replaceChildren(nav,panes);
-  form.classList.add('paned');
-}
+// The form lives in ./src/settingsUI.js; this applies what it reads back.
 function showSettings(){
-  const wrap=document.createElement('div');wrap.className='settings-form';
-
-  // ── Helpers for compact rows ──
-  const inputs={};
-  const addText=(key,label,placeholder)=>{
-    const row=document.createElement('div');row.className='ep-row';
-    const lbl=document.createElement('label');lbl.className='ep-lbl';lbl.textContent=label;
-    const inp=document.createElement('input');inp.className='ep-in';inp.type='text';
-    inp.value=SETTINGS[key]??'';inp.placeholder=placeholder||'';
-    row.appendChild(lbl);row.appendChild(inp);wrap.appendChild(row);
-    inputs[key]=inp;
-  };
-  const addNumber=(key,label,min,max,step)=>{
-    const row=document.createElement('div');row.className='ep-row';
-    const lbl=document.createElement('label');lbl.className='ep-lbl';lbl.textContent=label;
-    const inp=document.createElement('input');inp.className='ep-in';inp.type='number';
-    if(min!==undefined)inp.min=min;if(max!==undefined)inp.max=max;
-    if(step!==undefined)inp.step=step;
-    inp.value=String(SETTINGS[key]??'');
-    row.appendChild(lbl);row.appendChild(inp);wrap.appendChild(row);
-    inputs[key]=inp;
-  };
-  const addSelect=(key,label,options)=>{
-    const row=document.createElement('div');row.className='ep-row';
-    const lbl=document.createElement('label');lbl.className='ep-lbl';lbl.textContent=label;
-    const sel=document.createElement('select');sel.className='ep-in';
-    for(const o of options){
-      const op=document.createElement('option');op.value=o.value;op.textContent=o.label;
-      if(String(SETTINGS[key])===String(o.value))op.selected=true;
-      sel.appendChild(op);
-    }
-    row.appendChild(lbl);row.appendChild(sel);wrap.appendChild(row);
-    inputs[key]=sel;
-  };
-  const addCheck=(key,label)=>{
-    const row=document.createElement('div');row.className='ep-row';
-    const lbl=document.createElement('label');lbl.className='ep-lbl';lbl.textContent=label;
-    const inp=document.createElement('input');inp.type='checkbox';
-    inp.checked=!!SETTINGS[key];
-    row.appendChild(lbl);row.appendChild(inp);wrap.appendChild(row);
-    inputs[key]=inp;
-  };
-  const addHeading=(text)=>{
-    const h=document.createElement('div');h.className='settings-heading';h.textContent=text;
-    wrap.appendChild(h);
-  };
-
-  // ── Branding ──
-  addHeading('Branding');
-  addText('company','Company / Brand','Plexus');
-  addText('tagline','Tagline','Network Planning');
-  addText('contact','Contact','hello@plexus.example');
-  addText('metaLine','Cover meta line','optional, shown above the logo on exports');
-  addText('reportTitle','Report title','Network Audit Report');
-  addText('footerLine','Footer line','optional, shown in HTML/PDF report footer');
-  addText('logoDataUrl','Brand logo (data URL)','data:image/png;base64,...');
-  addText('locale','Date locale','en-GB');
-  addSelect('language','UI language',availableLangs().map(c=>({value:c,label:c})));
-
-  // ── Coverage display ──
-  addHeading('Coverage display');
-  const opacityRow=document.createElement('div');opacityRow.className='ep-row ep-slider-row';
-  const opacityLbl=document.createElement('label');opacityLbl.className='ep-lbl';opacityLbl.textContent='Coverage opacity';
-  const opacityIn=document.createElement('input');
-  opacityIn.type='range';opacityIn.min='20';opacityIn.max='100';opacityIn.step='5';
-  opacityIn.className='ep-rng';
-  const initialOpacity=Math.max(20,Math.min(100,Math.round(SETTINGS.coverageOpacity??100)));
-  opacityIn.value=String(initialOpacity);
-  const opacityVal=document.createElement('span');opacityVal.className='ep-rng-val';opacityVal.textContent=initialOpacity+'%';
-  opacityRow.appendChild(opacityLbl);opacityRow.appendChild(opacityIn);opacityRow.appendChild(opacityVal);
-  wrap.appendChild(opacityRow);
   const savedOpacity=SETTINGS.coverageOpacity??100;
-  opacityIn.addEventListener('input',()=>{
-    const v=parseInt(opacityIn.value,10)||100;
-    opacityVal.textContent=v+'%';
-    SETTINGS.coverageOpacity=v;
-    render();
-  });
-  addSelect('heatmapMode','Heatmap mode',HEATMAP_MODE_KEYS.map(k=>({value:k,label:HEATMAP_MODES[k].label})));
-  addSelect('heatmapBand','Heatmap band',[
-    {value:'all',label:'All bands'},
-    {value:'2.4',label:'2.4 GHz'},
-    {value:'5',label:'5 GHz'},
-    {value:'6',label:'6 GHz'},
-  ]);
-  addCheck('showRoamingOverlap','Show roaming-overlap layer (≥2 APs ≥ -67 dBm)');
-
-  // ── RF model + regulatory ──
-  addHeading('RF model & regulatory');
-  addSelect('propagationModel','Propagation model',PROPAGATION_MODEL_KEYS.map(k=>({value:k,label:PROPAGATION_MODELS[k].label})));
-  addSelect('regulatoryRegion','Regulatory region',REGULATORY_REGION_KEYS.map(k=>({value:k,label:REGULATORY_REGIONS[k].label})));
-  addNumber('noiseFloorDbm','Noise floor (dBm)',-110,-70,1);
-  addNumber('floorSlabAttenDb','Floor slab attenuation (dB)',0,40,1);
-  addNumber('floorHeightM','Floor-to-floor height (m)',2,10,0.1);
-  addCheck('showFloorLeakage','Include other floors in heatmap (through the slabs)');
-
-  // ── Architect scale ──
-  addHeading('Drawing scale');
-  addSelect('archScale','Architect scale preset',[
-    {value:'',label:'Custom (use scale toolbar)'},
-    ...ARCH_SCALE_PRESETS.map(p=>({value:p.label,label:`${p.label} (${p.m100px} m / 100 px)`})),
-  ]);
-
-  // ── Organization ──
-  addHeading('Organization');
-  addText('siteCode','Site code','HQ — feeds {site} in the name pattern');
-  addText('namePattern','Device name pattern','{site}-F{floor}-{type}{nn}');
-  const nameHint=document.createElement('div');nameHint.className='ep-hint';
-  nameHint.textContent='Tokens: {site} {floor} {type} {n}/{nn}/{nnn}. Validate flags names that break the pattern; Inventory → Auto-rename applies it to every device.';
-  wrap.appendChild(nameHint);
-
-  // ── Cabling & capacity ──
-  addHeading('Cabling & capacity');
-  addNumber('cableRoutingFactor','Cable routing factor',1,3,0.05);
-  addNumber('cableBoxM','Cable box length (m)',1,1000,1);
-  addNumber('expectedClients','Expected concurrent clients',0,100000,1);
-  addNumber('perClientMbps','Per-client demand (Mbps)',0.5,100,0.5);
-  addCheck('colorByVlan','Colour devices by VLAN on the map');
-
-  // ── Cameras: DORI + storage ──
-  addHeading('Cameras');
-  addCheck('showDori','Show DORI pixel-density bands in camera cones');
-  addNumber('retentionDays','Video retention (days)',1,365,1);
-  addSelect('storageCodec','Recording codec',[
-    {value:'h265',label:'H.265 / HEVC'},
-    {value:'h264',label:'H.264 / AVC'},
-  ]);
-
-  // ── VLAN registry ──
-  addHeading('VLANs');
-  const vlanWrap=document.createElement('div');
-  const vlanRows=[];
-  const addVlanRow=(v)=>{
-    const row=document.createElement('div');row.className='ep-row';row.style.cssText='display:flex;gap:4px;align-items:center';
-    const id=document.createElement('input');id.className='ep-in';id.placeholder='ID';id.value=(v&&v.id)||'';id.style.cssText='width:50px;flex:0 0 auto';
-    const name=document.createElement('input');name.className='ep-in';name.placeholder='Name';name.value=(v&&v.name)||'';
-    const color=document.createElement('input');color.type='color';color.value=(v&&v.color)||'#1565c0';color.style.cssText='width:30px;height:28px;padding:0;border:none;background:none;flex:0 0 auto';
-    const subnet=document.createElement('input');subnet.className='ep-in ep-mono';subnet.placeholder='10.0.10.0/24';subnet.value=(v&&v.subnet)||'';subnet.style.cssText='width:118px;flex:0 0 auto';
-    const gw=document.createElement('input');gw.className='ep-in ep-mono';gw.placeholder='gateway';gw.title='Gateway/SVI IP for inter-VLAN routing (L3)';gw.value=(v&&v.gateway)||'';gw.style.cssText='width:92px;flex:0 0 auto';
-    const del=document.createElement('button');del.className='btn';del.textContent='✕';del.style.cssText='flex:0 0 auto;padding:4px 8px';
-    const entry={id,name,color,subnet,gw};
-    del.addEventListener('click',()=>{row.remove();const i=vlanRows.indexOf(entry);if(i>=0)vlanRows.splice(i,1);});
-    row.append(id,name,color,subnet,gw,del);
-    vlanWrap.appendChild(row);
-    vlanRows.push(entry);
-  };
-  vlanList().forEach(addVlanRow);
-  wrap.appendChild(vlanWrap);
-  const addVlanBtn=document.createElement('button');addVlanBtn.className='btn';addVlanBtn.textContent='+ Add VLAN';addVlanBtn.style.marginTop='4px';
-  addVlanBtn.addEventListener('click',()=>addVlanRow());
-  wrap.appendChild(addVlanBtn);
-
-  // ── Security ──
-  addHeading('Security');
-  const credRow=document.createElement('div');credRow.className='ep-row';
-  const credLbl=document.createElement('label');credLbl.className='ep-lbl';credLbl.textContent='Credentials passphrase';
-  const credInp=document.createElement('input');
-  credInp.type='password';credInp.className='ep-in';credInp.autocomplete='new-password';
-  credInp.value=CREDS.pass;credInp.placeholder='blank = store credentials unencrypted';
-  credRow.append(credLbl,credInp);wrap.appendChild(credRow);
-  const credHint=document.createElement('div');credHint.className='ep-hint';
-  credHint.textContent='When set, device credentials are AES-256-GCM encrypted in saved project files and never written to autosave or Share links. Session-only — not stored anywhere; you re-enter it to unlock an encrypted project.';
-  wrap.appendChild(credHint);
-
-  const hint=document.createElement('div');
-  hint.className='ep-hint';
-  hint.textContent='Saved with the project. Used in HTML/PDF exports, the heatmap pipeline, the top-bar brand label, and channel/Tx planning. Routing factor scales straight-line cable runs; VLAN subnets feed the “suggest IP” buttons.';
-  wrap.appendChild(hint);
-
+  const form=settingsForm(document,{settings:SETTINGS,vlans:vlanList(),credsPass:CREDS.pass,langs:availableLangs(),
+    onOpacityPreview:v=>{SETTINGS.coverageOpacity=v;render();}});
   const archScaleAtOpen=SETTINGS.archScale||'';
   const apply=()=>{
     let changed=false;
+    const {inputs,vlans:newVlans,opacity,credPass}=form.read();
     // Strings
-    for(const k of ['company','tagline','contact','metaLine','reportTitle','footerLine','logoDataUrl','locale','language','propagationModel','regulatoryRegion','heatmapMode','heatmapBand','archScale','siteCode','namePattern','storageCodec','unifiUrl','unifiSite','unifiUser']){
+    for(const k of SETTINGS_STRING_KEYS){
       if(!inputs[k])continue;
       const val=(inputs[k].value||'').trim();
       if(String(SETTINGS[k]||'')!==val){SETTINGS[k]=val;changed=true;}
     }
     // Numbers
-    for(const k of ['noiseFloorDbm','floorSlabAttenDb','floorHeightM','cableRoutingFactor','cableBoxM','expectedClients','perClientMbps','retentionDays']){
+    for(const k of SETTINGS_NUMBER_KEYS){
       if(!inputs[k])continue;
       const v=parseFloat(inputs[k].value);
       if(Number.isFinite(v)&&SETTINGS[k]!==v){SETTINGS[k]=v;changed=true;}
     }
     // Bools
-    for(const k of ['showRoamingOverlap','showFloorLeakage','colorByVlan','showDori']){
+    for(const k of SETTINGS_BOOL_KEYS){
       if(!inputs[k])continue;
       const v=!!inputs[k].checked;
       if(SETTINGS[k]!==v){SETTINGS[k]=v;changed=true;}
     }
     // VLAN registry.
-    const newVlans=vlanRows.map(e=>({id:(e.id.value||'').trim(),name:(e.name.value||'').trim(),color:e.color.value||'',subnet:(e.subnet.value||'').trim(),gateway:(e.gw.value||'').trim()})).filter(v=>v.id||v.name);
     if(JSON.stringify(newVlans)!==JSON.stringify(vlanList())){SETTINGS.vlans=newVlans;changed=true;}
     // Credentials passphrase (session-only; never persisted to SETTINGS).
-    if(CREDS.locked){if(credInp.value)_tryUnlock(credInp.value);}
-    else CREDS.setPass(credInp.value);
-    const opacity=parseInt(opacityIn.value,10)||100;
+    if(CREDS.locked){if(credPass)_tryUnlock(credPass);}
+    else CREDS.setPass(credPass);
     if(SETTINGS.coverageOpacity!==opacity){SETTINGS.coverageOpacity=opacity;changed=true;}
     if(SETTINGS.language)setLang(SETTINGS.language);
     // Apply an architect scale preset to the current floor only when it was
@@ -6273,8 +6077,7 @@ function showSettings(){
       render();
     }
   };
-  _paneSettings(wrap);
-  showModalNode('Project Settings',wrap,apply,cancel);
+  showModalNode('Project Settings',form.el,apply,cancel);
   document.getElementById('mdl').classList.add('wide-modal','settings-modal');
 }
 
