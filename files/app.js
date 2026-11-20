@@ -99,6 +99,7 @@ import {portGridHtml,poeSummaryEl,topologyEl} from './src/networkDialogs.js';
 import {inventoryEl} from './src/inventoryUI.js';
 import {applyUnifiDevices,unifiChannelPlan} from './src/unifiSync.js';
 import {settingsForm,SETTINGS_STRING_KEYS,SETTINGS_NUMBER_KEYS,SETTINGS_BOOL_KEYS} from './src/settingsUI.js';
+import {revisionsEl} from './src/revisionsUI.js';
 import {remoteImageHosts,stripRemoteImages} from './src/remoteImages.js';
 import {evaluatePolicies} from './src/policy.js';
 import {compileTopology} from './src/simCompile.js';
@@ -3842,69 +3843,14 @@ function restoreRevision(id){
   });
 }
 function showRevisions(){
-  const wrap=document.createElement('div');wrap.className='settings-form';
-  if(!PROJECT_REVISIONS.length){
-    const e=document.createElement('div');e.className='ep-hint';
-    e.textContent='No revisions yet. Save the current state as the first revision below.';
-    wrap.appendChild(e);
-  } else {
-    const list=document.createElement('div');list.className='rev-list';
-    const showDiff=(lines,label)=>{
-      const old=wrap.querySelector('.rev-diff');if(old)old.remove();
-      const out=document.createElement('pre');out.className='rev-diff';
-      out.textContent=(label?label+'\n\n':'')+(lines.length?lines.join('\n'):'(no differences detected)');
-      wrap.appendChild(out);
-    };
-    for(const rev of PROJECT_REVISIONS){
-      const row=document.createElement('div');row.className='rev-row';
-      const name=document.createElement('div');name.className='rev-name';
-      name.textContent=(rev.baseline?'★ ':'')+rev.name;
-      if(rev.baseline)name.title='Design baseline';
-      const when=document.createElement('div');when.className='rev-when';when.textContent=new Date(rev.createdAt).toLocaleString(SETTINGS.locale||'en-GB');
-      // Mark as the design baseline (one at a time) — the "as-designed" state
-      // that later as-built diffs are read against.
-      const b=document.createElement('button');b.className='btn';b.textContent=rev.baseline?'★':'☆';
-      b.title=rev.baseline?'Unmark design baseline':'Mark as design baseline';
-      b.addEventListener('click',()=>{
-        const on=!rev.baseline;
-        PROJECT_REVISIONS.forEach(r=>r.baseline=false);
-        rev.baseline=on;
-        autosave();closeModal();showRevisions();
-      });
-      const d=document.createElement('button');d.className='btn';d.textContent='Diff vs now';
-      d.title='What changed between this revision and the current state';
-      d.addEventListener('click',()=>{
-        showDiff(_diffRevisions(rev.snapshot,_snapshotForRevision()),`${rev.name} → current state`);
-      });
-      const r=document.createElement('button');r.className='btn';r.textContent='Restore';
-      r.addEventListener('click',()=>{closeModal();restoreRevision(rev.id);});
-      const x=document.createElement('button');x.className='btn danger';x.textContent='×';x.title='Delete';
-      x.addEventListener('click',()=>{
-        PROJECT_REVISIONS=PROJECT_REVISIONS.filter(r=>r.id!==rev.id);
-        autosave();closeModal();showRevisions();
-      });
-      row.appendChild(name);row.appendChild(when);row.appendChild(b);row.appendChild(d);row.appendChild(r);row.appendChild(x);
-      list.appendChild(row);
-    }
-    wrap.appendChild(list);
-    if(PROJECT_REVISIONS.length>=2){
-      const diffBtn=document.createElement('button');diffBtn.className='btn';diffBtn.textContent='Diff last two revisions';
-      diffBtn.style.marginTop='12px';
-      diffBtn.addEventListener('click',()=>{
-        const a=PROJECT_REVISIONS[PROJECT_REVISIONS.length-2].snapshot;
-        const b=PROJECT_REVISIONS[PROJECT_REVISIONS.length-1].snapshot;
-        const lines=_diffRevisions(a,b);
-        const out=document.createElement('pre');out.className='rev-diff';
-        out.textContent=lines.length?lines.join('\n'):'(no differences detected)';
-        wrap.appendChild(out);
-      });
-      wrap.appendChild(diffBtn);
-    }
-  }
-  const saveBtn=document.createElement('button');saveBtn.className='btn btn-primary';saveBtn.textContent='Save current state as new revision';
-  saveBtn.style.marginTop='12px';
-  saveBtn.addEventListener('click',()=>{closeModal();newRevision();});
-  wrap.appendChild(saveBtn);
+  const wrap=revisionsEl(document,{revisions:PROJECT_REVISIONS,locale:SETTINGS.locale||'en-GB',
+    diffVsNow:rev=>_diffRevisions(rev.snapshot,_snapshotForRevision()),
+    diffLastTwo:()=>_diffRevisions(PROJECT_REVISIONS[PROJECT_REVISIONS.length-2].snapshot,PROJECT_REVISIONS[PROJECT_REVISIONS.length-1].snapshot),
+    onToggleBaseline:rev=>{const on=!rev.baseline;PROJECT_REVISIONS.forEach(r=>r.baseline=false);rev.baseline=on;autosave();closeModal();showRevisions();},
+    onRestore:rev=>{closeModal();restoreRevision(rev.id);},
+    onDelete:rev=>{PROJECT_REVISIONS=PROJECT_REVISIONS.filter(r=>r.id!==rev.id);autosave();closeModal();showRevisions();},
+    onNew:()=>{closeModal();newRevision();},
+  });
   showModalNode('Revisions',wrap,null);
 }
 
