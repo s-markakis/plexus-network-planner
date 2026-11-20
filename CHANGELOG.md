@@ -6,6 +6,11 @@ versioning follows [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [3.8.0] — 2026-11-20
+
+Circuits, a full security/robustness audit, and app.js split into tested
+modules — with the bugs that surfaced along the way.
+
 ### Added
 - **Circuits**: record the path each connection takes — end device, switch
   port, uplinks, plus patch panels, wall outlets, converters and cable labels
@@ -52,6 +57,26 @@ versioning follows [SemVer](https://semver.org/spec/v2.0.0.html).
 - The toolbar always says Plexus; the Company setting brands reports only.
 
 ### Fixed
+- Cameras had no marker, outline or name on the map and could not be clicked
+  or dragged there since 2.0.0 (thanks @saschbe, #1); a click on a camera in an
+  add mode no longer places a device.
+- Saving Project Settings re-applied the architect scale preset, resetting a
+  floor's ruler-calibrated scale.
+- Cable lengths, coverage % and airtime for floors other than the one on
+  screen used the on-screen plan's pixel size.
+- Auto-power dropped APs with no neighbour to overlap to 5 dBm.
+- Live survey recorded macOS's "0 dBm" non-reading as a sample.
+- Roaming overlap and survey predictions ignored routers with built-in WiFi.
+- Auto-place: the result was hidden behind the switch-capacity warning, and
+  its coverage % disagreed with the readout.
+- Validate missed duplicate IPs on other floors and double-escaped names; a
+  subnet with one free address read "full" (the gateway was counted as used).
+- Revision diff paired floors by position and missed Tx-power/width changes;
+  "Diff last two" stacked results; deleting a revision now asks first.
+- BoM and PoE checks used different wattage for unknown AP models; an AP with
+  0 expected clients counted as 25.
+- Inventory progress didn't follow inline status changes.
+- UniFi controller data is treated as untrusted (text only, length-capped).
 - Opening the app and not answering "Restore previous session?" (or quitting)
   lost that session: the autosave wrote the empty startup plan over it.
 - A session with only cameras, walls or labels was not offered for restore.
