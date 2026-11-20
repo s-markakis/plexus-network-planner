@@ -467,7 +467,8 @@ export const CAM_MODEL_GROUPS=[
     'IPC-HDBW5442H (5MP)','SD49225XA-HNR (PTZ)','Generic Dahua',
   ]},
   {label:'Reolink', models:[
-    'RLC-823A','RLC-1224A','RLC-820A','RLC-410W','Argus 4 Pro','Trackmix',
+    'RLC-410W','RLC-810A 2.8mm','RLC-811A','RLC-820A','RLC-823A','RLC-823S2',
+    'RLC-833A','RLC-1212A','RLC-1224A','Duo 2 PoE','Duo 3 PoE','TrackMix PoE','Argus 4 Pro',
   ]},
   {label:'Axis', models:[
     'M3045-V','M3046-V','M3057-PLVE','P3245-LV','Q6125-LE (PTZ)','Generic Axis',
@@ -531,12 +532,20 @@ export const CAM_SPECS={
   'SD49225XA-HNR (PTZ)':             {fov:60, range:100,res:'2MP',poeW:30},
   'Generic Dahua':                   {fov:90, range:30,res:'4MP',poeW:8},
   // Reolink
-  'RLC-823A':         {fov:105,range:55,  res:'4K',   poeW:12},
-  'RLC-1224A':        {fov:97, range:30,  res:'12MP', poeW:10},
-  'RLC-820A':         {fov:80, range:30,  res:'4K',   poeW:10},
+  'RLC-823A':         {fov:105,range:60,  res:'4K',   poeW:24},
+  'RLC-1224A':        {fov:93, range:30,  res:'12MP', poeW:12},
+  'RLC-820A':         {fov:87, range:30,  res:'4K',   poeW:12},
   'RLC-410W':         {fov:80, range:30,  res:'5MP',  poeW:0},
   'Argus 4 Pro':      {fov:180,range:10,  res:'4K',   poeW:0},
-  'Trackmix':         {fov:105,range:25,  res:'4K',   poeW:12},
+  'TrackMix PoE': {fov:104,range:30, res:'4K',   poeW:12},
+  'Trackmix':         {fov:104,range:30, res:'4K',   poeW:12}, // Legacy saved projects.
+  'RLC-833A':         {fov:94, range:30,  res:'4K',   poeW:12},
+  'RLC-811A':         {fov:105,range:30,  res:'4K',   poeW:12},
+  'RLC-810A 2.8mm':   {fov:101,range:30,  res:'4K',   poeW:12},
+  'RLC-1212A':        {fov:97, range:30,  res:'12MP', poeW:12},
+  'Duo 2 PoE': {fov:180,range:30, res:'8MP',  poeW:12},
+  'Duo 3 PoE': {fov:180,range:30, res:'16MP', poeW:12},
+  'RLC-823S2':        {fov:54.2,range:80, res:'4K',   poeW:24},
   // Axis
   'M3045-V':          {fov:118,range:0,   res:'1080p',poeW:4},
   'M3046-V':          {fov:106,range:0,   res:'4MP',  poeW:4},
