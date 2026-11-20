@@ -43,7 +43,8 @@ function floor(seed) {
 }
 
 describe('planApPlacement', () => {
-  it('matches the in-app algorithm exactly on 40 random floors', () => {
+  // ~2 s locally; CI runners can be several times slower.
+  it('matches the in-app algorithm exactly on 40 random floors', { timeout: 60000 }, () => {
     for (let seed = 1; seed <= 40; seed++) {
       const f = floor(seed);
       const want = reference(f.w, f.h, f.walls, f.existing, f.r);

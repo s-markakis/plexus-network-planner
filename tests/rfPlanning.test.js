@@ -69,7 +69,7 @@ function layout(seed) {
 
 describe('rfPlanning matches the in-app algorithms', () => {
   const regions = Object.keys(REGULATORY_REGIONS);
-  it('channel plan: identical on 500 random floors across regions', () => {
+  it('channel plan: identical on 500 random floors across regions', { timeout: 60000 }, () => {
     for (let seed = 1; seed <= 500; seed++) {
       const regionKey = regions[seed % regions.length];
       const aps = layout(seed); const ref = structuredClone(aps);
@@ -78,7 +78,7 @@ describe('rfPlanning matches the in-app algorithms', () => {
       expect(aps.map((a) => plan.has(a) ? plan.get(a) : a.channel), `seed ${seed}`).toEqual(ref.map((a) => a.channel));
     }
   });
-  it('tx power: identical on 500 random floors', () => {
+  it('tx power: identical on 500 random floors', { timeout: 60000 }, () => {
     for (let seed = 1; seed <= 500; seed++) {
       const aps = layout(seed); const ref = structuredClone(aps);
       refAutoTx(ref, 1000, 1000);

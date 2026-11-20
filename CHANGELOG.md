@@ -6,6 +6,13 @@ versioning follows [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [3.8.1] — 2026-11-20
+
+### Fixed
+- macOS and Linux installers for 3.8.0 were not built: the universal macOS
+  build rejected an unused native canvas module (now left out of the app), and
+  a slow CI runner timed out a long test. No app changes since 3.8.0.
+
 ## [3.8.0] — 2026-11-20
 
 Circuits, a full security/robustness audit, and app.js split into tested
