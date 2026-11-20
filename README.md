@@ -406,6 +406,34 @@ list); nothing in a project file can name a path.
 The dialog also remembers the outcome of the last drift check per device
 ("matched the plan" / "N mismatches", with the time), saved with the project.
 
+### Circuits — the as-built cable record
+
+**Circuits** (top bar, every mode; also a device's right-click menu and panel)
+records the path each connection really takes: end device → wall outlet →
+cable → patch panel → switch port → uplinks, including the passive plant the
+plan doesn't draw. It is the record the next technician searches when a camera
+goes dark.
+
+- **Fill from the plan** — picking the end device fills its switch, port and
+  uplink chain; **Create for all devices** does that for every AP and camera
+  without a circuit, leaving only the patch panels and outlets to add. A new hop
+  lands between the end device and its switch, where passive plant usually is.
+- **Search by anything on the path** — panel, position, outlet, cable label,
+  technician, device name, IP, MAC, serial; accents and case don't matter.
+- **Photos** — attach one per hop (📷), e.g. the patch panel. They are stored in
+  the browser and inlined into the saved project file, so they travel with it.
+- **Checks** — a circuit that no longer matches the plan is flagged
+  (**Update from plan** re-derives the switch hops and keeps your passive ones);
+  a patch-panel position, outlet port or cable label used by two circuits is a
+  conflict, shown on both circuits and in **Validate**. Labels are compared
+  loosely (`PP-1` = `pp1`), and label fields suggest the ones already used.
+- **⌖ Map** traces a circuit on the plan (Esc clears it).
+- **Deliverables** — `circuits.csv` and `patch-schedule.csv` (rack order: switch
+  port ↔ patch panel ↔ outlet ↔ device) from the dialog and in the handover
+  pack; a *Circuits & patch schedule* table in the technical PDF; **Cable
+  labels** prints two labels per circuit (A = device end, B = switch end).
+- Every change is undoable (Ctrl+Z), deletions also from the dialog itself.
+
 ---
 
 ## Tutorial 3 — Operate: connect to a real device

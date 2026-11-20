@@ -6,6 +6,22 @@ versioning follows [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- **Circuits, reworked into an as-built record:**
+  - in every mode (was Simulate only), plus *Record a circuit…* / *Circuits
+    through this* in a device's right-click menu and a circuits line in its panel;
+  - **Create for all devices** fills a circuit per AP and camera from the plan;
+  - a new hop goes between the end device and its switch, any row can insert
+    below it, and label fields suggest panels/outlets/cables already used;
+  - **conflicts**: one patch position, outlet port or cable label on two
+    circuits is flagged on both and in Validate (labels compared loosely);
+  - **Update from plan** for a circuit that has drifted, keeping passive hops;
+  - **⌖ Map** traces a circuit on the plan;
+  - **photos** per hop, inlined into the saved file so they travel with it;
+  - **exports**: `circuits.csv`, `patch-schedule.csv` (also in the handover
+    pack), a circuits table in the technical PDF, printable **cable labels**.
+- Circuit edits are undoable; a deletion can be undone from the dialog.
+
 ## [3.8.2] — 2026-11-20
 
 ### Fixed

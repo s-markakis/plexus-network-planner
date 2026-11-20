@@ -85,9 +85,9 @@ import {mountDeviceConfig} from './src/deviceConfigUI.js';
 import {mountPolicies} from './src/policyUI.js';
 import {mountLabs} from './src/labsUI.js';
 import {mountCircuits} from './src/circuitsUI.js';
-import {deviceIndex} from './src/circuits.js';
+import {deviceIndex,circuitsThrough,circuitConflicts,conflictText,circuitDrift,circuitRows,circuitImageIds,cableLabelsHtml,circuitsReportHtml} from './src/circuits.js';
 import {projectForShare} from './src/shareLink.js';
-import {bomCsv,cableScheduleCsv,ipPlanCsv,portMapCsv,inventoryCsv} from './src/csvExports.js';
+import {bomCsv,cableScheduleCsv,ipPlanCsv,portMapCsv,inventoryCsv,circuitsCsv,patchScheduleCsv} from './src/csvExports.js';
 import {diffRevisions as _diffRevisions} from './src/revisionDiff.js';
 import {planChannels,planTxPower} from './src/rfPlanning.js';
 import {validatePlan} from './src/validation.js';
@@ -285,6 +285,8 @@ let scale=1,panX=0,panY=0;
 // re-fits instead of leaving the plan where the old size put it. _vp is the
 // viewport size applyT() last laid the plan out for.
 let _viewFitted=false,_vp=null;
+// Circuit traced on the map (its id), or null — see showCircuitOnMap().
+let _cktHighlight=null;
 let panning=false,panStartX=0,panStartY=0,panPrevX=0,panPrevY=0;
 // Drag
 let dragId=null,dragType=null,dragOffX=0,dragOffY=0;
@@ -948,6 +950,14 @@ function showValidation(){
     clientCapacity:totalClientCapacity,
     storageGb:totalStorageGb(),
   });
+  // Circuits are project-wide records: one patch position or cable label on two
+  // circuits means one record is wrong; drift means the plan moved on.
+  for(const e of circuitConflicts(_circuits()))warns.push(conflictText(e));
+  {
+    const p=simProject();
+    const n=_circuits().filter(c=>circuitDrift(p,c).length).length;
+    if(n)infos.push(`${n} circuit${n===1?'':'s'} no longer match${n===1?'es':''} the plan — open Circuits to review.`);
+  }
   const wrap=document.createElement('div');
   wrap.style.cssText='font-family:inherit;font-size:13px';
   // The ✓ banner keys off problems only — informational lines (e.g. the NVR
@@ -1509,8 +1519,14 @@ async function _buildProjectText(){
     }
     return out;
   }));
+  // Hop photos are inlined the same way, so circuit records keep their
+  // pictures when the file moves to another laptop.
+  const circuitsForExport=await Promise.all(_circuits().map(async c=>({...c,hops:await Promise.all((c.hops||[]).map(async h=>{
+    if(h&&h.imgId&&!h.img){const data=await inlineFor(h.imgId);if(data)return {...h,img:data};}
+    return h;
+  }))})));
   // scaleM is now stored per-floor; project-level field omitted.
-  const data={version:PROJECT_VERSION,settings:SETTINGS,floors:floorsForExport,revisions:PROJECT_REVISIONS,savedAt:new Date().toISOString()};
+  const data={version:PROJECT_VERSION,settings:{...SETTINGS,circuits:circuitsForExport},floors:floorsForExport,revisions:PROJECT_REVISIONS,savedAt:new Date().toISOString()};
   // When a credentials passphrase is set, encrypt every device's creds into a
   // single vault and strip the plaintext from the exported devices.
   await _encryptCredsInto(data);
@@ -1841,12 +1857,14 @@ function imgToFrac(x,y){const w=mapImg.naturalWidth||1,h=mapImg.naturalHeight||1
 // Strips per-AP cache fields (anything starting with `_`) so the snapshot
 // stays small and never resurrects stale geometry caches on undo.
 function _serializeState(){
-  // Per-floor scaleM is carried inside each floor object now.
-  return JSON.stringify({floors:FLOORS,curFloor},(k,v)=>k.startsWith('_')?undefined:v);
+  // Per-floor scaleM is carried inside each floor object now. Circuits live in
+  // SETTINGS but are records the technician edits, so they are undoable too.
+  return JSON.stringify({floors:FLOORS,curFloor,circuits:_circuits()},(k,v)=>k.startsWith('_')?undefined:v);
 }
 function _restoreState(json){
   const s=JSON.parse(json);
   FLOORS=s.floors;
+  if(Array.isArray(s.circuits))SETTINGS.circuits=s.circuits;
   curFloor=Math.max(0,Math.min(FLOORS.length-1,s.curFloor??0));
   syncScaleFromFloor();
   invalidateCoverageCache();
@@ -1864,6 +1882,7 @@ function snapshot(){HISTORY.snapshot();}
 function _liveImgIds(){
   const ids=imageIdsIn(FLOORS);
   for(const r of PROJECT_REVISIONS||[])imageIdsIn(r&&r.snapshot,ids);
+  circuitImageIds(_circuits(),ids);   // hop photos (patch panels, outlets)
   return ids;
 }
 const IMG_TRASH=createImageTrash({
@@ -1881,6 +1900,7 @@ function _sweepImages(){IMG_TRASH.sweep();}
 let _projectSwitched=false;
 function _beginProjectSwitch(){
   _projectSwitched=true;
+  clearCircuitHighlight();
   IMG_TRASH.retire(_liveImgIds());
   HISTORY.reset();
   CREDS.reset();
@@ -2048,18 +2068,89 @@ function showPolicies(){
 }
 // Circuits: the recorded path of each connection, searchable by any hop.
 // Opened with a device selected, it starts filtered to circuits through it.
-function showCircuits(){
+function _circuits(){return SETTINGS&&Array.isArray(SETTINGS.circuits)?SETTINGS.circuits:[];}
+// Every change is undoable. Always a fresh array: a new project's SETTINGS may
+// alias DEFAULT_SETTINGS.
+// The device panel's circuit count and any traced path follow the change.
+function _setCircuits(c){snapshot();SETTINGS.circuits=c.slice();autosave();if(_isCktDevice(selType))renderRP();if(_cktHighlight)render();}
+const _isCktDevice=t=>t==='ap'||t==='cam'||t==='sw';
+
+// Hop photos: downscaled (a patch panel's labels must stay readable, so larger
+// than a device thumbnail) and kept in IndexedDB like device images.
+function _imageFileToDataUrl(file,max){
+  return new Promise((resolve,reject)=>{
+    if(!file||!/^image\//.test(file.type)){reject(new Error('Please choose an image file.'));return;}
+    const objUrl=URL.createObjectURL(file);
+    const img=new Image();
+    img.onload=()=>{
+      URL.revokeObjectURL(objUrl);
+      const w=img.naturalWidth||1,h=img.naturalHeight||1,k=Math.min(1,max/Math.max(w,h));
+      const cv=document.createElement('canvas');cv.width=Math.max(1,Math.round(w*k));cv.height=Math.max(1,Math.round(h*k));
+      cv.getContext('2d').drawImage(img,0,0,cv.width,cv.height);
+      let url;
+      try{url=cv.toDataURL('image/webp',0.82);if(!/^data:image\/webp/.test(url))url=cv.toDataURL('image/jpeg',0.82);}
+      catch{url=cv.toDataURL('image/jpeg',0.82);}
+      resolve(url);
+    };
+    img.onerror=()=>{URL.revokeObjectURL(objUrl);reject(new Error('Could not read that image.'));};
+    img.src=objUrl;
+  });
+}
+const _hopPhotos={
+  // Store a picked file; resolves the new image id.
+  async put(file){
+    const url=await _imageFileToDataUrl(file,1600);
+    const id=_newImgId();
+    await idbPutImage(id,url);
+    _imgCache.set(id,url);
+    return id;
+  },
+  async src(id){
+    if(!id)return '';
+    if(_imgCache.has(id))return _imgCache.get(id);
+    try{const u=await idbGetImage(id);if(u)_imgCache.set(id,u);return u||'';}catch{return '';}
+  },
+  // Deferred: the image trash keeps it while a circuit or an undo step names it.
+  release:id=>_releaseImage(id),
+};
+
+function _circuitRowsNow(){return circuitRows(simProject(),_circuits());}
+function doCircuitsCsv(){
+  const csv=circuitsCsv(_circuitRowsNow());
+  if(!csv){toast('No circuits recorded yet');return;}
+  _downloadFile('circuits.csv',csv,'text/csv');toast('Circuits exported');
+}
+function doPatchScheduleCsv(){
+  const csv=patchScheduleCsv(_circuitRowsNow());
+  if(!csv){toast('No circuits recorded yet');return;}
+  _downloadFile('patch-schedule.csv',csv,'text/csv');toast('Patch schedule exported');
+}
+function doCableLabels(){
+  const rows=_circuitRowsNow();
+  if(!rows.length){toast('No circuits recorded yet');return;}
+  const w=window.open('','_blank');
+  if(!w){toast('Allow pop-ups to print labels');return;}
+  w.document.open();w.document.write(cableLabelsHtml(rows,{title:`${SETTINGS.siteCode||SETTINGS.company||'Plexus'} — cable labels`}));w.document.close();
+  _wirePrintButton(w);
+}
+
+// Circuits: the recorded path of each connection, searchable by any hop.
+// Opened with a device selected, it starts filtered to circuits through it;
+// newFor opens the editor for a new circuit from that device.
+function showCircuits({newFor=''}={}){
   const wrap=document.createElement('div');
-  const selDev=(selType==='ap'||selType==='cam'||selType==='sw')&&selId?selId:'';
-  mountCircuits({
+  const selDev=newFor||(_isCktDevice(selType)&&selId?selId:'');
+  const api=mountCircuits({
     root:wrap,
     getProject:simProject,
-    getCircuits:()=>Array.isArray(SETTINGS.circuits)?SETTINGS.circuits:[],
-    // Always a fresh array: a new project's SETTINGS may alias DEFAULT_SETTINGS.
-    setCircuits:c=>{SETTINGS.circuits=c.slice();autosave();},
+    getCircuits:_circuits,
+    setCircuits:_setCircuits,
     deviceId:selDev,
     getTech:()=>{try{return localStorage.getItem('plexus.circuitTech')||'';}catch{return '';}},
     setTech:t=>{try{localStorage.setItem('plexus.circuitTech',t);}catch{}},
+    photos:_hopPhotos,
+    undo:()=>undo(),
+    exports:{circuitsCsv:doCircuitsCsv,patchCsv:doPatchScheduleCsv,labels:doCableLabels},
     onFocus:id=>{
       const d=deviceIndex({floors:FLOORS}).get(id);
       if(!d)return;
@@ -2067,8 +2158,57 @@ function showCircuits(){
       if(d.floor!==curFloor)switchFloor(d.floor);
       sel(id,d.type,{zoom:true});
     },
+    onShowPath:c=>{closeModal();showCircuitOnMap(c);},
   });
   showModalNode('Circuits',wrap,null);
+  if(newFor)api.showEditor(null);
+}
+
+// ── Circuit on the map ─────────────────────────────────────────────────────
+// The chosen circuit's device hops are traced on the plan (on the floor the end
+// device is on) and redrawn on every render, so it follows a dragged device.
+// Escape, a floor switch or loading another project clears it.
+function showCircuitOnMap(c){
+  const idx=deviceIndex({floors:FLOORS});
+  const hops=(c.hops||[]).filter(h=>h.type==='device'&&idx.has(h.ref));
+  if(!hops.length){toast('None of this circuit\'s devices are in the plan');return;}
+  const start=idx.get(c.from)||idx.get(hops[0].ref);
+  _cktHighlight=c.id;
+  if(start.floor!==curFloor)switchFloor(start.floor);
+  else render();
+  const here=hops.filter(h=>idx.get(h.ref).floor===curFloor);
+  const away=hops.filter(h=>idx.get(h.ref).floor!==curFloor).map(h=>`${idx.get(h.ref).item.name||h.ref} (${(FLOORS[idx.get(h.ref).floor]||{}).name||'another floor'})`);
+  toast(`Circuit ${c.name||''}: ${here.length} device(s) on this floor${away.length?' · continues: '+away.join(', '):''} · Esc to clear`);
+}
+function clearCircuitHighlight(){
+  if(!_cktHighlight)return;
+  _cktHighlight=null;
+  const g=document.getElementById('ckt-layer');if(g)g.innerHTML='';
+}
+function renderCircuitHighlight(){
+  const g=document.getElementById('ckt-layer');if(!g)return;
+  g.innerHTML='';
+  if(!_cktHighlight)return;
+  const c=_circuits().find(x=>x.id===_cktHighlight);
+  if(!c){_cktHighlight=null;return;}
+  const w=mapImg.naturalWidth||0,h=mapImg.naturalHeight||0;if(!w||!h)return;
+  const idx=deviceIndex({floors:FLOORS});
+  const pts=[];
+  for(const hp of c.hops||[]){
+    if(hp.type!=='device')continue;
+    const d=idx.get(hp.ref);
+    if(!d||d.floor!==curFloor||!Number.isFinite(d.item.fx)||!Number.isFinite(d.item.fy))continue;
+    pts.push([d.item.fx*w,d.item.fy*h]);
+  }
+  if(!pts.length)return;
+  const NS='http://www.w3.org/2000/svg';
+  const mkEl=(tag,attrs)=>{const e=document.createElementNS(NS,tag);for(const [k,v] of Object.entries(attrs))e.setAttribute(k,String(v));return e;};
+  const d=pts.map((p,i)=>(i?'L':'M')+p[0].toFixed(1)+','+p[1].toFixed(1)).join(' ');
+  if(pts.length>1){
+    g.appendChild(mkEl('path',{d,class:'ckt-hl-halo','vector-effect':'non-scaling-stroke'}));
+    g.appendChild(mkEl('path',{d,class:'ckt-hl-line','vector-effect':'non-scaling-stroke'}));
+  }
+  pts.forEach((p,i)=>g.appendChild(mkEl('circle',{cx:p[0].toFixed(1),cy:p[1].toFixed(1),r:16,class:i===0?'ckt-hl-ring ckt-hl-start':'ckt-hl-ring','vector-effect':'non-scaling-stroke'})));
 }
 // Labs: guided scenarios graded by the simulator. Starting one replaces the
 // current plan, so it asks first; the active lab id is session-only.
@@ -3157,7 +3297,7 @@ td{font-size:12px;padding:5px 8px;border-bottom:1px solid rgba(0,0,0,.1)}
 ${floorSections}
 ${reportNetworkHtml()}
 ${_vlanMatrixHtml()}
-<div class="note">Generated by Plexus — Network Site Planner. The CSVs in this pack (inventory, IP plan, port map, BoM, cable schedule) carry the same data in machine-readable form.${SETTINGS.footerLine?' · '+esc(SETTINGS.footerLine):''}</div>
+<div class="note">Generated by Plexus — Network Site Planner. The CSVs in this pack (inventory, IP plan, port map, BoM, cable schedule, and — when recorded — circuits and the patch schedule) carry the same data in machine-readable form.${SETTINGS.footerLine?' · '+esc(SETTINGS.footerLine):''}</div>
 </body></html>`;
 }
 function doHandoverPack(){
@@ -3169,6 +3309,8 @@ function doHandoverPack(){
     ['port-map.csv',_portMapCsvString()],
     ['bom.csv',_bomCsvString()],
     ['cable-schedule.csv',_cableCsvString()],
+    ['circuits.csv',circuitsCsv(_circuitRowsNow())],
+    ['patch-schedule.csv',patchScheduleCsv(_circuitRowsNow())],
   ])if(csv)files.push({name,data:csv});
   const zip=zipStore(files);
   const date=new Date().toISOString().slice(0,10);
@@ -3419,7 +3561,7 @@ function showPluginCatalogDialog(){
 
 function renderGrid(){renderGridLayer(gridLayer,_layerCtx);}
 
-function render(){_resetThemeCache();renderGrid();renderHeat();renderRoaming();renderOL();renderWalls();renderCables();renderSWs();renderAPs();renderCAMs();renderClients();renderDZs();renderChannelOverlap();renderAnnotations();renderSamples();renderAnnoPreview();renderRuler();updateCnt();updateApStickReadout();updateVlanLegend();}
+function render(){_resetThemeCache();renderGrid();renderHeat();renderRoaming();renderOL();renderWalls();renderCables();renderSWs();renderAPs();renderCAMs();renderClients();renderDZs();renderChannelOverlap();renderAnnotations();renderSamples();renderAnnoPreview();renderRuler();renderCircuitHighlight();updateCnt();updateApStickReadout();updateVlanLegend();}
 
 // Wireless clients: a dot per client with a dashed line to the AP it associates
 // to (strongest wall-aware signal), labelled with the RSSI — the RF→sim bridge
@@ -3883,6 +4025,14 @@ async function _rehydrateImages(){
     await promote(f);
     for(const key of ['APS','CAMS','SWS'])for(const it of (f[key]||[]))await promote(it);
   }
+  // Hop photos (patch panels, outlets) arrive inlined too. No imageUrl
+  // fallback for hops: when IndexedDB is unavailable the inline data: image
+  // simply stays on the hop and is shown from there.
+  for(const c of _circuits())for(const h of (c.hops||[])){
+    if(!h||!h.img)continue;
+    const id=_newImgId();
+    try{await idbPutImage(id,h.img);_imgCache.set(id,h.img);h.imgId=id;delete h.img;}catch{}
+  }
   await preloadDeviceImages();
 }
 
@@ -3911,6 +4061,24 @@ function renderRP(){
   else if(selType==='client')renderClientPanel();
   else if(selType==='wall')renderWallPanel();
 }
+// Circuits line at the top of a device's panel: how many recorded paths pass
+// through it, and a shortcut to record one.
+function _appendCircuitsRow(){
+  const id=selId;
+  const n=circuitsThrough(_circuits(),id).length;
+  const row=document.createElement('div');
+  row.className='ep-row rp-ckt';
+  const lbl=document.createElement('span');
+  lbl.className='rp-ckt-lbl';
+  lbl.textContent=n?`Circuits: ${n}`:'No circuit recorded';
+  row.appendChild(lbl);
+  const mk=(text,title,fn)=>{const b=document.createElement('button');b.className='btn btn-ghost';b.textContent=text;b.title=title;b.addEventListener('click',fn);row.appendChild(b);return b;};
+  if(n)mk('Show →','Circuits through this device',()=>showCircuits());
+  mk('＋ Record','Record a new circuit from this device',()=>showCircuits({newFor:id}));
+  // Above the first section (after the device image block).
+  const first=rpBody.querySelector(':scope > .ep-section');
+  rpBody.insertBefore(row,first||rpBody.firstChild);
+}
 
 // Storage line for one camera at the project's retention/codec settings.
 function _camStorageLabel(c){
@@ -3925,6 +4093,7 @@ function renderCAMPanel(){
   document.getElementById('rp-head').textContent='Edit Camera';
   rpBody.innerHTML=camPanelHtml(c,_panelCtx);
   _wireDeviceImg();
+  _appendCircuitsRow();
 }
 function updCam(){
   const c=CAMS().find(x=>x.id===selId);if(!c)return;
@@ -3981,6 +4150,7 @@ function renderAPPanel(){
   document.getElementById('rp-head').textContent='Edit AP';
   rpBody.innerHTML=apPanelHtml(ap,_panelCtx);
   _wireDeviceImg();
+  _appendCircuitsRow();
 }
 
 function renderDZPanel(){
@@ -3994,6 +4164,7 @@ function renderSWPanel(){
   document.getElementById('rp-head').textContent='Edit Switch/Router';
   rpBody.innerHTML=swPanelHtml(sw,_panelCtx);
   _wireDeviceImg();
+  _appendCircuitsRow();
 }
 
 function updAP(){
@@ -4405,6 +4576,14 @@ function openItemContextMenu(type,id,clientX,clientY){
     items.push({label:'Duplicate',key:'Ctrl+D',action:()=>duplicateSelected()});
   }
   items.push({label:item.locked?'Unlock':'Lock',key:'Ctrl+L',action:()=>toggleLock()});
+  // Circuits through this device, or record the first one.
+  if(_isCktDevice(type)){
+    const n=circuitsThrough(_circuits(),id).length;
+    items.push('-');
+    items.push(n
+      ?{label:`Circuits through this (${n})…`,action:()=>{sel(id,type);showCircuits();}}
+      :{label:'Record a circuit…',action:()=>showCircuits({newFor:id})});
+  }
   // Connect via SSH — only when the device resolves to a host (creds host/IP).
   if(sshCommand(item)){
     items.push('-');
@@ -4762,6 +4941,7 @@ table.mx{width:auto}table.mx th,table.mx td{text-align:center;padding:5px 12px}.
 ${floorSections}
 ${reportNetworkHtml()}
 ${_vlanMatrixHtml()}
+${circuitsReportHtml(_circuitRowsNow())}
 <div class="footer"><span>${esc(SETTINGS.company||'Plexus')}${SETTINGS.contact?' · '+esc(SETTINGS.contact):''}</span><span>Generated ${new Date().toLocaleString(SETTINGS.locale||'en-GB')}</span></div>
 ${SETTINGS.footerLine?`<div class="footer-line">${esc(SETTINGS.footerLine)}</div>`:''}
 <button class="print-btn">Print / Save as PDF</button>
@@ -5122,6 +5302,7 @@ document.addEventListener('keydown',e=>{
     const openMenus=document.querySelectorAll('.dropdown-menu.open');
     if(openMenus.length){openMenus.forEach(x=>x.classList.remove('open'));return;}
     if(document.getElementById('mbg').classList.contains('vis')){closeModal();return;}
+    if(_cktHighlight){clearCircuitHighlight();return;}
     if(pres){togglePresent();return;}
     if(rulerStart){clearRuler();return;}
     if(wallStart){wallStart=null;wallHover=null;renderWallPreview();return;}

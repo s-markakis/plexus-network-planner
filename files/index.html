@@ -70,9 +70,12 @@
       <button class="mode-tab" data-action="set-uimode" data-arg="simulate" data-uimode-btn="simulate" title="Practice on a simulated copy — no real devices"><svg class="ic" aria-hidden="true"><use href="#i-sim"/></svg><span>Simulate</span></button>
       <button class="mode-tab mode-tab-operate" data-action="set-uimode" data-arg="operate" data-uimode-btn="operate" id="mode-operate" title="Connect to real devices (desktop)" style="display:none"><svg class="ic" aria-hidden="true"><use href="#i-bolt"/></svg><span>Operate</span></button>
     </div>
+    <!-- Circuits document the real install, so they belong to every mode. -->
+    <span class="toolgroup" data-modes="design simulate operate">
+    <button class="btn" data-action="show-circuits" title="Record and search the path each connection takes (switch ports, patch panels, cable labels)"><svg class="ic" aria-hidden="true"><use href="#i-circuit"/></svg><span>Circuits</span></button>
+    </span>
     <span class="toolgroup" data-modes="simulate">
     <button class="btn" data-action="show-policies" title="State what must / must not be reachable and prove it against the plan"><svg class="ic" aria-hidden="true"><use href="#i-shield"/></svg><span>Policies</span></button>
-    <button class="btn" data-action="show-circuits" title="Record and search the path each connection takes (switch ports, patch panels, cable labels)"><svg class="ic" aria-hidden="true"><use href="#i-circuit"/></svg><span>Circuits</span></button>
     <button class="btn" data-action="show-labs" title="Guided labs, graded by the simulator"><svg class="ic" aria-hidden="true"><use href="#i-flask"/></svg><span>Labs</span></button>
     </span>
     <div class="tsep"></div>
@@ -286,6 +289,7 @@
             <g id="ol-layer"></g>
             <g id="wall-layer"></g>
             <g id="cable-layer"></g>
+            <g id="ckt-layer"></g>
             <g id="sw-layer"></g>
             <g id="ap-layer"></g>
             <g id="cam-layer"></g>

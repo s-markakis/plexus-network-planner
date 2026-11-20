@@ -1,5 +1,5 @@
-// The CSV deliverables: bill of materials, cable schedule, IP plan, port map
-// and inventory. Pure — the caller supplies the plan plus the few measurements
+// The CSV deliverables: bill of materials, cable schedule, IP plan, port map,
+// inventory, circuits and the patch schedule. Pure — the caller supplies the plan plus the few measurements
 // that need the live app (cable lengths, switch port analysis, storage). Each
 // builder returns the CSV text, or '' when there is nothing to export (the BoM
 // always has its header). The single-file downloads and the handover pack use
@@ -7,6 +7,7 @@
 
 import { apPoeW, camPoeW } from './planModel.js';
 import { ipInCidr } from './network.js';
+import { sortBySwitchPort } from './circuits.js';
 
 /** RFC 4180 field: quoted when it holds a quote, comma or newline. */
 export function csvEscape(v) {
@@ -136,4 +137,29 @@ export function inventoryCsv({ devices, statusLabel }) {
       sw ? (sw.name || sw.id) : '', dev.port || '', dev.comment || dev.notes || '']);
   }
   return orEmpty(rows);
+}
+
+/**
+ * Every recorded circuit, one row each, with its full path. `rows` come from
+ * circuits.js circuitRows().
+ * @param {any[]} rows
+ */
+export function circuitsCsv(rows) {
+  const out = [['Circuit', 'Device', 'Type', 'Floor', 'Switch', 'Switch port', 'Patch panel', 'Outlet', 'Cable', 'Converter', 'Other', 'Path', 'Technician', 'Date', 'Notes', 'Plan check']];
+  for (const r of rows) {
+    out.push([r.name, r.device, r.deviceType, r.floor, r.switchName, r.switchPort, r.patch, r.outlet, r.cable,
+      r.converter, r.other, r.path, r.tech, r.date, r.notes, r.check || 'matches plan']);
+  }
+  return orEmpty(out);
+}
+
+/**
+ * The patch schedule: one row per circuit in rack order (switch, then port) —
+ * what an installer patches and what a technician traces.
+ * @param {any[]} rows
+ */
+export function patchScheduleCsv(rows) {
+  const out = [['Switch', 'Port', 'Patch panel', 'Outlet', 'Cable', 'Device', 'Circuit']];
+  for (const r of sortBySwitchPort(rows)) out.push([r.switchName, r.switchPort, r.patch, r.outlet, r.cable, r.device, r.name]);
+  return orEmpty(out);
 }
