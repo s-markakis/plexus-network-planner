@@ -10,7 +10,7 @@
 // Every value from the project is escaped. The one exception is each floor's
 // `overlay.innerSVG`, which is markup the app itself generated.
 
-const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+import { esc } from './html.js';
 
 const STRINGS = {
   en: {

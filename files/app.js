@@ -94,6 +94,7 @@ import {validatePlan} from './src/validation.js';
 import {parseChannel,apChansOverlap,bandMatches,heatApShape} from './src/channels.js';
 import {planApPlacement} from './src/apPlacement.js';
 import * as _pm from './src/planModel.js';
+import {esc,safeColor} from './src/html.js';
 import {remoteImageHosts,stripRemoteImages} from './src/remoteImages.js';
 import {evaluatePolicies} from './src/policy.js';
 import {compileTopology} from './src/simCompile.js';
@@ -155,9 +156,6 @@ function invalidateCoverageCache(){_wallsCacheKey++;}
 function rangeMToPx(m){return Math.round(m*100/(scaleM||100));}
 
 // HTML-escape for safely interpolating user-controlled strings into templates.
-function esc(s){return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
-// A colour from a project file, for use inside markup: hex only, else ''.
-function safeColor(c){return typeof c==='string'&&/^#[0-9a-fA-F]{3,8}$/.test(c)?c:'';}
 
 // Convert "#rrggbb" to "rgba(r,g,b,a)" — used for AP color fills where we want
 // the stroke at full opacity but the fill semi-transparent so overlaps blend.
