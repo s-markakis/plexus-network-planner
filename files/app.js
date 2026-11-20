@@ -1673,6 +1673,11 @@ function showUnifiDialog(){
   // fingerprint before any credentials are sent.
   const callUnifi=async(fn,extra)=>{
     let res=await fn({...cfg(),...extra});
+    if(res&&res.needsPlaintextOk){
+      if(!confirm(`${res.host} is an http:// address — the controller password would cross the network unencrypted, readable by anyone on the path.\n\nUse https:// if the controller supports it. Send the password over plain http anyway?`))return {ok:false,error:'Plain-http login not accepted — nothing was sent'};
+      extra={...extra,allowPlaintext:true};
+      res=await fn({...cfg(),...extra});
+    }
     if(res&&res.needsTrust){
       const msg=res.changed
         ?`⚠ The certificate of ${res.host} has CHANGED.\n\nTrusted before:\n${res.pinned}\n\nPresented now:\n${res.fingerprint}\n\nThis happens after a controller reset or firmware reinstall — or when someone is intercepting the connection. Trust the new certificate?`

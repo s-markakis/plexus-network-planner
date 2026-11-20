@@ -52,3 +52,21 @@ describe('buildSshArgv — fail closed on hostile input', () => {
     expect(buildSshArgv({ host: 'h', port: '22; rm' })).toMatchObject({ ok: false });
   });
 });
+
+describe('IPv6 hosts and Windows key paths', () => {
+  it('accepts IPv6 literals, bracketed or bare, with a zone id off Windows', () => {
+    expect(buildSshArgv({ host: '2001:db8::1', user: 'admin' }, 'darwin').argv).toEqual(['ssh', 'admin@2001:db8::1']);
+    expect(buildSshArgv({ host: '[fe80::1]' }, 'linux').argv).toEqual(['ssh', 'fe80::1']);
+    expect(buildSshArgv({ host: 'fe80::1%en0' }, 'darwin').ok).toBe(true);
+    expect(buildSshArgv({ host: 'fe80::1%en0' }, 'win32').ok).toBe(false);
+  });
+  it('still refuses anything that is not a clean literal', () => {
+    for (const host of [':', '::1 -oProxyCommand=x', 'fe80::1%a;b', '::g', '-::1', '1:2%$(id)']) expect(buildSshArgv({ host }, 'darwin').ok).toBe(false);
+  });
+  it('accepts a Windows key path only on Windows, and never with spaces', () => {
+    expect(buildSshArgv({ host: 'h', key: 'C:\\Users\\me\\.ssh\\id_ed25519' }, 'win32').argv).toEqual(['ssh', '-i', 'C:\\Users\\me\\.ssh\\id_ed25519', 'h']);
+    expect(buildSshArgv({ host: 'h', key: 'C:\\Users\\me\\.ssh\\id_ed25519' }, 'darwin').ok).toBe(false);
+    expect(buildSshArgv({ host: 'h', key: 'C:\\Users\\John Doe\\id' }, 'win32').ok).toBe(false);
+    expect(buildSshArgv({ host: 'h', key: 'C:\\a&calc' }, 'win32').ok).toBe(false);
+  });
+});

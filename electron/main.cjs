@@ -34,6 +34,19 @@ const INDEX = path.join(__dirname, '..', 'dist', 'index.html');
 
 let mainWindow = null;
 
+// Only the app's own top-level frame may use the native bridge. Child windows
+// (report/print popups, written from project-derived HTML) and any subframe
+// are refused, so markup that slipped past escaping can't reach SSH, rosconf,
+// the controller or the file system.
+function fromApp(e) {
+  return !!(mainWindow && !mainWindow.isDestroyed() && e && e.sender === mainWindow.webContents
+    && e.senderFrame && e.senderFrame === mainWindow.webContents.mainFrame);
+}
+const DENIED = Object.freeze({ ok: false, error: 'Not allowed from this window' });
+function handle(channel, fn) {
+  ipcMain.handle(channel, (e, ...args) => (fromApp(e) ? fn(e, ...args) : DENIED));
+}
+
 function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1440,
@@ -73,7 +86,9 @@ function createWindow() {
       shell.openExternal(url);
       return { action: 'deny' };
     }
-    if (url === '' || url === 'about:blank') return { action: 'allow' };
+    if (url === '' || url === 'about:blank') {
+      return { action: 'allow', overrideBrowserWindowOptions: { webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false } } };
+    }
     return { action: 'deny' };
   });
 
@@ -138,17 +153,17 @@ function setupProjectFiles() {
     recentsFile: path.join(app.getPath('userData'), 'recent-projects.json'),
     onRecentsChanged: () => buildMenu(),
   });
-  ipcMain.handle('project:open', async () => {
+  handle('project:open', async () => {
     const r = await dialog.showOpenDialog(mainWindow, { properties: ['openFile'], filters: PROJECT_FILTERS });
     return projectFiles.openPicked(r.canceled ? undefined : r.filePaths[0]);
   });
-  ipcMain.handle('project:open-recent', (_e, p) => projectFiles.openRecent(p));
-  ipcMain.handle('project:save', (_e, a = {}) => projectFiles.save(a.path, a.text));
-  ipcMain.handle('project:save-as', async (_e, a = {}) => {
+  handle('project:open-recent', (_e, p) => projectFiles.openRecent(p));
+  handle('project:save', (_e, a = {}) => projectFiles.save(a.path, a.text));
+  handle('project:save-as', async (_e, a = {}) => {
     const r = await dialog.showSaveDialog(mainWindow, { defaultPath: safeFileName(a.suggestedName), filters: PROJECT_FILTERS });
     return projectFiles.saveAsPicked(r.canceled ? undefined : r.filePath, a.text);
   });
-  ipcMain.handle('project:recents', () => projectFiles.recents());
+  handle('project:recents', () => projectFiles.recents());
 }
 
 // ── UniFi controller bridge ────────────────────────────────────────────────
@@ -171,10 +186,15 @@ function unifiFetch(base, pathName, { method = 'GET', body, headers = {}, fp = n
 // Resolve the certificate fingerprint to pin this call to, or an answer for
 // the renderer when the user has to decide first. First contact and a changed
 // certificate both need an explicit approval of the exact fingerprint shown.
-async function unifiTrust(url, approved) {
+async function unifiTrust(url, approved, allowPlaintext) {
   let u;
   try { u = new URL(url); } catch { throw new Error('Bad controller URL'); }
-  if (u.protocol === 'http:') return { fp: null };       // plaintext: nothing to pin
+  if (u.protocol === 'http:') {
+    // Plain http sends the admin password in the clear: only on an explicit
+    // per-call yes from the user (the URL can come from a shared project).
+    if (allowPlaintext !== true) return { ask: { ok: false, needsPlaintextOk: true, host: u.host, error: 'Controller URL is plain http' } };
+    return { fp: null };
+  }
   if (u.protocol !== 'https:') throw new Error('Bad controller URL');
   const file = path.join(app.getPath('userData'), 'controller-pins.json');
   const pins = loadPins(file);
@@ -220,11 +240,11 @@ async function unifiListDevices(base, session, site) {
   return Array.isArray(parsed.data) ? parsed.data : [];
 }
 
-ipcMain.handle('unifi:pull', async (_e, cfg) => {
+handle('unifi:pull', async (_e, cfg) => {
   try {
-    const { url, site = 'default', user, pass, trust } = cfg || {};
+    const { url, site = 'default', user, pass, trust, allowPlaintext } = cfg || {};
     if (!url || !user) throw new Error('Controller URL and username are required');
-    const t = await unifiTrust(url, trust);
+    const t = await unifiTrust(url, trust, allowPlaintext);
     if (t.ask) return t.ask;
     const session = await unifiLogin(url, user, pass || '', t.fp);
     const raw = await unifiListDevices(url, session, site);
@@ -247,12 +267,12 @@ ipcMain.handle('unifi:pull', async (_e, cfg) => {
 
 // Push a channel/width/tx plan to matching APs. Matching is by MAC first,
 // then case-insensitive name. Only radio_table fields we own are touched.
-ipcMain.handle('unifi:push', async (_e, cfg) => {
+handle('unifi:push', async (_e, cfg) => {
   try {
-    const { url, site = 'default', user, pass, changes, trust } = cfg || {};
+    const { url, site = 'default', user, pass, changes, trust, allowPlaintext } = cfg || {};
     if (!url || !user) throw new Error('Controller URL and username are required');
     if (!Array.isArray(changes) || !changes.length) throw new Error('No channel plan to push');
-    const t = await unifiTrust(url, trust);
+    const t = await unifiTrust(url, trust, allowPlaintext);
     if (t.ask) return t.ask;
     const session = await unifiLogin(url, user, pass || '', t.fp);
     const devices = await unifiListDevices(url, session, site);
@@ -276,7 +296,7 @@ ipcMain.handle('unifi:push', async (_e, cfg) => {
         if (Number.isFinite(ch.txPowerDbm)) { upd.tx_power_mode = 'custom'; upd.tx_power = String(ch.txPowerDbm); }
         return upd;
       });
-      const res = await unifiFetch(url, unifiSitePath(session, site, `/rest/device/${dev._id || dev.device_id || ''}`), {
+      const res = await unifiFetch(url, unifiSitePath(session, site, `/rest/device/${encodeURIComponent(String(dev._id || dev.device_id || ''))}`), {
         method: 'PUT',
         body: { radio_table },
         headers: { Cookie: session.cookie, ...(session.csrf ? { 'x-csrf-token': session.csrf } : {}) },
@@ -357,7 +377,7 @@ async function wifiSampleLinux() {
   return { ok: true, rssi: parseInt(m[1], 10), noise: null, ssid: ssid.trim(), bssid, channel };
 }
 
-ipcMain.handle('survey:sample', async () => {
+handle('survey:sample', async () => {
   try {
     if (process.platform === 'darwin') return await wifiSampleMac();
     if (process.platform === 'win32') return await wifiSampleWin();
@@ -449,7 +469,7 @@ function openTerminalArgv(built) {
   });
 }
 
-ipcMain.handle('ssh:open-terminal', async (_e, t = {}) => openSshTerminal(t));
+handle('ssh:open-terminal', async (_e, t = {}) => openSshTerminal(t));
 
 // ── Plan → device: rosconf dry run ─────────────────────────────────────────
 // Writes the generated script to the app's data directory and opens a terminal
@@ -467,12 +487,12 @@ async function locateRosconf() {
   return loadRosconfPath(rosconfStore());
 }
 
-ipcMain.handle('deploy:locate-rosconf', async () => {
+handle('deploy:locate-rosconf', async () => {
   const p = await locateRosconf();
   return p ? { ok: true, path: p } : { ok: false, cancelled: true };
 });
 
-ipcMain.handle('deploy:rosconf', async (_e, a = {}) => {
+handle('deploy:rosconf', async (_e, a = {}) => {
   try {
     const rosconf = loadRosconfPath(rosconfStore()) || await locateRosconf();
     if (!rosconf) return { ok: false, cancelled: true, error: 'rosconf location not chosen' };
@@ -498,7 +518,7 @@ ipcMain.handle('deploy:rosconf', async (_e, a = {}) => {
 // fixed, vendor-specific dump command (see buildSshPullArgv) and returns its
 // output. No shell is involved (execFile), no password is accepted, and an
 // unknown host key is refused rather than trusted.
-ipcMain.handle('ssh:pull-config', async (_e, t = {}) => {
+handle('ssh:pull-config', async (_e, t = {}) => {
   const built = buildSshPullArgv(t);
   if (!built.ok) return built;
   return new Promise((resolve) => {

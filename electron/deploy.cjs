@@ -28,7 +28,7 @@ function buildRosconfArgv({ rosconf, target = {}, file }) {
   if (typeof file !== 'string' || !path.isAbsolute(file)) return { ok: false, error: 'No script file' };
   const ssh = buildSshArgv(target);            // validates host / user / port / key
   if (!ssh.ok) return ssh;
-  const host = String(target.host).trim();
+  const host = String(target.host).trim().replace(/^\[(.*)\]$/, '$1');
   const argv = /\.py$/i.test(rosconf) ? ['python3', rosconf] : [rosconf];
   argv.push('apply', host);
   if (target.user != null && String(target.user).trim() !== '') argv.push('-u', String(target.user).trim());

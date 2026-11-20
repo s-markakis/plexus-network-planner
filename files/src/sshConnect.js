@@ -12,7 +12,7 @@
 export function sshTarget(device) {
   if (!device || typeof device !== 'object') return null;
   const c = device.creds && typeof device.creds === 'object' ? device.creds : {};
-  const host = String(c.host || device.ip || '').trim();
+  const host = String(c.host || device.ip || '').trim().replace(/^\[(.*)\]$/, '$1');
   if (!host) return null;
   const user = String(c.user || '').trim();
   const port = Number.parseInt(c.port, 10) || 22;
@@ -27,11 +27,13 @@ export function sshTarget(device) {
 const HOST_RE = /^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,253}[A-Za-z0-9])?$/;
 const USER_RE = /^[A-Za-z0-9._+][A-Za-z0-9._+-]{0,63}$/;
 const KEY_RE = /^[A-Za-z0-9._~/-]{1,256}$/;
+const HOST6_RE = /^(?=[0-9A-Fa-f:.]*:)[0-9A-Fa-f:.]{2,45}(?:%[A-Za-z0-9._-]{1,32})?$/;
+const KEY_WIN_RE = /^[A-Za-z]:[\\/][A-Za-z0-9._~\\/-]{1,250}$/;
 /** @param {{host:string,user:string,port:number,key:string}|null} t @returns {boolean} */
 export function sshTargetIsSafe(t) {
-  if (!t || !HOST_RE.test(t.host)) return false;
+  if (!t || !(HOST_RE.test(t.host) || HOST6_RE.test(t.host))) return false;
   if (t.user && !USER_RE.test(t.user)) return false;
-  if (t.key && !KEY_RE.test(t.key)) return false;
+  if (t.key && !(KEY_RE.test(t.key) || KEY_WIN_RE.test(t.key))) return false;
   return Number.isInteger(t.port) && t.port >= 1 && t.port <= 65535;
 }
 
